@@ -12,6 +12,7 @@ import com.github.ajalt.clikt.core.subcommands
 import com.github.ajalt.clikt.output.Localization
 import com.github.ajalt.clikt.output.ParameterFormatter
 import com.github.ajalt.clikt.parameters.arguments.argument
+import com.github.ajalt.clikt.parameters.arguments.optional
 import com.github.ajalt.clikt.parameters.options.default
 import com.github.ajalt.clikt.parameters.options.flag
 import com.github.ajalt.clikt.parameters.options.help
@@ -28,10 +29,12 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import limen.cli.hub.Http
 import limen.cli.hub.Hub
+import limen.cli.hub.LiveHub
 import limen.cli.hub.Stdio
 import limen.cli.node.Deploy
 import limen.cli.node.Gate
 import limen.cli.node.Installer
+import limen.cli.node.Joiner
 import limen.cli.node.Lint
 import limen.cli.node.Node
 import limen.cli.node.Read
@@ -40,6 +43,7 @@ import limen.cli.node.Scripts
 import limen.cli.os.Proc
 import limen.cli.os.Sys
 import limen.core.Args
+import limen.core.Durations
 import limen.core.ErrorCode
 import limen.core.LIMEN_BUILD_DATE
 import limen.core.LIMEN_BUILD_NUMBER
@@ -53,7 +57,10 @@ import limen.core.PrettyJson
 import limen.core.Requests
 import limen.core.Role
 import limen.core.WireJson
+import limen.core.config.HubConfig
 import limen.core.config.NodeConfig
+import limen.core.join.JoinUrl
+import limen.core.join.Keys
 import limen.core.scripts.ScriptKind
 import kotlin.system.exitProcess
 import kotlin.time.Duration.Companion.hours
@@ -69,9 +76,15 @@ object Cli {
     fun run(args: List<String>): Int {
         val root =
             LimenCommand().subcommands(
+                InitCommand(),
                 McpCommand(),
                 ServeCommand(),
+                ConnectCommand(),
+                InviteCommand(),
+                TrustCommand(),
+                ForgetCommand(),
                 CallCommand(),
+                JoinCommand(),
                 GateCommand(),
                 InstallCommand(),
                 UninstallCommand(),
@@ -165,23 +178,168 @@ private class McpCommand : CoreCliktCommand("mcp") {
     val home by option("--home").help("Hub directory with limen.toml (default: \$LIMEN_HOME or ~/.limen)")
 
     override fun run() {
-        Stdio.run(Hub.load(home).client)
+        Stdio.run(LiveHub(Hub.at(home)))
     }
 }
 
 private class ServeCommand : CoreCliktCommand("serve") {
-    override fun help(context: Context) = "MCP server over HTTP (the hub); needs LIMEN_TOKEN"
+    override fun help(context: Context) = "MCP server over HTTP (the hub), and where nodes join; creates the hub on first start"
 
-    val home by option("--home").help("Hub directory with limen.toml (default: \$LIMEN_HOME or ~/.limen)")
+    val home by option("--home").help("Hub directory (default: \$LIMEN_HOME or ~/.limen)")
     val listen by option("--listen").help("host:port, over [http].listen and LIMEN_LISTEN")
 
     override fun run() {
-        val token = Sys.env("LIMEN_TOKEN")?.trim().orEmpty()
-        if (token.length < 16) throw LimenException(ErrorCode.BAD_REQUEST, "LIMEN_TOKEN must be set, 16 characters or more")
-        val hub = Hub.load(home)
-        val address = listen ?: Sys.env("LIMEN_LISTEN")?.takeIf { it.isNotBlank() }
-        Http.run(if (address != null) hub.config.copy(listen = address) else hub.config, hub.client, token)
+        val hub = Hub.at(home)
+        hub.init(serve = true).forEach { Sys.err("limen: created $it\n") }
+        val token = hub.token()
+        if (token.length < 16) throw LimenException(ErrorCode.BAD_REQUEST, "the token must have 16 characters or more")
+        val live = LiveHub(hub)
+        val address = listen ?: Sys.env("LIMEN_LISTEN")?.takeIf { it.isNotBlank() } ?: live.config().listen
+        Http.run(hub, live, address, token)
     }
+}
+
+private class InitCommand : CoreCliktCommand("init") {
+    override fun help(context: Context) = "Create the hub: its key, limen.toml and, with --serve, the token of HTTP clients"
+
+    val home by option("--home").help("Hub directory (default: \$LIMEN_HOME or ~/.limen)")
+    val serve by option("--serve").flag().help("Also the token for `limen serve`")
+
+    override fun run() {
+        val hub = Hub.at(home)
+        val created = hub.init(serve)
+        created.forEach { Sys.out("created $it\n") }
+        if (created.isEmpty()) Sys.out("${hub.home} was already a hub\n")
+        Sys.out("hub key: ${Keys.fingerprint(hub.publicKey)}\n")
+        Sys.out("Next: `limen invite <name>` for each machine, and `limen connect` for the MCP client.\n")
+    }
+}
+
+private class ConnectCommand : CoreCliktCommand("connect") {
+    override fun help(context: Context) = "Print the command that connects Claude Code to this hub"
+
+    val home by option("--home").help("Hub directory")
+    val url by option("--url").help("The hub's HTTP address, over [http].public_url and LIMEN_PUBLIC_URL")
+
+    override fun run() {
+        val hub = Hub.at(home)
+        val base = url ?: runCatching { hub.config().publicUrl }.getOrNull()
+        val token = runCatching { hub.token() }.getOrNull()
+        if (base != null && token != null) {
+            Sys.out("claude mcp add --transport http limen $base/mcp --header \"Authorization: Bearer $token\"\n")
+        } else {
+            val homeOption = if (hub.home == Hub.home(null).trimEnd('/')) "" else " --home ${hub.home}"
+            Sys.out("claude mcp add limen -- limen mcp$homeOption\n")
+        }
+    }
+}
+
+private class InviteCommand : CoreCliktCommand("invite") {
+    override fun help(context: Context) = "A one-time line that joins a machine to this hub; paste it on the machine as root"
+
+    val name by argument(help = "The machine's name on the hub")
+    val home by option("--home").help("Hub directory")
+    val ttl by option("--ttl").default("1h").help("How long the invitation lasts")
+
+    override fun run() {
+        val hub = Hub.at(home)
+        if (!HubConfig.NODE_NAME.matches(name)) throw UsageError("a node name matches ${HubConfig.NODE_NAME.pattern}")
+        val publicUrl = hub.config().publicUrl
+        val script = "https://raw.githubusercontent.com/xoadev/limen/main/install.sh"
+        if (publicUrl == null) {
+            // No HTTP hub to call back: the line carries the key, and the machine prints what to trust here.
+            val key = Keys.withoutComment(hub.publicKey)
+            Sys.out("On $name, as root:\n")
+            Sys.out("  curl -fsSL $script | sudo sh -s -- --hub-key '$key' --name $name\n")
+            Sys.out("It ends printing a `limen trust` line to run here.\n")
+            return
+        }
+        val ttlValue = Durations.parse(ttl) ?: throw UsageError("--ttl takes a duration like 30m or 2h")
+        val code = hub.invite(name, ttlValue)
+        val join = JoinUrl(publicUrl, code, Keys.fingerprint(hub.publicKey))
+        Sys.out("On $name, as root:\n")
+        Sys.out("  curl -fsSL $script | sudo sh -s -- --join '$join'\n")
+        Sys.out("OpenWrt:\n")
+        Sys.out("  wget -qO- $script | sh -s -- --join '$join'\n")
+        Sys.out("Valid once, for $ttl.\n")
+    }
+}
+
+private class TrustCommand : CoreCliktCommand("trust") {
+    override fun help(context: Context) = "Add a machine to this hub by hand: its name, address and host key"
+
+    val name by argument()
+    val address by argument()
+    val hostKey by argument(name = "host-key")
+    val user by option("--user").default(HubConfig.READ_USER).help("root for OpenWrt")
+    val port by option("--port").default("22")
+    val home by option("--home").help("Hub directory")
+
+    override fun run() {
+        Hub.at(home).trust(name, address, hostKey, user, port.toIntOrNull() ?: throw UsageError("--port takes a number"))
+        Sys.out("$name added; try it with `limen call $name hello`\n")
+    }
+}
+
+private class ForgetCommand : CoreCliktCommand("forget") {
+    override fun help(context: Context) = "Remove a machine from this hub (uninstall on the machine is separate)"
+
+    val name by argument()
+    val home by option("--home").help("Hub directory")
+
+    override fun run() {
+        if (!Hub.at(home).remove(name)) throw UsageError("no node named '$name'")
+        Sys.out("$name removed from the hub\n")
+    }
+}
+
+private class JoinCommand : CoreCliktCommand("join") {
+    override fun help(context: Context) =
+        "Join this machine to a hub (as root): with the line of `limen invite`, or with --hub-key and --name when the hub is not reachable over HTTP"
+
+    val url by argument(help = "The join line of `limen invite`").optional()
+    val hubKey by option("--hub-key").help("The hub's public key, when there is no join line")
+    val name by option("--name").help("This machine's name on the hub, with --hub-key")
+    val deployKey by option("--deploy-key").help("Public key for the deploy role")
+    val from by option("--from").help("Addresses or CIDRs the keys may connect from (not OpenWrt)")
+    val repo by option("--repo").help("Git repository this machine follows")
+    val branch by option("--branch").default("main")
+    val path by option("--path").help("This machine's folder in --repo (default: nodes/<its name on the hub>)")
+    val address by option("--address").help("Where the hub reaches this machine (default: where the join request comes from)")
+    val sshPort by option("--ssh-port").default("22")
+
+    override fun run() {
+        val port = sshPort.toIntOrNull() ?: throw UsageError("--ssh-port takes a number")
+        val joiner = Joiner(Installer(dryRun = false))
+        val code =
+            try {
+                val target = url
+                val key = hubKey
+                when {
+                    target != null -> {
+                        val join = JoinUrl.parse(target)
+                        // The folder defaults to the name the invitation gives, known only once the hub answers.
+                        val repoFor = repo?.let { url -> { invited: String -> RepoOptions(url, branch, path ?: "nodes/$invited") } }
+                        joiner.join(join, deployKey, from, repoFor, address, port)
+                    }
+
+                    key != null -> {
+                        val nodeName = name ?: throw UsageError("--hub-key needs --name")
+                        joiner.withKey(key, nodeName, deployKey, from, repoOptions(nodeName), port)
+                    }
+
+                    else -> {
+                        throw UsageError("give the join line of `limen invite`, or --hub-key and --name")
+                    }
+                }
+            } catch (e: Installer.InstallException) {
+                Sys.err("limen: join: ${e.message}\n")
+                1
+            }
+        throw ExitWith(code)
+    }
+
+    private fun repoOptions(nodeName: String) = repo?.let { RepoOptions(it, branch, path ?: "nodes/$nodeName") }
 }
 
 private class CallCommand : CoreCliktCommand("call") {
@@ -197,8 +355,8 @@ private class CallCommand : CoreCliktCommand("call") {
     val identity by option("--identity").help("SSH key for deploy requests (default: the hub's)")
 
     override fun run() {
-        val hub = Hub.load(home)
-        if (hub.config.node(node) == null) throw UsageError("no node named '$node'")
+        val hub = LiveHub(Hub.at(home))
+        if (hub.config().node(node) == null) throw UsageError("no node named '$node'")
         val (name, body) =
             if (request.startsWith("check_")) {
                 "check" to
@@ -229,7 +387,7 @@ private class CallCommand : CoreCliktCommand("call") {
             throw ExitWith(r.exitCode)
         }
         if (user != null || identity != null) throw UsageError("--user and --identity are only for deploy requests")
-        val response = runBlocking { hub.client.call(node, name, body) }
+        val response = runBlocking { hub.call(node, name, body) }
         Sys.out(PrettyJson.encodeToString(NodeResponse.serializer(), response) + "\n")
         if (!response.ok) throw ExitWith(1)
     }

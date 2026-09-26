@@ -5,7 +5,8 @@
 #
 #   SUITE=debian    OpenSSH, sudo, one user per role, a repository the node follows
 #   SUITE=openwrt   OpenWrt's own image: dropbear, root with forced commands, busybox, musl
-#   (default: both)
+#   SUITE=join      the hub's image in a container; machines join it with `limen invite` and install.sh
+#   (default: all three)
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 command -v docker >/dev/null || { echo "e2e: needs Docker; skipped" >&2; exit 0; }
@@ -14,8 +15,12 @@ SUITE=${SUITE:-all}
 
 work=$(mktemp -d)
 containers=()
+networks=()
+volumes=()
 cleanup() {
   for c in "${containers[@]}"; do docker rm -f "$c" >/dev/null 2>&1 || true; done
+  for n in "${networks[@]}"; do docker network rm "$n" >/dev/null 2>&1 || true; done
+  for v in "${volumes[@]}"; do docker volume rm "$v" >/dev/null 2>&1 || true; done
   rm -rf "$work"
 }
 trap cleanup EXIT
@@ -243,7 +248,7 @@ suite_openwrt() {
 
   echo "e2e/openwrt: install"
   # Through install.sh, unattended, as busybox's ash runs it.
-  expect "install.sh under ash: dropbear and root" 'user = "root"' \
+  expect "install.sh under ash: dropbear and root" '--user root' \
     docker exec -e LIMEN_YES=1 -e LIMEN_BINARY=/tmp/limen -e LIMEN_READ_KEY="$(cat "$work/read.pub")" \
     -e LIMEN_DEPLOY_KEY="$(cat "$work/deploy.pub")" "$node" sh /tmp/install.sh
   expect "install warns: root without a password" "root has no password" \
@@ -292,14 +297,93 @@ EOF
   expect "the administrator's key is still there" "admin" docker exec "$node" cat /etc/dropbear/authorized_keys
 }
 
+suite_join() {
+  local net=limen-e2e-$$ data=limen-e2e-hub-$$ hub=limen-e2e-hub-$$ hub_ip url token line
+  local nas=limen-e2e-nas-$$ router=limen-e2e-router-$$ spare=limen-e2e-spare-$$ key trust spare_ip tampered
+  echo "e2e/join: the hub's image"
+  IMAGE=limen-e2e-hub:local "$ROOT/tools/docker.sh" >/dev/null
+  docker build -q -t limen-e2e-node -f "$ROOT/etc/e2e/node.Dockerfile" "$ROOT/etc/e2e" >/dev/null
+  docker network create "$net" >/dev/null
+  networks+=("$net")
+  docker volume create "$data" >/dev/null
+  volumes+=("$data")
+  docker run -d --name "$hub" --network "$net" -v "$data:/data" limen-e2e-hub:local >/dev/null
+  containers+=("$hub")
+  hub_ip=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$hub")
+  url="http://$hub_ip:7341"
+  for _ in $(seq 1 50); do docker logs "$hub" 2>&1 | grep -q "serving MCP" && break; sleep 0.2; done
+  hub_exec() { docker exec -e LIMEN_PUBLIC_URL="$url" "$hub" limen "$@"; }
+
+  expect "the hub creates itself on first start" "created /data/id_ed25519" docker logs "$hub"
+  expect "connect: the line for an MCP client, with the token" "Authorization: Bearer" hub_exec connect
+  token=$(hub_exec connect | sed -n 's/.*Bearer \([a-z2-7]*\)".*/\1/p')
+
+  # Machines on the hub's network, with their SSH servers running.
+  docker run -d --name "$nas" --network "$net" limen-e2e-node >/dev/null
+  docker run -d --name "$spare" --network "$net" limen-e2e-node >/dev/null
+  docker run -d --name "$router" --network "$net" openwrt/rootfs:x86-64 sh -c \
+    'mkdir -p /etc/dropbear && dropbearkey -t ed25519 -f /etc/dropbear/dropbear_ed25519_host_key >/dev/null && exec /usr/sbin/dropbear -F -E -s -p 22' \
+    >/dev/null
+  containers+=("$nas" "$spare" "$router")
+  for c in "$nas" "$spare" "$router"; do
+    docker cp "$binary" "$c:/tmp/limen"
+    docker cp "$ROOT/install.sh" "$c:/tmp/install.sh"
+  done
+  join_line() { hub_exec invite "$1" | sed -n "s/.*--join '\([^']*\)'.*/\1/p" | head -n 1; }
+
+  echo "e2e/join: a machine joins with the invitation"
+  line=$(join_line nas)
+  expect "invite prints a line with the key's fingerprint" "#SHA256:" echo "$line"
+  tampered="${line%#*}#SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+  expect "a line with another fingerprint is refused" "is not the one the join line names" \
+    docker exec -e LIMEN_YES=1 -e LIMEN_BINARY=/tmp/limen -e LIMEN_JOIN="$tampered" "$nas" sh /tmp/install.sh
+  expect "and nothing was installed" "no such user" docker exec "$nas" id limen-read
+  expect "install.sh --join: the machine is on the hub" "nas is on the hub" \
+    docker exec -e LIMEN_YES=1 -e LIMEN_BINARY=/tmp/limen -e LIMEN_JOIN="$line" "$nas" sh /tmp/install.sh
+  expect "an invitation works once" "was used, or expired" \
+    docker exec -e LIMEN_YES=1 -e LIMEN_BINARY=/tmp/limen -e LIMEN_JOIN="$line" "$nas" sh /tmp/install.sh
+  expect "the hub reaches it, no restart" '"ok": true' hub_exec call nas status
+  expect "the hub wrote it into limen.toml" "[nodes.nas]" docker exec "$hub" cat /data/limen.toml
+
+  echo "e2e/join: OpenWrt joins the same way"
+  line=$(join_line router)
+  expect "install.sh --join under ash" "router is on the hub" \
+    docker exec -e LIMEN_YES=1 -e LIMEN_BINARY=/tmp/limen -e LIMEN_JOIN="$line" "$router" sh /tmp/install.sh
+  expect "the hub logs into it as root" 'user = "root"' docker exec "$hub" cat /data/limen.toml
+  expect "and sees procd" '"init": "procd"' hub_exec call router hello
+
+  echo "e2e/join: without a hub on HTTP, --hub-key and limen trust"
+  key=$(docker exec "$hub" cat /data/id_ed25519.pub)
+  trust=$(docker exec -e LIMEN_YES=1 -e LIMEN_BINARY=/tmp/limen -e LIMEN_HUB_KEY="$key" -e LIMEN_NAME=spare "$spare" sh /tmp/install.sh | grep 'limen trust')
+  expect "the machine prints the line for the hub" "limen trust spare <address>" echo "$trust"
+  spare_ip=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$spare")
+  read -ra trust_args <<< "$(echo "$trust" | sed "s/<address>/$spare_ip/; s/^ *limen trust //" | tr -d "'")"
+  expect "limen trust on the hub" "spare added" docker exec "$hub" limen trust "${trust_args[0]}" "${trust_args[1]}" "${trust_args[2]} ${trust_args[3]}"
+  expect "the hub reaches it" '"ok": true' hub_exec call spare hello
+
+  echo "e2e/join: MCP over HTTP"
+  mcp_http() {
+    curl -s -X POST -H "Authorization: Bearer $token" -H 'Content-Type: application/json' "$url/mcp" -d "$1"
+  }
+  expect "tools/list offers the nodes that joined" '"enum":["nas","router","spare"]' \
+    mcp_http '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+  expect "a tool call reaches a node" 'uptime_seconds' \
+    mcp_http '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"status","arguments":{"node":"nas"}}}'
+  expect "without the token, nothing" "401" curl -s -o /dev/null -w '%{http_code}' -X POST "$url/mcp" -d '{}'
+  expect "forget takes a node off the hub" "removed" hub_exec forget spare
+  refuse "and it is gone" '"spare"' mcp_http '{"jsonrpc":"2.0","id":3,"method":"tools/list"}'
+}
+
 case "$SUITE" in
   debian) suite_debian ;;
   openwrt) suite_openwrt ;;
+  join) suite_join ;;
   all)
     suite_debian
     suite_openwrt
+    suite_join
     ;;
-  *) echo "e2e: SUITE is debian, openwrt or all" >&2; exit 64 ;;
+  *) echo "e2e: SUITE is debian, openwrt, join or all" >&2; exit 64 ;;
 esac
 
 echo

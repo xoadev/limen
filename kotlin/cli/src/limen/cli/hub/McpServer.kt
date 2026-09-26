@@ -116,7 +116,12 @@ class McpServer(
         }
     }
 
-    private fun nodeParam(nodes: List<String>) = Param("node", ParamType.ENUM, "Which machine", values = nodes)
+    private fun nodeParam(nodes: List<String>) =
+        if (nodes.isEmpty()) {
+            Param("node", ParamType.STRING, "Which machine. There are none yet: the hub adds them with `limen invite`")
+        } else {
+            Param("node", ParamType.ENUM, "Which machine", values = nodes)
+        }
 
     /** Check name → its spec and the nodes that have it. A name declared with different arguments is left out. */
     private suspend fun checkTools(): Map<String, Pair<ScriptSpec, List<String>>> {
@@ -130,7 +135,7 @@ class McpServer(
     }
 
     private suspend fun catalogs(): Map<String, Catalog> {
-        val hellos = hellos ?: refresh()
+        val hellos = hellos?.takeIf { it.keys == client.nodes.toSet() } ?: refresh()
         return hellos
             .mapNotNull { (node, r) ->
                 val data = r.data as? JsonObject ?: return@mapNotNull null

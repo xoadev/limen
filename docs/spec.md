@@ -46,8 +46,9 @@ node:  sshd ──forced command──▶ sudo limen gate --role read ──▶ 
                                 (answers JSON on stdout and exits)
 ```
 
-- **Hub**: runs the MCP server, holds the read role's SSH key and the list of nodes. A laptop
-  (`limen mcp`, stdio) or a container (`limen serve`, HTTP).
+- **Hub**: runs the MCP server, holds the read role's SSH key and the list of nodes. A container
+  (`limen serve`, HTTP) or a laptop (`limen mcp`, stdio). It is a directory —`$LIMEN_HOME`, `/data` in the
+  image—, created on first start or by `limen init`.
 - **Node**: a machine being inspected. Has the `limen` binary, its configuration in `/etc/limen/`,
   and the SSH and sudo wiring that `limen install` sets up.
 - A hub can be a node too: it reaches itself over SSH like any other.
@@ -300,6 +301,11 @@ port = 2222
 host_key = "ssh-ed25519 AAAA…"
 ```
 
+- The directory holds `id_ed25519` (the hub's key, made with `ssh-keygen` by `init`), `limen.toml`, `token`
+  (for HTTP clients, unless `LIMEN_TOKEN` is set) and `invites/`. `limen.toml` is read again whenever it changes: a
+  node that joins is there for the next request.
+- `[http] public_url` (or `LIMEN_PUBLIC_URL`) is where nodes reach the hub to join: an address, not a name,
+  because the static binary resolves no names.
 - `host_key` is required: limen writes its own `known_hosts`, filing each key under the node's name
   (`HostKeyAlias`), and runs `ssh` with `StrictHostKeyChecking=yes`. There is no trust on first use:
   `limen install` prints the node's key, or get it with `ssh-keyscan` and verify it out of band. A
@@ -328,7 +334,10 @@ host_key = "ssh-ed25519 AAAA…"
   - Validates `Origin`, against DNS rebinding.
   - Listens on `127.0.0.1:7341` unless told otherwise. The image listens on every interface;
     whoever publishes the port decides who gets in.
-- Catalogs are fetched when a session starts and when `nodes` is called. A change is announced with
+- `GET /join/<code>` and `POST /join/<code>` (§10.1) need no token: the one-time code is the authorisation.
+- Bodies are read and written as bytes: Ktor's text conversions reach for glibc's iconv, which a static binary
+  can't load.
+- Catalogs are fetched when a session starts, when `nodes` is called and when the set of nodes changes. A change is announced with
   `notifications/tools/list_changed` over stdio; over HTTP without SSE it shows up in the next
   session.
 
@@ -336,8 +345,14 @@ host_key = "ssh-ed25519 AAAA…"
 
 | Command | Where | What |
 |---|---|---|
+| `limen init [--serve]` | hub | The hub's directory: key, `limen.toml`, and with `--serve` the token. Keeps what exists |
 | `limen mcp` | hub | MCP over stdio |
-| `limen serve` | hub | MCP over HTTP |
+| `limen serve` | hub | MCP over HTTP and the join endpoints; `init --serve` first if needed |
+| `limen connect` | hub | The `claude mcp add` line: HTTP with the token when there is one, stdio otherwise |
+| `limen invite <name> [--ttl 1h]` | hub | The line that joins a machine (§10.1) |
+| `limen trust <name> <address> <host-key> [--user] [--port]` | hub | A node added by hand |
+| `limen forget <name>` | hub | A node taken off the hub |
+| `limen join <line> \| --hub-key <key> --name <name> [--repo …] [--deploy-key …] [--from …] [--address …]` | node, root | Joins the hub (§10.1): install with the hub's key, then report |
 | `limen call <node> <request> [--arg k=v]…` | hub | One request over SSH; prints the JSON. Checks as `check_<name>`. For `apply` and `action`, with the deploy role's `--user` and `--identity`, it streams their output: what CI runs |
 | `limen gate --role <role>` | node | The forced command. Not for people |
 | `limen install --read-key <key> [--deploy-key <key>] [--from <cidr>] [--repo <url> [--branch b] [--path p]] [--dry-run]` | node, root | Debian: binary in `/usr/local/bin`, users, `authorized_keys`, `sudoers` (validated with `visudo -c` first). OpenWrt: binary in `/usr/bin`, root's dropbear keys, sysupgrade keep list. Both: `/etc/limen/`; with `--repo`, the repository (below). Idempotent |
@@ -353,12 +368,38 @@ host_key = "ssh-ed25519 AAAA…"
 `install` also reads `sshd -T` and warns when `AllowUsers` or `AllowGroups` would keep the new
 users out.
 
-`install.sh`, at the root of the repository, is the way in for a new machine (`curl … | sudo sh`, or `wget` on
-OpenWrt). POSIX `sh`, because OpenWrt has only busybox's `ash`. It downloads the binary of the latest release for
-`uname -m`, checks it against `SHA256SUMS`, asks for the keys, the source addresses, the repository, its branch and
-the node's folder —each can come from a `LIMEN_*` variable instead, for unattended installs—, offers to install
-git when a repository needs it, and runs `limen install` with the terminal as its input, so the token prompt works
-under a pipe.
+`install.sh`, at the root of the repository, is the way in (`curl … | sudo sh`, or `wget` on OpenWrt). POSIX
+`sh`, because OpenWrt has only busybox's `ash`. It downloads the binary of the latest release for `uname -m` and
+checks it against `SHA256SUMS`, then:
+
+- `--join <line>`: asks only for the repository (optional), offers git if that needs it, and runs `limen join` with
+  the terminal as its input, so the token prompt works under a pipe.
+- `--hub-key <key> --name <name>`: the same, for a hub with no HTTP; it ends with the `limen trust` line.
+- `--hub`: the binary in `~/.local/bin` (or `/usr/local/bin` as root) and `limen init`, for a laptop hub.
+
+Every answer can come from a `LIMEN_*` variable instead, for unattended installs.
+
+### 10.1 Joining a node
+
+```
+hub:   limen invite nas  →  …/install.sh | sudo sh -s -- --join 'http://<hub>:7341/join/<code>#SHA256:<hub key>'
+node:  GET  /join/<code>  →  {"name": "nas", "hub_key": "ssh-ed25519 …"}   checked against the fingerprint
+       limen install with that key
+       POST /join/<code>  ←  {"host_key": "ssh-ed25519 …", "user": "limen-read", "port": 22}
+hub:   [nodes.nas] with the request's source address, then `hello`  →  {"reachable": true, "detail": "…"}
+```
+
+- The code is 26 characters of base32 (130 bits), kept in `invites/<code>.json` with the node's name; it lasts one
+  hour by default and one successful `POST`.
+- The fingerprint in the line is `SHA256:<base64>` of the key, as `ssh-keygen -lf` prints it. The key itself is not
+  secret; what matters is that it arrives unchanged, and a mismatch stops the node before anything is installed.
+- The hub trusts the host key that arrives with a valid code: trust on first use, bound to an invitation a person
+  gave out.
+- The node's address is where the `POST` comes from, unless it sends `--address`. The hub edits only that node's
+  table in `limen.toml`, and parses the result before writing it.
+- `limen join` talks HTTP through its own client over a socket (`HttpLite`), to addresses only.
+- Without an HTTP hub, `invite` prints the hub's key in the line (`--hub-key`) and the node prints
+  `limen trust <name> <address> '<host key>'` for the hub.
 
 `install --repo` first tries the repository without a token. When it needs one it prints GitHub's
 template link for a fine-grained token —name, owner, no expiry and read-only contents already
@@ -422,6 +463,8 @@ key opened.
 | Argument injection | Arguments are typed, validated on the node and never reach a shell |
 | Symlink from an allowed path to a secret | Resolved before matching (§7.1) |
 | Expensive requests | Timeouts, output caps and per-node concurrency |
+| An invitation leaks | Whoever uses it first adds *one* machine, with that name, to the hub —a machine the agent will then read—; one hour, one use |
+| Someone between a joining node and the hub | Can't swap the hub's key: the fingerprint in the line stops the node |
 | A malicious or buggy check script | **Not covered.** Scripts belong to root; limen trusts them |
 | Secrets inside allowed files | Partly: redaction is best-effort |
 | Data leaving the machine | **By design**: whatever is readable reaches the model provider |
@@ -443,6 +486,8 @@ key opened.
 | A static binary | A glibc bundle (loader and libraries next to the binary) | Both run on musl; the static one is one file, and the node needs no directory of libraries |
 | `/proc` and `statvfs` | `ps`, `ss`, `df` | busybox's versions lack the options, and the formats differ between distributions |
 | Scripts converge, `node.toml` declares | limen installing packages and services | limen would become a configuration manager for every distribution; scripts already know how |
+| Joining with a one-time invitation | Copying keys by hand, or the hub logging into nodes with an administrator's SSH | Nothing to carry but one line; the hub never holds more than its read key |
+| Own HTTP client for `join` | Ktor's client | It encodes UTF-8 through glibc's iconv, which the static binary can't load |
 | A fine-grained token for private repositories | A deploy key per node | One link fills in the token; a deploy key needs an SSH client for git on OpenWrt and a manual step in GitHub per node |
 
 ## 15. Open questions

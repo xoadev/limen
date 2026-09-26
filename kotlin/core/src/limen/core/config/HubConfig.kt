@@ -22,6 +22,8 @@ data class HubConfig(
     val perNodeConcurrency: Int = 4,
     val listen: String = "127.0.0.1:7341",
     val origins: List<String> = emptyList(),
+    /** Where nodes reach this hub to join (spec §10.1): an address, not a name. */
+    val publicUrl: String? = null,
     val nodes: List<NodeEntry> = emptyList(),
 ) {
     fun node(name: String): NodeEntry? = nodes.firstOrNull { it.name == name }
@@ -36,6 +38,7 @@ data class HubConfig(
         private val HOST = Regex("^[A-Za-z0-9.:_-]{1,253}$")
         private val USER = Regex("^[a-z_][a-z0-9_-]{0,31}$")
         private val LISTEN = Regex("^[^\\s]+:[0-9]{1,5}$")
+        val PUBLIC_URL = Regex("^http://(\\d{1,3}(\\.\\d{1,3}){3}|\\[[0-9a-fA-F:]+\\]):\\d{1,5}$")
 
         fun parse(text: String): HubConfig {
             val root = TomlReader(Toml.parse(text))
@@ -73,6 +76,15 @@ data class HubConfig(
                             if (!LISTEN.matches(it)) http.fail("listen", "expected host:port")
                         } ?: d.listen,
                     origins = http?.strings("origins") ?: d.origins,
+                    publicUrl =
+                        http?.string("public_url")?.trimEnd('/')?.also {
+                            if (!PUBLIC_URL.matches(
+                                    it,
+                                )
+                            ) {
+                                http.fail("public_url", "expected http://<address>:<port>, an address and not a name")
+                            }
+                        },
                     nodes = nodes,
                 )
             listOfNotNull(ssh, http).forEach { it.rejectUnknown() }

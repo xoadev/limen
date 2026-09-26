@@ -33,7 +33,7 @@ limen turns it around: **the machine decides.**
 - **Machines described in a repository.** Each machine has a folder: setup scripts that take a bare machine to a
   working one, the Docker Compose stacks it runs, and `node.toml` saying what must be running. `limen apply` syncs
   the folder and converges; the `state` tool says what is deployed against what should be. Restoring a machine is
-  installing its OS, then `limen install` and `limen apply`.
+  installing its OS, joining it to the hub and running `limen apply`.
 - **Every machine alike.** One static binary per architecture runs on Debian, Ubuntu and OpenWrt, x86-64 and arm64:
   the NAS, the always-on server and the router answer the same questions.
 - **Nothing extra to run on the machines.** No daemon, no open port: `sshd` is already there, and `limen` starts
@@ -51,6 +51,8 @@ node:  sshd ──forced command──▶ sudo limen gate --role read ──▶ 
                                 (answers JSON on stdout and exits)
 
 CI or a person ──ssh limen-deploy@node──▶ limen gate --role deploy ──▶ sync, apply, actions
+
+a new machine ──GET/POST /join/<one-time code>──▶ hub   (its key, then the machine's host key)
 ```
 
 | Role | Key held by | Can |
@@ -74,55 +76,72 @@ CI or a person ──ssh limen-deploy@node──▶ limen gate --role deploy ─
 | `history` | The machine's audit log |
 | `check_<name>` | Your check scripts, with their own typed arguments |
 
-## Install on a machine
+## Install
 
-As root, on Debian, Ubuntu or OpenWrt:
+Two pieces: the **hub**, where the MCP server runs, and every **machine** it inspects. You start the hub once; each
+machine then joins it with one line the hub gives you.
 
-```sh
-curl -fsSL https://raw.githubusercontent.com/xoadev/limen/main/install.sh | sudo sh
-# OpenWrt, as root:
-wget -qO- https://raw.githubusercontent.com/xoadev/limen/main/install.sh | sh
+### 1. Start the hub
+
+On an always-on machine of your network or VPN, with Docker:
+
+```yaml
+# compose.yaml
+services:
+  limen:
+    image: ghcr.io/xoadev/limen
+    environment:
+      LIMEN_PUBLIC_URL: http://100.64.0.2:7341   # where machines reach the hub: an address, not a name
+    volumes:
+      - ./limen:/data
+    ports:
+      - "100.64.0.2:7341:7341"                   # only on the VPN address
+    restart: unless-stopped
 ```
 
-The script downloads the binary for this machine from the latest release, checks it against the release's
-`SHA256SUMS`, and asks:
-
-1. **The hub's public key**, for the read role (paste it, or give the path of a `.pub` file).
-2. **A key for the deploy role**, CI's or yours, or `none`.
-3. **Where the keys may connect from**, such as `100.64.0.0/10` for a Tailscale or Headscale network (not on OpenWrt,
-   whose dropbear can't; use the firewall there).
-4. **The repository this machine follows**, or `none`; then its **branch** and **this machine's folder** in it
-   (`nodes/<hostname>` by default). If git is missing it offers to install it.
-
-If the repository is private, you get a link that opens GitHub's form for a new token with everything filled in —a
-fine-grained token, read-only access to contents, no expiry—; choose the repository under *Repository access*, paste
-the token (it is not shown), and limen checks that it reads the repository before saving it where only root can
-read it. `limen token` replaces it the day it expires. Nothing on the machine changes until the repository is
-readable.
-
-Then it sets the machine up and prints what to add to the hub, host key included:
-
-- **Debian, Ubuntu**: users `limen-read` and `limen-deploy`, each with its key held to its forced command, and a
-  sudo rule for exactly that command. `/etc/limen/`, the audit log, the repository checkout.
-- **OpenWrt**: both keys in root's dropbear `authorized_keys`, each held to its forced command, next to the keys
-  already there; the binary is kept across `sysupgrade`. **Turn off dropbear's password logins**: a forced command
-  only holds a login by key, and the installer warns when root has no password.
-
-Unattended, every answer comes from the environment:
-
 ```sh
-LIMEN_YES=1 LIMEN_READ_KEY="ssh-ed25519 AAAA… hub" LIMEN_DEPLOY_KEY=none \
-LIMEN_REPO=https://github.com/you/infra.git LIMEN_PATH=nodes/nas LIMEN_REPO_TOKEN=github_pat_… \
-  sh install.sh
+docker compose up -d
+docker compose exec limen limen connect
+# claude mcp add --transport http limen http://100.64.0.2:7341/mcp --header "Authorization: Bearer …"
 ```
 
-Or by hand: download `limen-<version>-linux-$(uname -m)` from the [releases](https://github.com/xoadev/limen/releases)
-and run `sudo ./limen-… install --read-key … [--deploy-key …] [--repo … --path …]`. `--dry-run` shows what it
-would do; running it again changes nothing.
+On its first start the hub creates, in `./limen`, its SSH key, its `limen.toml` and the token of MCP clients.
+`limen connect` prints the line that connects Claude Code (or any MCP client) to it.
+
+### 2. Add a machine
+
+Ask the hub for an invitation:
+
+```sh
+docker compose exec limen limen invite nas
+# On nas, as root:
+#   curl -fsSL https://raw.githubusercontent.com/xoadev/limen/main/install.sh | sudo sh -s -- --join 'http://100.64.0.2:7341/join/…#SHA256:…'
+# Valid once, for 1h.
+```
+
+Paste that line on the machine —Debian, Ubuntu or OpenWrt (with `wget -qO-` and `sh` there)— and it:
+
+1. Downloads the binary for the machine from the latest release and checks it against `SHA256SUMS`.
+2. Fetches the hub's key and checks it against the fingerprint in the line: nobody in between can slip in theirs.
+3. Asks the only optional thing: **the repository the machine follows**, its branch and its folder
+   (`nodes/<name>` by default), or none. If git is missing it offers to install it. If the repository is private,
+   you get a link that opens GitHub's form for a new token with everything filled in —fine-grained, read-only
+   contents, no expiry—: choose the repository, paste the token (it is not shown), and limen checks it reads the
+   repository before saving it where only root can read it.
+4. Sets the machine up:
+   - **Debian, Ubuntu**: a `limen-read` user whose key only runs `limen gate`, and a sudo rule for exactly that.
+   - **OpenWrt**: the hub's key in root's dropbear `authorized_keys`, held to `limen gate`, next to the keys already
+     there; limen survives `sysupgrade`. **Turn off dropbear's password logins**: a forced command only holds a login
+     by key, and the installer warns when root has no password.
+5. Tells the hub its host key. The hub adds it to `limen.toml`, tries it, and the installer says
+   `nas is on the hub, at 100.64.0.5: Debian GNU/Linux 13, limen 0.1.0`.
+
+That is all: the agent sees the machine in `nodes`, with no restart. The invitation is spent; the next machine gets
+its own.
 
 ### What the agent may read
 
-Nothing, until you say so, in `/etc/limen/limen.toml`:
+Nothing, until you say so, in the machine's `/etc/limen/limen.toml`:
 
 ```toml
 [files]
@@ -135,53 +154,18 @@ holds a secret. Some paths are never readable whatever the list says —`/etc/sh
 `/root`, `/etc/limen`— and `password=…`, tokens and keys are masked in everything that leaves the machine, as a
 safety net.
 
-## Set up the hub
+### Other ways
 
-The hub is wherever the MCP client runs, or a container on your network. It needs the same `limen` binary, a key
-pair and `limen.toml`:
-
-```sh
-mkdir -p ~/.limen && ssh-keygen -t ed25519 -N '' -f ~/.limen/id_ed25519   # its .pub is the read key
-```
-
-```toml
-# ~/.limen/limen.toml (or $LIMEN_HOME/limen.toml)
-[ssh]
-identity = "id_ed25519"
-
-[nodes.nas]
-host = "100.64.0.2"
-host_key = "ssh-ed25519 AAAA…"      # printed by the installer; there is no trust on first use
-
-[nodes.router]
-host = "100.64.0.1"
-user = "root"                       # OpenWrt
-host_key = "ssh-ed25519 AAAA…"
-```
-
-Try it with `limen call nas status`. Then connect an MCP client:
-
-```sh
-# stdio, for Claude Code on the same machine
-claude mcp add limen -- limen mcp
-```
-
-```yaml
-# HTTP, as a container any MCP client on your network can use
-services:
-  limen:
-    image: ghcr.io/xoadev/limen
-    environment:
-      LIMEN_TOKEN: ${LIMEN_TOKEN}   # 16 characters or more; clients send it as a bearer token
-    volumes:
-      - ./limen:/data               # limen.toml and the SSH key
-    ports:
-      - "100.64.0.2:7341:7341"
-```
-
-```sh
-claude mcp add --transport http limen http://100.64.0.2:7341/mcp --header "Authorization: Bearer $LIMEN_TOKEN"
-```
+- **The hub on your laptop**, for Claude Code there (stdio, nothing listening):
+  `curl -fsSL …/install.sh | sh -s -- --hub` installs `limen` in `~/.local/bin`, creates `~/.limen` and prints the
+  `claude mcp add` line. Without an HTTP hub to call back, `limen invite nas` prints a line with the hub's key in it
+  (`--hub-key`), and the machine ends printing the `limen trust nas <address> '<host key>'` to run on the laptop.
+- **Unattended**, every answer comes from the environment:
+  `LIMEN_YES=1 LIMEN_JOIN='…' LIMEN_REPO=https://github.com/you/infra.git LIMEN_REPO_TOKEN=github_pat_… sh install.sh`.
+  `LIMEN_DEPLOY_KEY` adds the deploy role; `LIMEN_FROM` limits where keys may connect from (not on OpenWrt).
+- **By hand**: download `limen-<version>-linux-$(uname -m)` from the [releases](https://github.com/xoadev/limen/releases)
+  and run `sudo ./limen-… join '<line>'`.
+- `limen forget nas` takes a machine off the hub; `limen uninstall --purge` on the machine removes limen from it.
 
 ## Use it
 

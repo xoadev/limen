@@ -35,11 +35,15 @@ class Installer(
     private val openwrt = Platform.openwrt
     private val binary = if (openwrt) "/usr/bin/limen" else "/usr/local/bin/limen"
 
+    /** Who the hub logs in as: the read role's user, or root on OpenWrt. */
+    val readUser: String get() = if (openwrt) "root" else userOf(Role.READ)
+
     fun install(
         readKey: String,
         deployKey: String?,
         from: String?,
         repo: RepoOptions?,
+        announce: Boolean = true,
     ): Int {
         validateKey("--read-key", readKey)
         deployKey?.let { validateKey("--deploy-key", it) }
@@ -74,6 +78,7 @@ class Installer(
         ensureDirectories(repo)
         if (repoConfig != null) connectRepo(repoConfig)
 
+        if (!announce) return 0
         say("")
         say(if (dryRun) "Dry run: nothing was changed." else "limen is installed.")
         say("Next: list what may be read in ${NodeConfig.PATH} ([files].allow is empty), then add this node to the hub:")
@@ -392,7 +397,7 @@ class Installer(
         if (settings.any { it[0] == "pubkeyauthentication" && it[1] == "no" }) warn("sshd has PubkeyAuthentication no")
     }
 
-    private fun hostKey(): String? {
+    fun hostKey(): String? {
         if (openwrt) {
             val dropbearkey = Proc.which("dropbearkey") ?: return null
             val r = runCatching { Proc.run(listOf(dropbearkey, "-y", "-f", "/etc/dropbear/dropbear_ed25519_host_key")) }.getOrNull()

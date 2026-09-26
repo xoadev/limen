@@ -162,6 +162,10 @@ Mistakes made here, with what avoids them. `make check` does not see them.
 - **A forced command only holds a login by key.** OpenWrt's image has root without a password and dropbear
   accepts it: the e2e "passed" a session that never used the key. Its dropbear runs with password logins off
   (`-s`), and `install` warns about an empty root password.
+- **glibc's iconv doesn't work in the static binary**, and Ktor reaches for it to encode or decode text: its
+  client failed with `Failed to open iconv for charset UTF-8`. `limen join` uses `HttpLite`, and the server reads and
+  writes bytes (`receiveChannel().toByteArray()`, `respondBytes`), never `receiveText`/`respondText`.
+- **`inet_pton` and `statvfs` are in `platform.linux`**, like `posix_spawn`.
 - **The static linker is registered on every `tools/kt` run.** Changing `tools/ld-static` needs nothing
   else; changing the Kotlin version may change the dependency names in `kotlin/cli/module.yaml`.
 
@@ -174,7 +178,8 @@ Mistakes made here, with what avoids them. `make check` does not see them.
   command-line text without `Redactor`.
 - Reading `SSH_ORIGINAL_COMMAND`.
 - Calling glibc's NSS from the binary: `getpwnam`, `getpwuid`, `getgrgid`, `getaddrinfo` of a name. The static
-  binary can't load its plugins; use `Fs.accounts()` and friends.
+  binary can't load its plugins; use `Fs.accounts()` and friends. Nor iconv: Ktor's `receiveText`, `respondText` and
+  its HTTP client.
 - Reading what `/proc` or `statvfs` say through `ps`, `ss` or `df`.
 - Removing entries from `PathPolicy.BUILT_IN_DENY` or making it configurable.
 - Adding a dependency to `core`.

@@ -13,8 +13,9 @@ RUN apt-get update \
 ARG TARGETARCH
 COPY --chmod=0755 limen-${TARGETARCH} /usr/local/bin/limen
 
-# /data is LIMEN_HOME: limen.toml and the SSH key of the read role (spec §7.2). LIMEN_TOKEN is not set here: it is
-# a secret, and `limen serve` refuses to start without it.
+# /data is LIMEN_HOME (spec §7.2): on first start `limen serve` creates the hub's key, limen.toml and the token of
+# MCP clients there, and keeps the invitations of machines joining. One volume is the whole hub. LIMEN_PUBLIC_URL
+# —where machines reach the hub to join— belongs to the deployment, not the image.
 ENV LIMEN_HOME=/data HOME=/data
 VOLUME /data
 EXPOSE 7341
