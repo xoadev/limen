@@ -94,10 +94,14 @@ suite_debian() {
   containers+=("$node")
   port=$(docker port "$node" 22/tcp | head -1 | sed 's/.*://')
   docker cp "$binary" "$node:/tmp/limen"
+  docker cp "$ROOT/install.sh" "$node:/tmp/install.sh"
+  docker cp "$work/read.pub" "$node:/tmp/read.pub"
 
   echo "e2e/debian: install"
-  expect "install sets the node up" "limen is installed" \
-    docker exec "$node" /tmp/limen install --read-key "$(cat "$work/read.pub")" --deploy-key "$(cat "$work/deploy.pub")"
+  # Through install.sh, unattended, as dash runs it; the read key given as a file.
+  expect "install.sh sets the node up" "limen is installed" \
+    docker exec -e LIMEN_YES=1 -e LIMEN_BINARY=/tmp/limen -e LIMEN_READ_KEY=/tmp/read.pub \
+    -e LIMEN_DEPLOY_KEY="$(cat "$work/deploy.pub")" -e LIMEN_REPO=none "$node" sh /tmp/install.sh
   refuse "install twice changes nothing" "write " \
     docker exec "$node" /tmp/limen install --read-key "$(cat "$work/read.pub")" --deploy-key "$(cat "$work/deploy.pub")"
   expect "sudo gives limen-read its gate and nothing else" "password is required" \
@@ -170,6 +174,17 @@ EOF
   expect "apply streams stderr too" "to stderr" \
     limen call debian apply --user limen-deploy --identity "$work/deploy" --arg from=20
   expect "the setup script ran as root" "root" docker exec "$node" stat -c %U /var/tmp/limen-applied
+  docker exec -i "$node" sh -c 'cat > /etc/limen/actions.d/say.sh && chmod 0755 /etc/limen/actions.d/say.sh' <<'EOF'
+#!/bin/sh
+#: description = "Says a word"
+#: [args.word]
+#: type = "string"
+echo "said $LIMEN_ARG_WORD"
+EOF
+  expect "an action with its own argument" "said hello" \
+    limen call debian action --arg name=say --arg word=hello --user limen-deploy --identity "$work/deploy"
+  expect "an action's argument is validated" "word does not match" \
+    limen call debian action --arg name=say --arg "word=a b" --user limen-deploy --identity "$work/deploy"
   read -ra deploy_ssh <<< "$(ssh_as deploy limen-deploy "$port")"
   expect "the deploy key can't read" "not allowed for the deploy role" "${deploy_ssh[@]}" <<< '{"v":1,"request":"status"}'
 
@@ -222,12 +237,15 @@ suite_openwrt() {
   containers+=("$node")
   port=$(docker port "$node" 22/tcp | head -1 | sed 's/.*://')
   docker cp "$binary" "$node:/tmp/limen"
+  docker cp "$ROOT/install.sh" "$node:/tmp/install.sh"
   # Someone already administers this router with their own key: limen must leave it alone.
   docker exec "$node" sh -c 'mkdir -p /etc/dropbear && echo "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAdminAdminAdminAdminAdminAdminAdminAdmin1 admin" > /etc/dropbear/authorized_keys'
 
   echo "e2e/openwrt: install"
-  expect "install uses dropbear and root" 'user = "root"' \
-    docker exec "$node" /tmp/limen install --read-key "$(cat "$work/read.pub")" --deploy-key "$(cat "$work/deploy.pub")"
+  # Through install.sh, unattended, as busybox's ash runs it.
+  expect "install.sh under ash: dropbear and root" 'user = "root"' \
+    docker exec -e LIMEN_YES=1 -e LIMEN_BINARY=/tmp/limen -e LIMEN_READ_KEY="$(cat "$work/read.pub")" \
+    -e LIMEN_DEPLOY_KEY="$(cat "$work/deploy.pub")" "$node" sh /tmp/install.sh
   expect "install warns: root without a password" "root has no password" \
     docker exec "$node" /tmp/limen install --read-key "$(cat "$work/read.pub")" --deploy-key "$(cat "$work/deploy.pub")"
   expect "the administrator's key is kept" "admin" docker exec "$node" cat /etc/dropbear/authorized_keys

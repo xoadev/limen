@@ -353,10 +353,19 @@ host_key = "ssh-ed25519 AAAA…"
 `install` also reads `sshd -T` and warns when `AllowUsers` or `AllowGroups` would keep the new
 users out.
 
+`install.sh`, at the root of the repository, is the way in for a new machine (`curl … | sudo sh`, or `wget` on
+OpenWrt). POSIX `sh`, because OpenWrt has only busybox's `ash`. It downloads the binary of the latest release for
+`uname -m`, checks it against `SHA256SUMS`, asks for the keys, the source addresses, the repository, its branch and
+the node's folder —each can come from a `LIMEN_*` variable instead, for unattended installs—, offers to install
+git when a repository needs it, and runs `limen install` with the terminal as its input, so the token prompt works
+under a pipe.
+
 `install --repo` first tries the repository without a token. When it needs one it prints GitHub's
 template link for a fine-grained token —name, owner, no expiry and read-only contents already
 filled in; the repository has to be chosen in the form— asks for the token without echoing it, checks
-it with `git ls-remote`, saves it, and syncs. `--path` defaults to `nodes/<hostname>`.
+it with `git ls-remote`, saves it, and syncs. Only a refusal of credentials asks for a token; any other failure
+(network, TLS, a wrong URL) is reported as it is. The repository is checked before anything on the machine
+changes. `--path` defaults to `nodes/<hostname>`.
 
 The deploy role over SSH (`sync`, `apply`, `action` through `limen call`) never uses the multiplexed
 connection: on OpenWrt both roles log in as root, and a deploy request would ride the socket the read

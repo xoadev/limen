@@ -23,6 +23,7 @@ memory, where the next session, another agent or a person can't read it.
 | `kotlin/` | The Kotlin Toolchain project: `project.yaml`, a `module.yaml` per module, the `kotlin` wrapper that pins the toolchain |
 | `kotlin/core/` | Pure rules: protocol, request schemas, argument validation, configuration, TOML, script headers, path policy, redaction, parsers of what system programs print. No processes, files or network |
 | `kotlin/cli/` | The `limen` binary: `os/` (processes, files), `node/` (gate, requests, platforms, repository, scripts, install), `hub/` (SSH client, MCP server, transports) |
+| `install.sh` | The installer a user pipes into `sh` on a new machine. POSIX `sh` (OpenWrt has no bash); `make e2e` runs it under dash and ash |
 | `tools/` | Scripts the `Makefile` calls, and `ld-static`, the linker that makes the binary static |
 | `etc/` | `Dockerfile` of the hub image; `e2e/` the Debian node image of `make e2e` (OpenWrt's is the official one) |
 | `.github/workflows/` | CI, always through `Makefile` targets |

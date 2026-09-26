@@ -89,17 +89,37 @@ object Repo {
             ?: throw LimenException(ErrorCode.NOT_FOUND, "the remote has no branch ${repo.branch}")
     }
 
+    sealed interface Access {
+        data object Readable : Access
+
+        /** The server wants credentials, or these ones are not enough: a token can fix it. */
+        data class NeedsToken(
+            val message: String,
+        ) : Access
+
+        /** Anything else —network, TLS, a wrong URL—: a token would not help, and asking for one would mislead. */
+        data class Failed(
+            val message: String,
+        ) : Access
+    }
+
     /** Whether [token] (or none) can read the repository: what `install` checks before saving it. */
-    fun canRead(
+    fun access(
         repo: RepoConfig,
         token: String?,
-    ): String? =
+    ): Access =
         try {
             git(repo, token, null, "ls-remote", "--", repo.url, "refs/heads/${repo.branch}", timeout = 30.seconds)
-            null
+            Access.Readable
         } catch (e: LimenException) {
-            e.message
+            val message = e.message ?: "git ls-remote failed"
+            if (AUTH.containsMatchIn(message)) Access.NeedsToken(message) else Access.Failed(message)
         }
+
+    // What git says when credentials are missing or refused, prompts being off. GitHub answers "not found" for a
+    // private repository it won't show.
+    private val AUTH =
+        Regex("could not read Username|Authentication failed|terminal prompts disabled|Repository not found|returned error: 40[134]")
 
     fun lastSync(repo: RepoConfig): JsonObject? =
         Fs.readText(repo.syncRecord)?.let { runCatching { LenientJson.parseToJsonElement(it).jsonObject }.getOrNull() }

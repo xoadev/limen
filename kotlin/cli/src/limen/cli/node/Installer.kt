@@ -50,6 +50,9 @@ class Installer(
         if (repoConfig != null && Proc.which("git") == null) {
             fail("--repo needs git on this node (${if (openwrt) "the git-http package" else "apt install git"})")
         }
+        // Access to the repository first, token included: a repository that can't be read stops the install
+        // before anything on the machine has changed.
+        if (repoConfig != null && !dryRun) askToken(repoConfig, force = false)
 
         installBinary()
         val keys = listOfNotNull(Role.READ to readKey, deployKey?.let { Role.DEPLOY to it })
@@ -132,7 +135,6 @@ class Installer(
             say("would check access to ${repo.displayUrl}, ask for a token if it needs one, and sync it to ${repo.dir}")
             return
         }
-        askToken(repo, force = false)
         say("sync ${repo.displayUrl} ${repo.branch} into ${repo.dir}")
         val (_, to) =
             try {
@@ -148,8 +150,18 @@ class Installer(
         force: Boolean,
     ) {
         if (!force) {
-            if (Repo.canRead(repo, null) == null) return note("${repo.displayUrl} is readable without a token")
-            Repo.token(repo)?.let { if (Repo.canRead(repo, it) == null) return note("the saved token reads ${repo.displayUrl}") }
+            when (val anonymous = Repo.access(repo, null)) {
+                Repo.Access.Readable -> return note("${repo.displayUrl} is readable without a token")
+                is Repo.Access.Failed -> fail("cannot reach ${repo.displayUrl}: ${anonymous.message}")
+                is Repo.Access.NeedsToken -> Unit
+            }
+            Repo.token(repo)?.let {
+                if (Repo.access(repo, it) ==
+                    Repo.Access.Readable
+                ) {
+                    return note("the saved token reads ${repo.displayUrl}")
+                }
+            }
         }
         if (!repo.url.startsWith("https://")) fail("${repo.displayUrl} is not readable, and a token only works over https://")
         val github = repo.github
@@ -165,15 +177,16 @@ class Installer(
             Sys.err("Token: ")
             val token = (if (Sys.isTerminal(0)) Sys.readSecret() else readlnOrNull())?.trim()
             if (token.isNullOrEmpty()) fail("no token given")
-            val problem = Repo.canRead(repo, token)
-            if (problem == null) {
+            val access = Repo.access(repo, token)
+            if (access is Repo.Access.Failed) fail("cannot reach ${repo.displayUrl}: ${access.message}")
+            if (access == Repo.Access.Readable) {
                 Fs.mkdirs(repo.tokenFile.substringBeforeLast('/'), 0b111_101_101)
                 Fs.writeAtomic(repo.tokenFile, (token + "\n").encodeToByteArray(), 0b110_000_000)
                 Fs.chown(repo.tokenFile, 0, 0)
                 say("token saved in ${repo.tokenFile} (root only)")
                 return
             }
-            say("that token can't read ${repo.displayUrl}: $problem")
+            say("that token can't read ${repo.displayUrl}")
         }
         fail("no token that reads ${repo.displayUrl}")
     }

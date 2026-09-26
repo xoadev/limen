@@ -206,6 +206,15 @@ private class CallCommand : CoreCliktCommand("call") {
                         put("name", request.removePrefix("check_"))
                         put("args", parseArgs(args, emptyList()))
                     }
+            } else if (request == "action") {
+                // `--arg name=<action>`; every other argument is the action's own.
+                val all = parseArgs(args, emptyList())
+                val name = (all["name"] as? JsonPrimitive)?.content ?: throw UsageError("action needs --arg name=<action>")
+                "action" to
+                    buildJsonObject {
+                        put("name", name)
+                        put("args", JsonObject(all - "name"))
+                    }
             } else {
                 val def = Requests.find(request) ?: throw UsageError("unknown request '$request'")
                 request to parseArgs(args, def.params)

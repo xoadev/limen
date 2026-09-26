@@ -2,7 +2,7 @@
 # make lint: the linters of this repository, cheap ones first.
 #
 #   .github/workflows/*.yml   actionlint   syntax and expressions of GitHub Actions
-#   tools/*.sh, tools/kt      shellcheck   quoting, unset variables, the classics
+#   tools/, install.sh        shellcheck   quoting, unset variables, the classics
 #   kotlin/**/*.kt            ktlint       the rules of .editorconfig
 #
 # (the tool names go second on purpose: a comment line that starts with a linter's name is read by that linter
@@ -65,7 +65,8 @@ run() {
 fetch_tar "shellcheck-$SHELLCHECK_VERSION" \
   "https://github.com/koalaman/shellcheck/releases/download/v$SHELLCHECK_VERSION/shellcheck-v$SHELLCHECK_VERSION.linux.$arch.tar.xz" \
   "shellcheck-v$SHELLCHECK_VERSION/shellcheck"
-run shellcheck "$CACHE/shellcheck-$SHELLCHECK_VERSION" tools/*.sh tools/kt
+# install.sh is POSIX sh (OpenWrt has no bash): its shebang tells shellcheck to hold it to that.
+run shellcheck "$CACHE/shellcheck-$SHELLCHECK_VERSION" tools/*.sh tools/kt tools/ld-static install.sh
 
 fetch_tar "actionlint-$ACTIONLINT_VERSION" \
   "https://github.com/rhysd/actionlint/releases/download/v$ACTIONLINT_VERSION/actionlint_${ACTIONLINT_VERSION}_linux_${al_arch}.tar.gz" \
