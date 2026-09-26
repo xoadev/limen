@@ -18,6 +18,7 @@ import com.github.ajalt.clikt.parameters.options.help
 import com.github.ajalt.clikt.parameters.options.multiple
 import com.github.ajalt.clikt.parameters.options.option
 import com.github.ajalt.clikt.parameters.options.required
+import com.github.ajalt.clikt.parameters.options.versionOption
 import com.github.ajalt.clikt.parameters.types.choice
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonElement
@@ -40,6 +41,8 @@ import limen.cli.os.Proc
 import limen.cli.os.Sys
 import limen.core.Args
 import limen.core.ErrorCode
+import limen.core.LIMEN_BUILD_DATE
+import limen.core.LIMEN_BUILD_NUMBER
 import limen.core.LIMEN_VERSION
 import limen.core.LimenException
 import limen.core.NodeRequest
@@ -148,6 +151,10 @@ private class LimenCommand : CoreCliktCommand("limen") {
     override fun help(context: Context) =
         "Read-only access to Linux machines for MCP clients. The hub runs `mcp` or `serve`; each node runs " +
             "`gate` as an SSH forced command, set up by `install`."
+
+    init {
+        versionOption(LIMEN_VERSION, message = { versionLine() })
+    }
 
     override fun run() = Unit
 }
@@ -345,5 +352,10 @@ private class LintCommand : CoreCliktCommand("lint") {
 private class VersionCommand : CoreCliktCommand("version") {
     override fun help(context: Context) = "Print the version"
 
-    override fun run() = Sys.out("limen $LIMEN_VERSION\n")
+    override fun run() = Sys.out(versionLine() + "\n")
 }
+
+/** `limen 0.3.1 · build 42 · 2026-09-26T08:00:00Z`, or `limen dev · 2026-09-26` for a local build. */
+fun versionLine(): String =
+    listOfNotNull("limen $LIMEN_VERSION", LIMEN_BUILD_NUMBER.takeIf { it.isNotEmpty() }?.let { "build $it" }, LIMEN_BUILD_DATE)
+        .joinToString(" · ")

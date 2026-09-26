@@ -47,6 +47,12 @@ The full design is in [`docs/spec.md`](docs/spec.md).
 | `state` | The repository commit on the node against the remote, and whether each expected service runs |
 | `check_<name>` | Your check scripts |
 
+## Getting it
+
+Each [release](https://github.com/xoadev/limen/releases) has one static binary per architecture —
+`limen-<version>-linux-x86_64` and `limen-<version>-linux-aarch64`, the one `uname -m` names— and
+`SHA256SUMS`; the hub image is `ghcr.io/xoadev/limen`, for both architectures.
+
 ## Setting up a node
 
 As root:

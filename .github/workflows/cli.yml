@@ -1,0 +1,95 @@
+# The `limen` binaries of a pull request: label the PR `cli` → they build → they stay as an artifact of the run, with
+# a comment carrying the download link. For trying a change on a real node before it is released.
+#
+# On demand and not on every PR: `make check` already compiles and links the binary on every push, so a normal PR
+# already says whether the code builds. What costs minutes, and only whoever is about to install it wants, is the
+# arm64 cross-compilation and the artifact.
+name: cli
+
+on:
+  pull_request:
+    types: [labeled, synchronize]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cli-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cli:
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'cli')
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      contents: read
+      pull-requests: write
+    env:
+      KOTLIN_CLI_JAVA_OPTIONS: -Xmx3g
+      LIMEN_BUILD_NUMBER: ${{ github.run_number }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Toolchain and dependencies cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.konan
+            ~/.cache/JetBrains/Kotlin
+          key: kotlin-${{ runner.os }}-${{ hashFiles('kotlin/kotlin', 'kotlin/gradle/libs.versions.toml', 'kotlin/**/module.yaml') }}
+          restore-keys: kotlin-${{ runner.os }}-
+
+      - name: Compiled output cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: kotlin/build
+          key: build-${{ runner.os }}-${{ github.sha }}
+          restore-keys: build-${{ runner.os }}-
+
+      - name: make cli, both architectures
+        id: build
+        run: |
+          # The date is stamped here, at build time; the number comes from the run, as in a release.
+          LIMEN_BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          export LIMEN_BUILD_DATE
+          make cli ARCH="x86_64 aarch64"
+          mkdir -p out
+          for arch in x86_64 aarch64; do cp "$(tools/kt artifact "$arch")" "out/limen-linux-$arch"; done
+          version=$(out/limen-linux-x86_64 --version)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "$version"
+
+      - name: Attach the binaries
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: limen-cli-${{ github.run_number }}
+          path: out/
+          retention-days: 14
+
+      # One comment per PR: created on the first build and rewritten on the next ones.
+      - name: Comment the link on the PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          ARTIFACT_URL: ${{ steps.upload.outputs.artifact-url }}
+          VERSION: ${{ steps.build.outputs.version }}
+        with:
+          script: |
+            const marker = '<!-- cli -->';
+            const sha = context.payload.pull_request.head.sha.slice(0, 7);
+            const body = `${marker}\n### limen binaries (Linux x86-64 and arm64, static)\n\n` +
+              `**[Download](${process.env.ARTIFACT_URL})** · commit \`${sha}\` · \`${process.env.VERSION}\` · expires in 14 days\n\n` +
+              `_Debug builds. Pick the one \`uname -m\` names; \`limen --version\` says which build it came from._`;
+            const { data: comments } = await github.rest.issues.listComments({
+              ...context.repo, issue_number: context.issue.number,
+            });
+            const existing = comments.find((c) => c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({ ...context.repo, comment_id: existing.id, body });
+            } else {
+              await github.rest.issues.createComment({ ...context.repo, issue_number: context.issue.number, body });
+            }

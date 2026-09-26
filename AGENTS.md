@@ -105,11 +105,29 @@ the script in `tools/`.
 | `make build` / `make test` | Every module, for this machine's Linux |
 | `make cli` | Only the binary. `VARIANT=release` for the optimised one; `ARCH="x86_64 aarch64"` for both architectures |
 | `make e2e` | Containers with a real SSH server —Debian with OpenSSH and a repository, OpenWrt's image with dropbear—, `limen install` inside, the hub against them with both keys. `SUITE=debian` or `openwrt` for one. Needs Docker. Not in `make check` |
-| `make docker` | The hub image, `limen:local` (or `IMAGE=…`) |
+| `make docker` | The hub image, `limen:local` (or `IMAGE=…`, `TAGS=…`, `LABELS=…`), from the binaries of `make cli` (or `BINARY_AMD64=…`, `BINARY_ARM64=…`). `PLATFORMS=linux/amd64,linux/arm64 PUSH=1` pushes both under one tag; without `PUSH`, one platform, because Docker loads one per tag. The release goes through this same target |
+| `make stamp` | `BuildStamp.kt`: version, build date and number. Not committed; everything that compiles depends on it |
 | `make local-install` | The binary in `~/.local/bin` |
 | `make hooks` | The `pre-push` hook |
 
 `make -k check` runs every check even when one fails.
+
+## CI
+
+Every workflow calls `Makefile` targets: what is checked is defined once, and CI can't drift from a laptop. Every
+third-party action is pinned by commit SHA with its version in a comment (`actions/checkout@3d3c42e… # v7.0.1`):
+a tag can move, a SHA can't. Secrets reach a step through `env:`, never interpolated into `run:`.
+
+| Workflow | When | What |
+|---|---|---|
+| `check.yml` | Every push to `main` and every PR | `make -k check`: the one mandatory gate. On `main`, a red run opens (or comments) the `main-red` issue |
+| `release.yml` | Every push to `main`; publishing a draft release; or by hand | On a push, [convco-version](https://github.com/xoadev/convco-version) reads the conventional commits that touched what goes into the binary or the image and rewrites **one draft** release, `vX.Y.Z`, with what went in. **Publishing it** —a person, from the releases page— creates the tag, and that builds and publishes: waits for `check.yml` green on that commit, stamps the version (`limen --version`), builds both static binaries in release, checks they are static, builds the image per architecture and starts it, pushes it to `ghcr.io/<repo>` as `X.Y.Z`, `latest` and `build<run>`, and attaches the binaries and `SHA256SUMS`. By hand it builds everything as `dev` and publishes nothing |
+| `cli.yml` | Label `cli` on a PR, or by hand | Both binaries (debug) as an artifact, with the link commented on the PR: for trying a change on a real node |
+| `e2e.yml` | Label `e2e` on a PR, or by hand | `make e2e`, both suites |
+
+The version is never written in the code: the commits decide it, and it only exists once a release is published.
+`tools/stamp.sh` writes it into `BuildStamp.kt` from `LIMEN_VERSION`, `LIMEN_BUILD_DATE` and `LIMEN_BUILD_NUMBER`;
+a local build says `dev` and the day.
 
 ## What has already failed
 

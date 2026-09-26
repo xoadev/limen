@@ -366,8 +366,13 @@ key opened.
 
 - **One static binary per architecture**, `amd64` and `arm64`, for any Linux: it carries its own glibc,
   so it runs the same on Debian, Alpine or OpenWrt (musl), whatever their libc version.
-- Hub image `ghcr.io/xoadev/limen`: `debian:trixie-slim` with `openssh-client` and the binary.
-  Volume `/data` holds `limen.toml` and the SSH key.
+- Hub image `ghcr.io/xoadev/limen`, one tag for `amd64` and `arm64`: `debian:trixie-slim` with
+  `openssh-client` and the binary. Volume `/data` holds `limen.toml` and the SSH key.
+- **Releases** follow the conventional commits: every push to `main` rewrites a draft release with the next
+  `X.Y.Z` and its changes; publishing it creates the `vX.Y.Z` tag, which builds the binaries (release variant,
+  checked static) and the image, starts the image on both architectures, and publishes them with
+  `SHA256SUMS`, once `make check` is green on that commit. The version exists only from the tag:
+  `limen --version` says `X.Y.Z · build <run> · <date>`, or `dev · <day>` for a local build.
 - Nodes:
   - Debian and Ubuntu with systemd and OpenSSH.
   - OpenWrt with procd, dropbear and `logread`. `git` (the `git-http` package) only for `[repo]`.
@@ -439,7 +444,6 @@ key opened.
   so it is only tested to start.
 - `state` of a stack compares services and running containers, not images.
 - Signed commits required for `[repo]`.
-- Releases: binaries and image published from a tag, as foco does.
 - Two scripts with the same name and different extensions: today both are listed and `find` takes
   the first.
 - Following logs (`follow`): v1 only answers bounded windows.

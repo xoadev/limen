@@ -23,7 +23,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      KOTLIN_CLI_JAVA_OPTIONS: -Xmx2g
+      KOTLIN_CLI_JAVA_OPTIONS: -Xmx3g
     steps:
       # Every action pinned by commit SHA, with its version in a comment: a tag can move, a SHA cannot.
       - name: Checkout
@@ -46,5 +46,30 @@ jobs:
           key: kotlin-${{ runner.os }}-${{ hashFiles('kotlin/kotlin', 'kotlin/gradle/libs.versions.toml', 'kotlin/**/module.yaml', 'tools/lint.sh') }}
           restore-keys: kotlin-${{ runner.os }}-
 
+      # `-k`: every check runs even when one fails, so a red build says everything that is wrong at once.
       - name: make -k check
         run: make -k check
+
+  # A red `main` must be impossible to miss: one open issue, reused, that says which commit broke it.
+  alert:
+    needs: check
+    if: failure() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const title = 'main is red';
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const body = `\`make check\` failed on \`main\` at ${context.sha.slice(0, 7)}.\n\n` +
+              `Run: ${runUrl}\n\nFixed like everything else: a branch, a PR and a green \`check\` (AGENTS.md).`;
+            const { data: open } = await github.rest.issues.listForRepo({
+              ...context.repo, state: 'open', labels: 'main-red',
+            });
+            if (open.length) {
+              await github.rest.issues.createComment({ ...context.repo, issue_number: open[0].number, body });
+            } else {
+              await github.rest.issues.create({ ...context.repo, title, body, labels: ['main-red'] });
+            }

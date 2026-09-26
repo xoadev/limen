@@ -1,0 +1,249 @@
+# Releases are prepared as they go and published when somebody decides to (spec §11).
+#
+# Every push to `main` rewrites the draft release: convco reads the conventional commits that touched what goes into
+# the binary and the image, and says the next `X.Y.Z` and what went in since the last published one. A draft makes no
+# tag and builds nothing. Publishing it —by a person, from the releases page: a release published with this
+# workflow's own token would not start another workflow— creates the `vX.Y.Z` tag, and that is what builds and
+# publishes: the static binaries for x86-64 and arm64 and the hub image for both, with the tag's number stamped into
+# `limen --version`.
+#
+# What is published is built **release**, not the debug variant the repository is worked on with: smaller and
+# optimised, which is what goes on a router.
+#
+# A `workflow_dispatch` builds everything to prove it builds, and publishes nothing.
+name: release
+
+on:
+  push:
+    branches: [main]
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  draft:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write # rewrite the draft release
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # convco reads every commit since the last tag.
+          fetch-depth: 0
+
+      - name: Next version and changes
+        id: version
+        uses: xoadev/convco-version@d00ff5e010d01a62143731de34ab6a4a8c17ce16 # v1.0.0
+        with:
+          # What ends up in the binary or the image: the code, the toolchain and dependencies, the static linker.
+          paths: kotlin/cli,kotlin/core,kotlin/kotlin,kotlin/gradle,tools/ld-static,etc/Dockerfile
+          tag-prefix: v
+
+      # One draft, always the one of the next version: a `feat` after a `fix` turns 0.1.1 into 0.2.0, and the draft
+      # of 0.1.1 would otherwise stay there, announcing a version that is never going to exist.
+      - name: Rewrite the draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.next-version-tag }}
+          VERSION: ${{ steps.version.outputs.next-version }}
+          HAS_CHANGES: ${{ steps.version.outputs.has-changes }}
+          CHANGELOG: ${{ steps.version.outputs.changelog }}
+        run: |
+          gh release list --limit 100 --json tagName,isDraft --jq '.[] | select(.isDraft) | .tagName' |
+            while read -r stale; do
+              if [[ "$stale" != "$TAG" || "$HAS_CHANGES" != true ]]; then
+                gh release delete "$stale" --yes
+              fi
+            done
+          if [[ "$HAS_CHANGES" != true ]]; then
+            echo "draft: nothing to release"
+            exit 0
+          fi
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            gh release edit "$TAG" --draft --target "$GITHUB_SHA" --notes "$CHANGELOG"
+          else
+            gh release create "$TAG" --draft --target "$GITHUB_SHA" --title "limen $VERSION" --notes "$CHANGELOG"
+          fi
+          echo "draft: $TAG"
+
+  release:
+    if: github.event_name != 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      # The toolchain CLI compiles Kotlin/Native and asks for the most; capped, it fits the runner.
+      KOTLIN_CLI_JAVA_OPTIONS: -Xmx3g
+      # Both binaries, linked one after the other by `make cli`; `make docker` goes through it and finds them done.
+      ARCH: x86_64 aarch64
+    permissions:
+      contents: write # create the release and upload its artifacts
+      packages: write # publish the image to ghcr.io
+      actions: read # read the check of the commit being published
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Toolchain and dependencies cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.konan
+            ~/.cache/JetBrains/Kotlin
+          key: kotlin-${{ runner.os }}-${{ hashFiles('kotlin/kotlin', 'kotlin/gradle/libs.versions.toml', 'kotlin/**/module.yaml') }}
+          restore-keys: kotlin-${{ runner.os }}-
+
+      # No cache of compiled output, unlike `check.yml`: a release builds from scratch, because what is published
+      # must not depend on what another run left on disk.
+
+      # What is published and what number it says, settled before anything is built. The stamp goes to the
+      # environment of every later step: each `make` regenerates BuildStamp.kt, and one without it would relink the
+      # binaries saying `dev`.
+      - name: Version and stamp
+        id: what
+        run: |
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            version="${GITHUB_REF_NAME#v}"
+            if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "::error title=Version::the tag $GITHUB_REF_NAME is not vX.Y.Z" >&2
+              exit 1
+            fi
+          else
+            version=dev
+          fi
+          date=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          {
+            echo "LIMEN_VERSION=$version"
+            echo "LIMEN_BUILD_DATE=$date"
+            echo "LIMEN_BUILD_NUMBER=$GITHUB_RUN_NUMBER"
+          } >> "$GITHUB_ENV"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "date=$date" >> "$GITHUB_OUTPUT"
+          echo "release: $version, build $GITHUB_RUN_NUMBER"
+
+      # The usual gate, read and not run again: the commit a draft points at is a commit of `main`, and check.yml
+      # ran on it when it got there. Published right after a merge, it may still be running: then this waits.
+      - name: The check of this commit is green
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          run=$(gh run list --workflow check.yml --commit "$GITHUB_SHA" --event push --limit 1 --json databaseId --jq '.[0].databaseId // empty')
+          if [[ -z "$run" ]]; then
+            echo "::error title=No check::check.yml never ran on $GITHUB_SHA; a release is only published from a commit of main" >&2
+            exit 1
+          fi
+          echo "gate: check.yml run $run on $GITHUB_SHA"
+          gh run watch "$run" --interval 30 --exit-status > /dev/null || {
+            echo "::error title=Check failed::check.yml run $run is not green on $GITHUB_SHA" >&2
+            exit 1
+          }
+          echo "gate: green"
+
+      - name: Build the binaries
+        run: make cli VARIANT=release
+
+      - name: Gather what is published
+        env:
+          VERSION: ${{ steps.what.outputs.version }}
+        run: |
+          mkdir -p release
+          # Named after what `uname -m` says, so `limen-<version>-linux-$(uname -m)` is the one to download.
+          for arch in x86_64 aarch64; do
+            cp "$(VARIANT=release tools/kt artifact "$arch")" "release/limen-$VERSION-linux-$arch"
+            file "release/limen-$VERSION-linux-$arch" | grep -q "statically linked" || {
+              echo "::error title=Not static::limen-$VERSION-linux-$arch is not statically linked" >&2
+              exit 1
+            }
+          done
+          # `./*` and not `*`: a name starting with a dash would slip into sha256sum as an option.
+          (cd release && sha256sum ./* > SHA256SUMS)
+          ls -l release
+
+      # The image is one tag for amd64 and arm64. Starting the arm64 half to check it runs it as arm64, so this x86-64
+      # runner emulates it; buildx is what puts both halves under one tag.
+      - name: QEMU, to start the arm64 image on this runner
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+        with:
+          platforms: arm64
+
+      - name: Buildx, for both architectures under one tag
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      # Through the same `make docker` as a local build, with the binaries just gathered. Each architecture is built
+      # on its own first and started, so a binary that does not run on its platform stops the release before
+      # anything is pushed. The repository name in lower case, as ghcr.io requires.
+      - name: Build the hub image and start it on both architectures
+        id: image
+        env:
+          VERSION: ${{ steps.what.outputs.version }}
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          echo "name=$image" >> "$GITHUB_OUTPUT"
+          for arch in amd64 arm64; do
+            make docker VARIANT=release PLATFORMS="linux/$arch" IMAGE="$image:$VERSION-$arch" \
+              BINARY_AMD64="$PWD/release/limen-$VERSION-linux-x86_64" BINARY_ARM64="$PWD/release/limen-$VERSION-linux-aarch64"
+            docker run --rm --platform "linux/$arch" "$image:$VERSION-$arch" --version
+            test "$(docker image inspect --format '{{.Architecture}}' "$image:$VERSION-$arch")" = "$arch"
+          done
+
+      - name: Publish the image
+        if: github.ref_type == 'tag'
+        env:
+          VERSION: ${{ steps.what.outputs.version }}
+          IMAGE: ${{ steps.image.outputs.name }}
+          # Through the environment, never interpolated into the script: it stays out of the shell's argv and logs.
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin <<< "$REGISTRY_TOKEN"
+          make docker VARIANT=release PUSH=1 PLATFORMS=linux/amd64,linux/arm64 IMAGE="$IMAGE:$VERSION" \
+            TAGS="$IMAGE:latest $IMAGE:build$GITHUB_RUN_NUMBER" \
+            BINARY_AMD64="$PWD/release/limen-$VERSION-linux-x86_64" BINARY_ARM64="$PWD/release/limen-$VERSION-linux-aarch64" \
+            LABELS="org.opencontainers.image.source=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY} org.opencontainers.image.version=$VERSION org.opencontainers.image.revision=$GITHUB_SHA org.opencontainers.image.licenses=Apache-2.0"
+          docker buildx imagetools inspect "$IMAGE:$VERSION"
+
+      - name: Write the notes
+        id: notes
+        env:
+          VERSION: ${{ steps.what.outputs.version }}
+          BUILD_DATE: ${{ steps.what.outputs.date }}
+          IMAGE: ${{ steps.image.outputs.name }}
+        run: |
+          notes="$RUNNER_TEMP/notes.md"
+          {
+            echo "**limen $VERSION** · build $GITHUB_RUN_NUMBER · $BUILD_DATE"
+            echo
+            echo "- \`limen-$VERSION-linux-x86_64\` and \`limen-$VERSION-linux-aarch64\`: one static binary per architecture, for any Linux (Debian, Ubuntu, OpenWrt…). Pick the one \`uname -m\` names; on a node, \`sudo ./limen-… install --read-key …\`."
+            echo "- \`docker pull $IMAGE:$VERSION\`: the hub, for amd64 and arm64 under one tag: \`-v ./limen:/data -p 7341:7341 -e LIMEN_TOKEN=…\`."
+            echo "- \`SHA256SUMS\`: to check what you downloaded."
+          } > "$notes"
+          echo "path=$notes" >> "$GITHUB_OUTPUT"
+          cat "$notes"
+
+      # The release already exists —it was the draft— and says what went in; this adds what was built below it.
+      - name: Publish the release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
+        with:
+          files: release/*
+          fail_on_unmatched_files: true
+          body_path: ${{ steps.notes.outputs.path }}
+          append_body: true
+
+      # On a `workflow_dispatch` there is no release to hang from: the artifacts stay on the run.
+      - name: Attach the artifacts to the run
+        if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: limen-${{ steps.what.outputs.version }}-build${{ github.run_number }}
+          path: release/
+          retention-days: 14
