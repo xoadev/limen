@@ -78,8 +78,9 @@ object Gate {
             "read_file" -> Read.readFile(node, args)
             "list_dir" -> Read.listDir(node, args)
             "processes" -> Read.processes(node, args)
-            "ports" -> Read.ports(node)
+            "ports" -> Read.ports()
             "history" -> Read.history(node, args)
+            "state" -> State.answer(node)
             "check" -> Read.check(node, args)
             else -> badRequest("unknown request '$name'")
         }
@@ -167,6 +168,10 @@ object Audit {
             }
         try {
             Fs.mkdirs(node.config.audit.substringBeforeLast('/'), 0b111_000_000)
+            // One old file kept, no logrotate needed: OpenWrt has none, and its /var/log lives in RAM.
+            if ((Fs.stat(node.config.audit)?.size ?: 0) > node.config.auditMaxBytes) {
+                platform.posix.rename(node.config.audit, node.config.audit + ".1")
+            }
             Fs.appendLine(node.config.audit, WireJson.encodeToString(JsonObject.serializer(), entry))
         } catch (e: Exception) {
             Sys.err("limen: cannot write the audit log ${node.config.audit}: ${e.message}\n")

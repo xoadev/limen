@@ -64,42 +64,6 @@ class ParsersTest {
     }
 
     @Test
-    fun disksSkipTheLocalisedHeader() {
-        val text =
-            """
-            S.ficheros     Tipo bloques de 1B       Usados         Disp Montado en
-            /dev/nvme0n1p2 ext4  983038173184 278574559232 654452559872 /
-            /dev/nvme0n1p1 vfat     313942016      8138752    305803264 /boot/efi
-            """.trimIndent()
-        val disks = Parsers.disks(text)
-        assertEquals(2, disks.size)
-        assertEquals(JsonPrimitive("/boot/efi"), disks[1].jsonObject["mount"])
-        assertEquals(JsonPrimitive(28.3), disks[0].jsonObject["used_percent"])
-    }
-
-    @Test
-    fun ports() {
-        val text =
-            """
-            udp UNCONN 0 0 127.0.0.53%lo:53 0.0.0.0:* users:(("systemd-resolve",pid=680,fd=14))
-            tcp LISTEN 0 4096 [::]:22 [::]:* users:(("sshd",pid=1,fd=4),("sshd",pid=1,fd=5))
-            """.trimIndent()
-        val ports = Parsers.ports(text)
-        assertEquals(JsonPrimitive(53), ports[0].jsonObject["port"])
-        assertEquals(JsonPrimitive("[::]"), ports[1].jsonObject["address"])
-        assertEquals(1, ports[1].jsonObject["processes"]!!.jsonArray.size)
-    }
-
-    @Test
-    fun processes() {
-        val text = " 808340  1000 49.4 16.9 5418456  3481 /usr/bin/app --password=x -p 1\n"
-        val p = Parsers.processes(text, { if (it == 1000) "ana" else null }, redactor)[0].jsonObject
-        assertEquals(JsonPrimitive("ana"), p["user"])
-        assertEquals(JsonPrimitive(5418456L * 1024), p["rss_bytes"])
-        assertEquals(JsonPrimitive("/usr/bin/app --password=[redacted] -p 1"), p["command"])
-    }
-
-    @Test
     fun containerDetailHidesEnvironmentValues() {
         val inspect =
             Parsers

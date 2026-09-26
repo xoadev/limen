@@ -80,6 +80,35 @@ object Sys {
         return all
     }
 
+    /** Clock ticks per second, the unit of `/proc/<pid>/stat` times. */
+    fun ticksPerSecond(): Long = platform.posix.sysconf(platform.posix._SC_CLK_TCK).takeIf { it > 0 } ?: 100
+
+    fun isTerminal(fd: Int): Boolean = platform.posix.isatty(fd) == 1
+
+    /** One line from stdin without echoing it, for a token typed at a terminal. */
+    fun readSecret(): String? =
+        memScoped {
+            val saved = alloc<platform.posix.termios>()
+            val tty = platform.posix.tcgetattr(0, saved.ptr) == 0
+            if (tty) {
+                val quiet = alloc<platform.posix.termios>()
+                platform.posix.tcgetattr(0, quiet.ptr)
+                quiet.c_lflag = quiet.c_lflag and
+                    platform.posix.ECHO
+                        .toUInt()
+                        .inv()
+                platform.posix.tcsetattr(0, platform.posix.TCSANOW, quiet.ptr)
+            }
+            try {
+                readlnOrNull()
+            } finally {
+                if (tty) {
+                    platform.posix.tcsetattr(0, platform.posix.TCSANOW, saved.ptr)
+                    err("\n")
+                }
+            }
+        }
+
     fun chdirRoot() {
         platform.posix.chdir("/")
     }

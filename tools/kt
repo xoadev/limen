@@ -26,6 +26,20 @@ verb=${1:-}
 [[ -n "$verb" ]] || { sed -n '2,12p' "$0" >&2; exit 64; }
 shift
 
+# The Kotlin/Native compiler takes another linker only by absolute path or as one of its own dependencies, and
+# module.yaml can't hold an absolute path. So tools/ld-static is installed as a dependency, under the name
+# kotlin/cli/module.yaml gives (`limen-ld-static-1`), on every run: its content always matches this checkout.
+register_static_linker() {
+  local deps="${KONAN_DATA_DIR:-$HOME/.konan}/dependencies" name=limen-ld-static-1
+  mkdir -p "$deps/$name"
+  cp "$ROOT/tools/ld-static" "$deps/$name/ld-static.tmp"
+  chmod +x "$deps/$name/ld-static.tmp"
+  mv "$deps/$name/ld-static.tmp" "$deps/$name/ld-static"
+  touch "$deps/.extracted"
+  grep -qx "$name" "$deps/.extracted" || echo "$name" >> "$deps/.extracted"
+}
+register_static_linker
+
 kt() { (cd "$KOTLIN_PROJECT" && ./kotlin "$@"); }
 
 # `build` and `test` compile this machine's Linux only: the other architecture is cross-compiled by `cli` when

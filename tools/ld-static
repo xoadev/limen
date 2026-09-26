@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# The linker the Kotlin/Native compiler calls for `limen` (kotlin/cli/module.yaml, registered by tools/kt): it
+# turns the compiler's dynamic link against glibc into a fully static one, so one binary runs on any Linux, glibc
+# or musl (Alpine, OpenWrt), whatever its libc version.
+#
+#   -static, no -dynamic-linker/-export-dynamic   no interpreter, nothing resolved at run time
+#   crtbeginT.o instead of crtbegin.o             the start-up object of static executables
+#   -lgcc_eh instead of -lgcc_s                   the static unwinder
+#   libpthread whole, once                        libstdc++ reaches pthread through weak symbols, which a static
+#                                                 link otherwise leaves null: a crash before main
+#
+# What static glibc can't do is NSS: getpwnam, getpwuid, getgrgid and name resolution load plugins at run time.
+# limen reads /etc/passwd and /etc/group itself, and resolves no names on the nodes (git and ssh do).
+set -euo pipefail
+lld=$(compgen -G "${KONAN_DATA_DIR:-$HOME/.konan}/dependencies/llvm-*/bin/ld.lld" | sort | tail -1)
+[[ -x "$lld" ]] || { echo "ld-static: no ld.lld under ~/.konan/dependencies" >&2; exit 1; }
+args=(-static)
+skip=0
+pthread=0
+for a in "$@"; do
+  if [[ $skip -eq 1 ]]; then
+    skip=0
+    continue
+  fi
+  case "$a" in
+    -export-dynamic | -Bdynamic | -pie) ;;
+    -dynamic-linker) skip=1 ;;
+    */crtbegin.o) args+=("${a%crtbegin.o}crtbeginT.o") ;;
+    -lgcc_s) args+=(-lgcc_eh) ;;
+    -lpthread)
+      if [[ $pthread -eq 0 ]]; then
+        pthread=1
+        args+=(--whole-archive -lpthread --no-whole-archive)
+      fi
+      ;;
+    *) args+=("$a") ;;
+  esac
+done
+exec "$lld" "${args[@]}"

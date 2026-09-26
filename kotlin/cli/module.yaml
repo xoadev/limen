@@ -17,5 +17,12 @@ test-dependencies:
 settings:
   kotlin:
     serialization: json
+    # A fully static binary (tools/ld-static, registered by tools/kt): one file that runs on glibc and musl alike.
+    # The dependency lists are the compiler's own plus the linker; they change when the Kotlin version does.
+    freeCompilerArgs:
+      - "-Xoverride-konan-properties=linker.linux_x64=limen-ld-static-1/ld-static;\
+        dependencies.linux_x64=x86_64-unknown-linux-gnu-gcc-8.3.0-glibc-2.19-kernel-4.9-2 lldb-4-linux limen-ld-static-1;\
+        linker.linux_x64-linux_arm64=limen-ld-static-1/ld-static;\
+        dependencies.linux_x64-linux_arm64=aarch64-unknown-linux-gnu-gcc-8.3.0-glibc-2.25-kernel-4.9-2 limen-ld-static-1"
   native:
     entryPoint: limen.cli.main

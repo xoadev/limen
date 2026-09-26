@@ -9,9 +9,13 @@ import kotlinx.cinterop.convert
 import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.pointed
 import kotlinx.cinterop.ptr
+import kotlinx.cinterop.readBytes
 import kotlinx.cinterop.toKString
 import kotlinx.cinterop.usePinned
 import limen.core.scripts.FileStat
+import limen.core.system.Account
+import limen.core.system.ProcFs
+import platform.linux.statvfs
 import platform.posix.EEXIST
 import platform.posix.O_APPEND
 import platform.posix.O_CLOEXEC
@@ -34,9 +38,6 @@ import platform.posix.closedir
 import platform.posix.errno
 import platform.posix.fstat
 import platform.posix.fsync
-import platform.posix.getgrgid
-import platform.posix.getpwnam
-import platform.posix.getpwuid
 import platform.posix.lseek
 import platform.posix.lstat
 import platform.posix.mkdir
@@ -44,6 +45,7 @@ import platform.posix.open
 import platform.posix.opendir
 import platform.posix.read
 import platform.posix.readdir
+import platform.posix.readlink
 import platform.posix.realpath
 import platform.posix.rename
 import platform.posix.stat
@@ -329,15 +331,34 @@ object Fs {
 
     fun remove(path: String): Boolean = unlink(path) == 0
 
-    fun userName(uid: Int): String? = getpwuid(uid.convert())?.pointed?.pw_name?.toKString()
+    /**
+     * Users and groups from `/etc/passwd` and `/etc/group`, read each time: not `getpwuid` and friends, which in a
+     * static binary would need glibc's NSS plugins (tools/ld-static).
+     */
+    fun accounts(): List<Account> = readText("/etc/passwd")?.let(ProcFs::accounts).orEmpty()
 
-    fun groupName(gid: Int): String? = getgrgid(gid.convert())?.pointed?.gr_name?.toKString()
+    fun userName(uid: Int): String? = accounts().firstOrNull { it.uid == uid }?.name
 
-    fun shell(name: String): String? = getpwnam(name)?.pointed?.pw_shell?.toKString()
+    fun groupName(gid: Int): String? = readText("/etc/group")?.let(ProcFs::groups)?.get(gid)
 
-    /** uid, gid and home of [name], or null when there is no such user. */
-    fun user(name: String): Triple<Int, Int, String>? =
-        getpwnam(name)?.pointed?.let { Triple(it.pw_uid.toInt(), it.pw_gid.toInt(), it.pw_dir?.toKString() ?: "/") }
+    fun account(name: String): Account? = accounts().firstOrNull { it.name == name }
+
+    /** Free and total bytes of the filesystem holding [path]. */
+    fun space(path: String): Pair<Long, Long>? =
+        memScoped {
+            val st = alloc<statvfs>()
+            if (statvfs(path, st.ptr) != 0) return null
+            val unit = st.f_frsize.toLong()
+            Pair(st.f_bavail.toLong() * unit, st.f_blocks.toLong() * unit)
+        }
+
+    /** Where a symlink points, unresolved. */
+    fun readLink(path: String): String? =
+        memScoped {
+            val buf = allocArray<ByteVar>(PATH_MAX)
+            val n = readlink(path, buf, (PATH_MAX - 1).convert()).toInt()
+            if (n < 0) null else buf.readBytes(n).decodeToString()
+        }
 
     /** [path] and every directory above it, as [FileStat]s: what [limen.core.scripts.Trust] checks. */
     fun chain(path: String): List<FileStat> {

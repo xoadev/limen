@@ -101,32 +101,6 @@ object Parsers {
             else -> value.toString()
         }
 
-    /** `df -B1 --output=source,fstype,size,used,avail,target`, header included. */
-    fun disks(text: String): JsonArray =
-        buildJsonArray {
-            for (line in text
-                .lineSequence()
-                .drop(1)
-                .map { it.trim() }
-                .filter { it.isNotEmpty() }) {
-                val p = line.split(whitespace, limit = 6)
-                if (p.size < 6) continue
-                val size = p[2].toLongOrNull() ?: continue
-                val used = p[3].toLongOrNull() ?: continue
-                add(
-                    buildJsonObject {
-                        put("mount", p[5])
-                        put("device", p[0])
-                        put("fstype", p[1])
-                        put("size_bytes", size)
-                        put("used_bytes", used)
-                        put("available_bytes", p[4].toLongOrNull())
-                        put("used_percent", if (size > 0) (used * 1000 / size) / 10.0 else 0.0)
-                    },
-                )
-            }
-        }
-
     /** `/proc/meminfo`, in bytes. */
     fun memory(text: String): JsonObject {
         val kb =
@@ -157,65 +131,6 @@ object Parsers {
             ?.substringAfter('=')
             ?.trim()
             ?.removeSurrounding("\"")
-
-    private val ssProcess = Regex("\\(\"([^\"]*)\",pid=(\\d+)")
-
-    /** `ss -H -tulnp`: Netid State Recv-Q Send-Q Local Peer [Process]. */
-    fun ports(text: String): JsonArray =
-        buildJsonArray {
-            for (line in text.lineSequence().map { it.trim() }.filter { it.isNotEmpty() }) {
-                val p = line.split(whitespace, limit = 7)
-                if (p.size < 5) continue
-                val local = p[4]
-                val address = local.substringBeforeLast(':')
-                val port = local.substringAfterLast(':').toIntOrNull()
-                add(
-                    buildJsonObject {
-                        put("protocol", p[0])
-                        put("address", address)
-                        put("port", port)
-                        put(
-                            "processes",
-                            buildJsonArray {
-                                ssProcess.findAll(p.getOrElse(6) { "" }).distinctBy { it.groupValues[2] }.forEach { m ->
-                                    add(
-                                        buildJsonObject {
-                                            put("name", m.groupValues[1])
-                                            put("pid", m.groupValues[2].toLong())
-                                        },
-                                    )
-                                }
-                            },
-                        )
-                    },
-                )
-            }
-        }
-
-    /** `ps -eo pid=,uid=,pcpu=,pmem=,rss=,etimes=,args=`, already sorted and cut. */
-    fun processes(
-        text: String,
-        userName: (Int) -> String?,
-        redactor: Redactor,
-    ): JsonArray =
-        buildJsonArray {
-            for (line in text.lineSequence().map { it.trim() }.filter { it.isNotEmpty() }) {
-                val p = line.split(whitespace, limit = 7)
-                if (p.size < 7) continue
-                val uid = p[1].toIntOrNull()
-                add(
-                    buildJsonObject {
-                        put("pid", p[0].toLongOrNull())
-                        put("user", uid?.let(userName) ?: p[1])
-                        put("cpu_percent", p[2].toDoubleOrNull())
-                        put("memory_percent", p[3].toDoubleOrNull())
-                        put("rss_bytes", p[4].toLongOrNull()?.times(1024))
-                        put("elapsed_seconds", p[5].toLongOrNull())
-                        put("command", redactor.redact(p[6]).take(500))
-                    },
-                )
-            }
-        }
 
     /** The list view of one `docker inspect` object. */
     fun containerSummary(o: JsonObject): JsonObject {

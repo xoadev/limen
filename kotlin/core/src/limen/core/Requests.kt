@@ -178,6 +178,14 @@ object Requests {
             listOf(Param("lines", ParamType.INT, "How many entries, newest last", default = JsonPrimitive(50), min = 1, max = 1000)),
         )
 
+    val STATE =
+        RequestDef(
+            "state",
+            Role.READ,
+            "What is deployed against what should be: the repository commit on the node and on the remote, and every " +
+                "service node.toml expects (compose stacks, systemd units, procd services) with whether it runs.",
+        )
+
     val CHECK =
         RequestDef(
             "check",
@@ -190,6 +198,14 @@ object Requests {
             tool = false,
         )
 
+    val SYNC =
+        RequestDef(
+            "sync",
+            Role.DEPLOY,
+            "Brings the node's copy of the repository to the remote branch.",
+            tool = false,
+        )
+
     val APPLY =
         RequestDef(
             "apply",
@@ -198,6 +214,7 @@ object Requests {
             listOf(
                 Param("from", ParamType.STRING, "Start at the script with this prefix", pattern = "^[0-9]{1,4}$"),
                 Param("dry_run", ParamType.BOOL, "List what would run", default = JsonPrimitive(false)),
+                Param("sync", ParamType.BOOL, "Sync the repository first", default = JsonPrimitive(true)),
             ),
             tool = false,
         )
@@ -228,7 +245,9 @@ object Requests {
             PROCESSES,
             PORTS,
             HISTORY,
+            STATE,
             CHECK,
+            SYNC,
             APPLY,
             ACTION,
         )

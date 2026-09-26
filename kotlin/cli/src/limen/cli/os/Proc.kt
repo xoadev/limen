@@ -22,7 +22,6 @@ import platform.linux.POSIX_SPAWN_SETSIGDEF
 import platform.linux.POSIX_SPAWN_SETSIGMASK
 import platform.linux.posix_spawn
 import platform.linux.posix_spawn_file_actions_adddup2
-import platform.linux.posix_spawn_file_actions_addopen
 import platform.linux.posix_spawn_file_actions_destroy
 import platform.linux.posix_spawn_file_actions_init
 import platform.linux.posix_spawn_file_actions_t
@@ -39,6 +38,7 @@ import platform.posix.FD_CLOEXEC
 import platform.posix.F_GETFL
 import platform.posix.F_SETFD
 import platform.posix.F_SETFL
+import platform.posix.O_CLOEXEC
 import platform.posix.O_NONBLOCK
 import platform.posix.O_RDONLY
 import platform.posix.POLLERR
@@ -55,6 +55,7 @@ import platform.posix.close
 import platform.posix.errno
 import platform.posix.fcntl
 import platform.posix.kill
+import platform.posix.open
 import platform.posix.pipe
 import platform.posix.poll
 import platform.posix.pollfd
@@ -97,6 +98,7 @@ class SpawnException(
 @OptIn(ExperimentalForeignApi::class)
 object Proc {
     private const val CHUNK = 64 * 1024
+
     private val KILL_GRACE = 2.seconds
 
     /** What a command the gate runs sees: a fixed PATH, C locale with UTF-8, UTC, no pagers or colours. */
@@ -136,12 +138,16 @@ object Proc {
             val childFds = listOfNotNull(outPipe[1], errPipe[1], if (stdin != null) inPipe[0] else null)
             (parentFds + childFds).forEach { fcntl(it, F_SETFD, FD_CLOEXEC) }
 
+            val devNull = if (stdin == null) open("/dev/null", O_RDONLY or O_CLOEXEC) else -1
             val actions = alloc<posix_spawn_file_actions_t>()
             posix_spawn_file_actions_init(actions.ptr)
             if (stdin != null) {
                 posix_spawn_file_actions_adddup2(actions.ptr, inPipe[0], 0)
             } else {
-                posix_spawn_file_actions_addopen(actions.ptr, 0, "/dev/null", O_RDONLY, 0u)
+                // Opened here and dup'ed in the child, not `addopen`: glibc before 2.29 —the one tools/ld-static
+                // links in— keeps addopen's path pointer until the spawn, and Kotlin/Native frees that string as soon
+                // as the call returns, so the child opened garbage and exited 127.
+                posix_spawn_file_actions_adddup2(actions.ptr, devNull, 0)
             }
             posix_spawn_file_actions_adddup2(actions.ptr, outPipe[1], 1)
             posix_spawn_file_actions_adddup2(actions.ptr, errPipe[1], 2)
@@ -167,6 +173,7 @@ object Proc {
             posix_spawn_file_actions_destroy(actions.ptr)
             posix_spawnattr_destroy(attr.ptr)
             childFds.forEach { close(it) }
+            if (devNull >= 0) close(devNull)
             if (rc != 0) {
                 parentFds.forEach { close(it) }
                 throw SpawnException("cannot run ${argv[0]}: ${strerror(rc)?.toKString()}")

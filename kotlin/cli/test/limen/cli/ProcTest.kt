@@ -64,6 +64,15 @@ class ProcTest {
     }
 
     @Test
+    fun stdinIsDevNullEveryTime() {
+        // Regression: the static glibc kept a pointer to a freed path and the child opened garbage (exit 127).
+        repeat(50) {
+            val r = Proc.run(listOf(sh, "-c", "read x; echo eof:\$?"))
+            assertEquals("eof:1\n", r.out, "run $it: exit ${r.exitCode}")
+        }
+    }
+
+    @Test
     fun whichFindsInTheFixedPath() {
         assertEquals("/bin/sh", Proc.which("/bin/sh"))
         assertTrue(Proc.which("sh")!!.endsWith("/sh"))

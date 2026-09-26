@@ -34,6 +34,7 @@ import limen.cli.node.Installer
 import limen.cli.node.Lint
 import limen.cli.node.Node
 import limen.cli.node.Read
+import limen.cli.node.RepoOptions
 import limen.cli.node.Scripts
 import limen.cli.os.Proc
 import limen.cli.os.Sys
@@ -71,10 +72,12 @@ object Cli {
                 GateCommand(),
                 InstallCommand(),
                 UninstallCommand(),
+                SyncCommand(),
                 ApplyCommand(),
                 ActionCommand(),
                 CheckCommand(),
                 LintCommand(),
+                TokenCommand(),
                 VersionCommand(),
             )
         return try {
@@ -231,11 +234,15 @@ private class InstallCommand : CoreCliktCommand("install") {
     val readKey by option("--read-key").required().help("Public key of the hub (read role)")
     val deployKey by option("--deploy-key").help("Public key of CI or a person (deploy role); without it, no deploy role")
     val from by option("--from").help("Addresses or CIDRs the keys may connect from, e.g. 100.64.0.0/10")
+    val repo by option("--repo").help("Git repository with this node's scripts, stacks and node.toml (https:// asks for a token)")
+    val branch by option("--branch").default("main").help("Branch of --repo")
+    val path by option("--path").help("This node's folder in --repo (default: nodes/<hostname>)")
     val dryRun by option("--dry-run").flag().help("Say what would change and change nothing")
 
     override fun run() {
+        val repoOptions = repo?.let { RepoOptions(it, branch, path ?: "nodes/${Sys.hostname().lowercase()}") }
         try {
-            throw ExitWith(Installer(dryRun).install(readKey, deployKey, from))
+            throw ExitWith(Installer(dryRun).install(readKey, deployKey, from, repoOptions))
         } catch (e: Installer.InstallException) {
             Sys.err("limen: install: ${e.message}\n")
             throw ExitWith(1)
@@ -259,17 +266,39 @@ private class UninstallCommand : CoreCliktCommand("uninstall") {
     }
 }
 
+private class SyncCommand : CoreCliktCommand("sync") {
+    override fun help(context: Context) = "Bring this node's copy of its repository to the remote branch"
+
+    val config by option("--config").default(NodeConfig.PATH)
+
+    override fun run(): Unit = throw ExitWith(if (Deploy.sync(Node.load(config))) 0 else 1)
+}
+
 private class ApplyCommand : CoreCliktCommand("apply") {
-    override fun help(context: Context) = "Run the setup scripts in order, on this node"
+    override fun help(context: Context) = "Sync the repository, run the setup scripts in order and bring up the stacks, on this node"
 
     val from by option("--from").help("Start at the script with this number prefix")
+    val noSync by option("--no-sync").flag().help("Use the checkout as it is")
     val dryRun by option("--dry-run").flag().help("List what would run")
     val config by option("--config").default(NodeConfig.PATH)
 
     override fun run() {
         val start = from
         if (start != null && !Regex("^[0-9]{1,4}$").matches(start)) throw UsageError("--from takes the number prefix, e.g. 20")
-        throw ExitWith(if (Deploy.apply(Node.load(config), start, dryRun)) 0 else 1)
+        throw ExitWith(if (Deploy.apply(Node.load(config), start, dryRun, syncFirst = !noSync)) 0 else 1)
+    }
+}
+
+private class TokenCommand : CoreCliktCommand("token") {
+    override fun help(context: Context) = "Replace the token that reads this node's repository (as root)"
+
+    override fun run() {
+        try {
+            throw ExitWith(Installer(dryRun = false).token())
+        } catch (e: Installer.InstallException) {
+            Sys.err("limen: token: ${e.message}\n")
+            throw ExitWith(1)
+        }
     }
 }
 

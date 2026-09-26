@@ -45,7 +45,10 @@ object Read {
                 put("os", Fs.realPath("/etc/os-release")?.let { Fs.readText(it) }?.let(Parsers::osName))
                 put("kernel", kernel)
                 put("arch", arch)
+                put("init", Platform.init.wire)
+                Platform.board()?.let { put("board", it) }
                 put("docker", Proc.which("docker") != null)
+                put("repo", node.config.repo != null)
                 put("catalog", WireJson.encodeToJsonElement(Catalog.serializer(), Scripts.catalog(node)))
             },
         )
@@ -81,32 +84,8 @@ object Read {
                     .map { it.toDouble() }
             }
         val memory = part("memory") { Parsers.memory(Fs.readText("/proc/meminfo")!!) }
-        val disks =
-            part("disks") {
-                Parsers.disks(
-                    node.execOk(
-                        "df",
-                        "-B1",
-                        "--output=source,fstype,size,used,avail,target",
-                        "-x",
-                        "tmpfs",
-                        "-x",
-                        "devtmpfs",
-                        "-x",
-                        "squashfs",
-                        "-x",
-                        "overlay",
-                        "-x",
-                        "efivarfs",
-                    ),
-                )
-            }
-        val failed =
-            part("failed_units") {
-                Parsers
-                    .units(node.execOk("systemctl", "list-units", "--failed", "--no-legend", "--plain", "--no-pager"))
-                    .map { it.jsonObject["unit"]!! }
-            }
+        val disks = part("disks") { Platform.disks() }
+        val failed = part("failed_services") { Platform.failedServices(node).map(::JsonPrimitive) }
         val containers =
             if (Proc.which("docker") == null) {
                 null
@@ -125,7 +104,7 @@ object Read {
                 put("load", load?.let { l -> JsonArray(l.map(::JsonPrimitive)) } ?: JsonNull)
                 put("memory", memory ?: JsonNull)
                 put("disks", disks ?: JsonNull)
-                put("failed_units", failed?.let(::JsonArray) ?: JsonNull)
+                put("failed_services", failed?.let(::JsonArray) ?: JsonNull)
                 put("containers_attention", containers?.let(::JsonArray) ?: JsonNull)
                 put("reboot_required", Fs.exists("/run/reboot-required"))
                 if (errors.isNotEmpty()) put("errors", JsonObject(errors.mapValues { JsonPrimitive(it.value) }))
@@ -137,6 +116,11 @@ object Read {
         node: Node,
         args: Map<String, JsonElement>,
     ): Answer {
+        when (Platform.init) {
+            Init.PROCD -> return Answer(Platform.procdUnits(node, args.string("state"), args.string("pattern")))
+            Init.NONE -> throw LimenException(ErrorCode.UNAVAILABLE, "no systemd or procd on this node")
+            Init.SYSTEMD -> Unit
+        }
         val argv = mutableListOf("systemctl", "list-units", "--no-legend", "--plain", "--no-pager")
         args.string("type")?.takeIf { it != "all" }?.let { argv += "--type=$it" }
         when (val state = args.string("state")) {
@@ -154,6 +138,11 @@ object Read {
         args: Map<String, JsonElement>,
     ): Answer {
         val raw = args.string("name")!!
+        when (Platform.init) {
+            Init.PROCD -> return Answer(Platform.procdService(node, raw.removeSuffix(".service"), args.int("lines") ?: 20))
+            Init.NONE -> throw LimenException(ErrorCode.UNAVAILABLE, "no systemd or procd on this node")
+            Init.SYSTEMD -> Unit
+        }
         val name = if ('.' in raw) raw else "$raw.service"
         val props =
             Parsers.keyValues(
@@ -256,6 +245,22 @@ object Read {
         val answer =
             when (source) {
                 "unit", "journal" -> {
+                    if (source == "journal" && name != null) badRequest("source journal takes no name")
+                    if (source == "unit" && name == null) badRequest("source unit needs a name")
+                    if (Platform.init != Init.SYSTEMD) {
+                        if (Platform.init == Init.NONE) throw LimenException(ErrorCode.UNAVAILABLE, "no journal or logread on this node")
+                        val entries =
+                            Platform.logread(
+                                node,
+                                lines,
+                                name?.removeSuffix(".service"),
+                                args.string("priority"),
+                                since,
+                                until,
+                                grep,
+                            )
+                        return Answer(JsonArray(entries), clamped)
+                    }
                     val argv = mutableListOf("journalctl", "-o", "json", "--no-pager", "-q", "-n", "$lines")
                     if (source == "unit") {
                         val unit = name ?: badRequest("source unit needs a name")
@@ -429,20 +434,9 @@ object Read {
     fun processes(
         node: Node,
         args: Map<String, JsonElement>,
-    ): Answer {
-        val sort = if (args.string("sort") == "memory") "-rss" else "-pcpu"
-        val limit = args.int("limit") ?: 20
-        val out = node.execOk("ps", "-eo", "pid=,uid=,pcpu=,pmem=,rss=,etimes=,args=", "--sort=$sort")
-        val lines =
-            out
-                .lines()
-                .filter { it.isNotBlank() }
-                .take(limit)
-                .joinToString("\n")
-        return Answer(Parsers.processes(lines, Fs::userName, node.redactor))
-    }
+    ): Answer = Answer(Platform.processes(node, byMemory = args.string("sort") == "memory", limit = args.int("limit") ?: 20))
 
-    fun ports(node: Node): Answer = Answer(Parsers.ports(node.execOk("ss", "-H", "-tulnp")))
+    fun ports(): Answer = Answer(Platform.ports())
 
     fun history(
         node: Node,
