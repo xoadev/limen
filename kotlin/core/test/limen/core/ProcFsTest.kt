@@ -133,8 +133,8 @@ class ProcFsTest {
     @Test
     fun tokenLink() {
         assertEquals(
-            "https://github.com/settings/personal-access-tokens/new?name=limen-hades&description=limen%20on%20hades%3A%20read%20xoadev%2Fcloud" +
-                "&target_name=xoadev&expires_in=none&contents=read",
+            "https://github.com/settings/personal-access-tokens/new?name=limen-hades" +
+                "&description=limen%20on%20hades%3A%20read%20xoadev%2Fcloud&target_name=xoadev&expires_in=none&contents=read",
             GitHub.tokenUrl("xoadev", "cloud", "hades"),
         )
     }

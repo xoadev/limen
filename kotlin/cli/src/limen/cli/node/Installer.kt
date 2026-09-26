@@ -44,11 +44,7 @@ class Installer(
         validateKey("--read-key", readKey)
         deployKey?.let { validateKey("--deploy-key", it) }
         if (from != null && !CIDRS.matches(from)) fail("--from '$from' is not a list of addresses or CIDRs")
-        if (from != null &&
-            openwrt
-        ) {
-            fail("dropbear has no from= option; limit who reaches port 22 with the firewall and run it without --from")
-        }
+        if (from != null && openwrt) fail("dropbear has no from= option; limit port 22 with the firewall and run it without --from")
         val repoConfig = repo?.let(::repoConfig)
         requireRoot()
         if (repoConfig != null && Proc.which("git") == null) {
@@ -60,6 +56,7 @@ class Installer(
         if (openwrt) {
             writeDropbearKeys(keys)
             writeSysupgradeKeep()
+            checkDropbear()
         } else {
             for ((role, key) in keys) {
                 ensureUser(userOf(role))
@@ -340,6 +337,26 @@ class Installer(
         }
         for (dir in listOf("/var/log/limen", "/var/log/limen/runs")) {
             if (Fs.stat(dir)?.type != FileType.DIRECTORY) act("create $dir (root only)") { Fs.mkdirs(dir, 0b111_000_000) }
+        }
+    }
+
+    /**
+     * A forced command only holds a key-based login. With root's password empty —as OpenWrt ships— dropbear lets
+     * anyone who reaches it in without a key, and limen's limits mean nothing: say it.
+     */
+    private fun checkDropbear() {
+        if (shadowPassword("root")?.isEmpty() == true) {
+            warn("root has no password: dropbear lets anyone in without a key. Set one (passwd), or turn password logins off")
+        }
+        val uci = Proc.which("uci") ?: return
+        val passwordAuth =
+            runCatching { Proc.run(listOf(uci, "-q", "get", "dropbear.@dropbear[0].PasswordAuth")) }.getOrNull()?.out?.trim()
+        if (passwordAuth != "off" && passwordAuth != "0") {
+            note(
+                "dropbear accepts passwords; with keys only, nothing but limen's keys and yours gets in: " +
+                    "uci set dropbear.@dropbear[0].PasswordAuth=off; uci set dropbear.@dropbear[0].RootPasswordAuth=off; " +
+                    "uci commit dropbear; service dropbear restart",
+            )
         }
     }
 

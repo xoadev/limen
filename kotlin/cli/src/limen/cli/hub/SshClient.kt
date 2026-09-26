@@ -84,7 +84,10 @@ class SshClient(
         onChunk: (Int, ByteArray) -> Unit,
     ): ProcResult {
         val entry = config.node(node) ?: throw LimenException(ErrorCode.BAD_REQUEST, "no node named '$node'")
-        return Proc.run(argv(entry, user, key ?: identity), env(), line.encodeToByteArray(), timeout, onChunk = onChunk)
+        // Never through the multiplexed connection: on OpenWrt both roles log in as root, and a deploy request would
+        // ride the socket the read key opened, landing in the read role.
+        val argv = argv(entry, user, key ?: identity, multiplex = false)
+        return Proc.run(argv, env(), line.encodeToByteArray(), timeout, onChunk = onChunk)
     }
 
     private fun exchange(
@@ -99,43 +102,28 @@ class SshClient(
         entry: NodeEntry,
         user: String,
         key: String,
-    ): List<String> =
-        listOf(
-            ssh,
-            "-T",
-            "-o",
-            "BatchMode=yes",
-            "-o",
-            "IdentitiesOnly=yes",
-            "-i",
-            key,
-            "-o",
-            "StrictHostKeyChecking=yes",
-            "-o",
-            "UserKnownHostsFile=$knownHosts",
-            "-o",
-            "GlobalKnownHostsFile=/dev/null",
-            "-o",
-            "HostKeyAlias=${alias(entry)}",
-            "-o",
-            "ConnectTimeout=${config.connectTimeout.inWholeSeconds.coerceAtLeast(1)}",
-            "-o",
-            "ServerAliveInterval=15",
-            "-o",
-            "ControlMaster=auto",
-            "-o",
-            "ControlPath=$runtime/cm-%C",
-            "-o",
-            "ControlPersist=60",
-            "-o",
-            "LogLevel=ERROR",
-            "-p",
-            entry.port.toString(),
-            "-l",
-            user,
-            "--",
-            entry.host,
-        )
+        multiplex: Boolean = true,
+    ): List<String> {
+        val options =
+            listOf(
+                "BatchMode=yes",
+                "IdentitiesOnly=yes",
+                "StrictHostKeyChecking=yes",
+                "UserKnownHostsFile=$knownHosts",
+                "GlobalKnownHostsFile=/dev/null",
+                "HostKeyAlias=${alias(entry)}",
+                "ConnectTimeout=${config.connectTimeout.inWholeSeconds.coerceAtLeast(1)}",
+                "ServerAliveInterval=15",
+                "LogLevel=ERROR",
+            ) +
+                if (multiplex) {
+                    listOf("ControlMaster=auto", "ControlPath=$runtime/cm-%C", "ControlPersist=60")
+                } else {
+                    listOf("ControlMaster=no", "ControlPath=none")
+                }
+        return listOf(ssh, "-T", "-i", key) + options.flatMap { listOf("-o", it) } +
+            listOf("-p", entry.port.toString(), "-l", user, "--", entry.host)
+    }
 
     private fun env(): List<String> =
         listOfNotNull(

@@ -22,9 +22,9 @@ memory, where the next session, another agent or a person can't read it.
 | `docs/` | `spec.md` |
 | `kotlin/` | The Kotlin Toolchain project: `project.yaml`, a `module.yaml` per module, the `kotlin` wrapper that pins the toolchain |
 | `kotlin/core/` | Pure rules: protocol, request schemas, argument validation, configuration, TOML, script headers, path policy, redaction, parsers of what system programs print. No processes, files or network |
-| `kotlin/cli/` | The `limen` binary: `os/` (processes, files), `node/` (gate, requests, scripts, install), `hub/` (SSH client, MCP server, transports) |
-| `tools/` | Scripts the `Makefile` calls |
-| `etc/` | `Dockerfile` of the hub image; `e2e/` the node image of `make e2e` |
+| `kotlin/cli/` | The `limen` binary: `os/` (processes, files), `node/` (gate, requests, platforms, repository, scripts, install), `hub/` (SSH client, MCP server, transports) |
+| `tools/` | Scripts the `Makefile` calls, and `ld-static`, the linker that makes the binary static |
+| `etc/` | `Dockerfile` of the hub image; `e2e/` the Debian node image of `make e2e` (OpenWrt's is the official one) |
 | `.github/workflows/` | CI, always through `Makefile` targets |
 
 ## Modules
@@ -55,6 +55,8 @@ Each one had an alternative. Changing one is changing this table and the spec's 
 | MCP | Own JSON-RPC 2.0, no SDK | Same as foco: a few hundred lines, fully under control |
 | TOML | Own parser of the subset used | Operator-named tables (`[nodes.<name>]`) and errors that name the key |
 | CLI | `clikt-core` | The `clikt` artifact with markdown duplicates symbols when linking |
+| libc | glibc, linked statically (`tools/ld-static`) | Kotlin/Native has no musl target; static, one file runs on glibc and musl alike. A glibc bundle next to the binary also worked, with a directory of libraries to carry |
+| System facts | `/proc`, `statvfs`, `/etc/passwd` | `ps`, `ss` and `df` differ between distributions and busybox; NSS is out of reach of a static glibc |
 | HTTP | Ktor server, CIO engine | Validated on Native by foco |
 
 ## Conventions
@@ -102,7 +104,7 @@ the script in `tools/`.
 | `make lint` | ktlint over `kotlin/`, shellcheck over `tools/`, actionlint over the workflows. `FIX=1` fixes what can be fixed |
 | `make build` / `make test` | Every module, for this machine's Linux |
 | `make cli` | Only the binary. `VARIANT=release` for the optimised one; `ARCH="x86_64 aarch64"` for both architectures |
-| `make e2e` | A Debian container with sshd; `limen install` inside; the hub against it with both keys. Needs Docker. Not in `make check` |
+| `make e2e` | Containers with a real SSH server —Debian with OpenSSH and a repository, OpenWrt's image with dropbear—, `limen install` inside, the hub against them with both keys. `SUITE=debian` or `openwrt` for one. Needs Docker. Not in `make check` |
 | `make docker` | The hub image, `limen:local` (or `IMAGE=…`) |
 | `make local-install` | The binary in `~/.local/bin` |
 | `make hooks` | The `pre-push` hook |
@@ -130,6 +132,20 @@ Mistakes made here, with what avoids them. `make check` does not see them.
   root (or the user limen runs as) and not writable by group or others. `/tmp` and a group-writable checkout fail
   that on purpose; tests that run scripts live in `make e2e`, where they are root's.
 
+- **A C function that keeps a pointer gets a string that outlives the call.** Kotlin/Native frees the C copy
+  of a `String` argument as soon as the call returns. glibc before 2.29 —the one the static binary carries—
+  keeps `posix_spawn_file_actions_addopen`'s path until the spawn, so the child opened garbage and exited 127,
+  depending on what had reused that memory. `Proc` opens `/dev/null` itself and dups it.
+- **`/proc/mounts` is a symlink**, and `Fs.read` opens with `O_NOFOLLOW`: read `/proc/self/mounts`.
+- **Two roles as the same user share a multiplexed SSH connection.** On OpenWrt both keys log in as root; a
+  deploy request through `ControlMaster` rode the socket the read key had opened and landed in the read role.
+  Deploy requests never multiplex.
+- **A forced command only holds a login by key.** OpenWrt's image has root without a password and dropbear
+  accepts it: the e2e "passed" a session that never used the key. Its dropbear runs with password logins off
+  (`-s`), and `install` warns about an empty root password.
+- **The static linker is registered on every `tools/kt` run.** Changing `tools/ld-static` needs nothing
+  else; changing the Kotlin version may change the dependency names in `kotlin/cli/module.yaml`.
+
 ## Prohibitions
 
 - Running anything through a shell, or building a command line as a string.
@@ -138,5 +154,8 @@ Mistakes made here, with what avoids them. `make check` does not see them.
 - Opening a path without resolving it and checking it with `PathPolicy`, or returning file, log, check or
   command-line text without `Redactor`.
 - Reading `SSH_ORIGINAL_COMMAND`.
+- Calling glibc's NSS from the binary: `getpwnam`, `getpwuid`, `getgrgid`, `getaddrinfo` of a name. The static
+  binary can't load its plugins; use `Fs.accounts()` and friends.
+- Reading what `/proc` or `statvfs` say through `ps`, `ss` or `df`.
 - Removing entries from `PathPolicy.BUILT_IN_DENY` or making it configurable.
 - Adding a dependency to `core`.

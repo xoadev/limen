@@ -57,7 +57,7 @@ node:  sshd ──forced command──▶ sudo limen gate --role read ──▶ 
 | Role | System user | Key held by | Can |
 |---|---|---|---|
 | `read` | `limen-read` | the hub | Read requests (§5) and checks (§6) |
-| `deploy` | `limen-deploy` | CI or a person | `apply` and actions (§6) |
+| `deploy` | `limen-deploy` | CI or a person | `sync`, `apply` and actions (§6) |
 | admin | any sudoer | a person on the node | Everything, locally |
 
 - One user per role, so a flaw in one role's wiring can't reach the other. `deploy` is optional:
@@ -70,6 +70,12 @@ node:  sshd ──forced command──▶ sudo limen gate --role read ──▶ 
   a path outside the allowlist and never runs a script outside the script directories.
 - The users' login shell is `/bin/sh`: `sshd` runs forced commands through it, and with `nologin`
   nothing runs. `restrict` and the forced command are what prevent an interactive session.
+- **OpenWrt** has dropbear, no sudo and no tools to add users. Both keys go in root's
+  `/etc/dropbear/authorized_keys`, each with `no-port-forwarding,no-agent-forwarding,no-X11-forwarding,
+  no-pty,command="/usr/bin/limen gate --role <role>"`; the other keys there are left alone. dropbear has
+  no `from=`: the firewall limits who reaches it.
+- A forced command only holds a login by key. Where password logins are open and root has no
+  password —OpenWrt's default— anyone reaching SSH is root without a key, and `install` says so.
 
 ## 4. Node protocol
 
@@ -116,6 +122,7 @@ Each read request is an MCP tool with an extra `node` argument. Every tool is an
 | `processes` | Top processes by CPU or memory |
 | `ports` | Listening sockets and their processes |
 | `history` | The node's audit log (§8) |
+| `state` | The repository commit on the node against the remote, and every service `node.toml` expects with whether it runs (§6.1) |
 | `check_<name>` | One per check script (§6), with its declared arguments |
 
 - Data comes from commands with machine-readable output (`systemctl show`, `journalctl -o json`,
@@ -177,6 +184,40 @@ set -euo pipefail
 - `apply` validates every setup script before running the first: a broken one halfway would leave
   the machine half done.
 
+### 6.1 A repository per node
+
+A node can take everything it runs from a folder of a Git repository — `[repo]` in `limen.toml`:
+
+```
+nodes/hades/
+  node.toml                     # what must be running
+  checks/  actions/  setup/     # the scripts, as in §6
+  stacks/immich/compose.yaml    # Docker Compose stacks
+```
+
+```toml
+[expect]
+compose = ["immich", "passbolt"]      # stacks/<name>/compose.yaml
+units = ["docker.service"]            # systemd units that must be active
+procd = ["dnsmasq", "firewall"]       # OpenWrt services that must have a running instance
+```
+
+- **Scripts say how to get there; `node.toml` says what must run.** limen installs nothing itself:
+  packages, unit files and uci settings come from setup scripts. The one thing it runs on its own is
+  `docker compose up -d --remove-orphans` for each declared stack, because it is the same everywhere.
+- `sync` leaves the checkout (`/opt/limen/repo` by default) exactly as the remote branch: fetch,
+  `reset --hard`, `clean`. The repository is the source of truth; local edits are discarded.
+- `apply` is sync, the setup scripts in order, the stacks, and then `state`: it fails when an
+  expected service is not running, so CI sees it.
+- `state` (read role, an MCP tool) compares the deployed commit with the remote (`git ls-remote`:
+  nothing on the node changes) and every expected service with what runs.
+- With `[repo]`, the script directories default to the node's folder; `[scripts]` still overrides.
+- **Whoever can push to that branch runs code as root on the node**, and the MCP can run its checks.
+  The branch must be protected.
+- A private repository over `https://` needs a token (§10, `install`). It lives in
+  `/etc/limen/repo-token` (root, `0600`, never readable through limen) and reaches git through its
+  environment as an HTTP header, never in a URL or an argument.
+
 ## 7. Configuration
 
 ### 7.1 Node: `/etc/limen/limen.toml`
@@ -204,7 +245,15 @@ setup = "/etc/limen/setup.d"
 
 [audit]
 path = "/var/log/limen/audit.jsonl"
+max_bytes = 5242880
 runs = "/var/log/limen/runs"
+
+[repo]
+url = "https://github.com/xoadev/cloud.git"
+branch = "main"
+path = "nodes/hades"
+dir = "/opt/limen/repo"
+token_file = "/etc/limen/repo-token"
 ```
 
 - Every key has the default shown. An unknown key is an error, so a typo fails instead of being
@@ -262,8 +311,8 @@ host_key = "ssh-ed25519 AAAA…"
 ## 8. Audit
 
 - Every request `gate` receives is appended to `/var/log/limen/audit.jsonl` (root, `0600`): time,
-  role, request, arguments, client address (`SSH_CONNECTION`), result code and duration. `install`
-  adds a logrotate rule.
+  role, request, arguments, client address (`SSH_CONNECTION`), result code and duration. Past
+  `audit.max_bytes` it becomes `audit.jsonl.1`: no logrotate, which OpenWrt doesn't have.
 - `apply` and actions also keep their full output in `/var/log/limen/runs/<time>-<name>.log`.
 - The hub logs each tool call to stderr (node, tool, result, duration): over stdio, stdout is the
   protocol; in the image, stderr is the container's log.
@@ -291,9 +340,11 @@ host_key = "ssh-ed25519 AAAA…"
 | `limen serve` | hub | MCP over HTTP |
 | `limen call <node> <request> [--arg k=v]…` | hub | One request over SSH; prints the JSON. Checks as `check_<name>`. For `apply` and `action`, with the deploy role's `--user` and `--identity`, it streams their output: what CI runs |
 | `limen gate --role <role>` | node | The forced command. Not for people |
-| `limen install --read-key <key> [--deploy-key <key>] [--from <cidr>] [--dry-run]` | node, root | Binary in `/usr/local/bin`, users, `authorized_keys`, `sudoers` (validated with `visudo -c` before it's written), `/etc/limen/`, logrotate. Idempotent |
-| `limen uninstall [--purge]` | node, root | Undoes `install`; keeps `/etc/limen/` and the audit log unless `--purge` |
-| `limen apply [--from NN] [--dry-run]` | node | Setup scripts, in order |
+| `limen install --read-key <key> [--deploy-key <key>] [--from <cidr>] [--repo <url> [--branch b] [--path p]] [--dry-run]` | node, root | Debian: binary in `/usr/local/bin`, users, `authorized_keys`, `sudoers` (validated with `visudo -c` first). OpenWrt: binary in `/usr/bin`, root's dropbear keys, sysupgrade keep list. Both: `/etc/limen/`; with `--repo`, the repository (below). Idempotent |
+| `limen uninstall [--purge]` | node, root | Undoes `install`; keeps `/etc/limen/`, the logs and the checkout unless `--purge` |
+| `limen token` | node, root | Asks for the repository token again (when it expires), checks it and saves it |
+| `limen sync` | node | The checkout to the remote branch |
+| `limen apply [--from NN] [--no-sync] [--dry-run]` | node | Sync, setup scripts in order, stacks, `state` |
 | `limen action <name> [--arg k=v]…` | node | One action |
 | `limen check <name> [--arg k=v]…` | node | One check; exits with its code |
 | `limen lint` | node | Script names, headers and permissions, without running anything |
@@ -302,14 +353,29 @@ host_key = "ssh-ed25519 AAAA…"
 `install` also reads `sshd -T` and warns when `AllowUsers` or `AllowGroups` would keep the new
 users out.
 
+`install --repo` first tries the repository without a token. When it needs one it prints GitHub's
+template link for a fine-grained token —name, owner, no expiry and read-only contents already
+filled in; the repository has to be chosen in the form— asks for the token without echoing it, checks
+it with `git ls-remote`, saves it, and syncs. `--path` defaults to `nodes/<hostname>`.
+
+The deploy role over SSH (`sync`, `apply`, `action` through `limen call`) never uses the multiplexed
+connection: on OpenWrt both roles log in as root, and a deploy request would ride the socket the read
+key opened.
+
 ## 11. Distribution and platforms
 
-- Binaries for Linux `amd64` and `arm64` (glibc), attached to each GitHub release.
+- **One static binary per architecture**, `amd64` and `arm64`, for any Linux: it carries its own glibc,
+  so it runs the same on Debian, Alpine or OpenWrt (musl), whatever their libc version.
 - Hub image `ghcr.io/xoadev/limen`: `debian:trixie-slim` with `openssh-client` and the binary.
   Volume `/data` holds `limen.toml` and the SSH key.
-- Nodes: Debian and Ubuntu with systemd. Other glibc distributions with systemd should work but are
-  untested. Docker is optional: without it, container requests answer `unavailable`.
-- Not supported: musl (Alpine, OpenWrt), init systems other than systemd, macOS, Windows.
+- Nodes:
+  - Debian and Ubuntu with systemd and OpenSSH.
+  - OpenWrt with procd, dropbear and `logread`. `git` (the `git-http` package) only for `[repo]`.
+  - `hello` says which: `init` is `systemd`, `procd` or `none`. Docker is optional everywhere:
+    without it, container requests answer `unavailable`.
+- Processes, sockets and filesystems are read from `/proc` and `statvfs`, never through `ps`, `ss` or
+  `df`, which differ between distributions and busybox.
+- Not supported: init systems other than systemd and procd, macOS, Windows.
 
 ## 12. Implementation
 
@@ -318,8 +384,13 @@ users out.
   - `core`: protocol types, request schemas, configuration, script headers, path policy and
     redaction. Pure, tested without a machine.
   - `cli`: the binary — processes, SSH, MCP and HTTP.
-- MCP: own JSON-RPC 2.0 implementation, no SDK. HTTP: Ktor server (CIO). TOML: ktoml. JSON:
-  kotlinx.serialization.
+- MCP: own JSON-RPC 2.0 implementation, no SDK. HTTP: Ktor server (CIO). JSON: kotlinx.serialization.
+- **Static link.** Kotlin/Native only targets glibc, and links against it dynamically. `tools/ld-static`
+  turns that link into a static one (`-static`, `crtbeginT.o`, `libgcc_eh`, `libpthread` whole); the
+  compiler takes it as its linker because `tools/kt` registers it among the compiler's own dependencies.
+- **No NSS.** Static glibc can't load the plugins behind `getpwnam`, `getpwuid`, `getgrgid` or name
+  resolution: limen reads `/etc/passwd` and `/etc/group` itself and resolves no names on the nodes
+  (`git` and `ssh` do).
 - Processes: `posix_spawn` with an argument array, never `popen` or a shell; own process group, a
   clean environment, stdout and stderr on separate pipes read with a cap; timeouts send `SIGTERM` to
   the group, then `SIGKILL`.
@@ -355,14 +426,22 @@ users out.
 | Kotlin/Native | JVM, Go | One binary without a runtime |
 | `posix_spawn` | `fork` + `execve` | After a fork only async-signal-safe calls are allowed until `exec`, and the Kotlin/Native runtime is not one of them |
 | Own TOML parser | ktoml | Tables named by the operator (`[nodes.<name>]`, `[args.<name>]`) map badly onto a deserializer, and errors must name the key |
+| A static binary | A glibc bundle (loader and libraries next to the binary) | Both run on musl; the static one is one file, and the node needs no directory of libraries |
+| `/proc` and `statvfs` | `ps`, `ss`, `df` | busybox's versions lack the options, and the formats differ between distributions |
+| Scripts converge, `node.toml` declares | limen installing packages and services | limen would become a configuration manager for every distribution; scripts already know how |
+| A fine-grained token for private repositories | A deploy key per node | One link fills in the token; a deploy key needs an SSH client for git on OpenWrt and a manual step in GitHub per node |
 
 ## 15. Open questions
 
+- Authentication of the HTTP hub beyond one shared token: named tokens per client, with the nodes each
+  may see; OAuth 2.1 only if the hub is ever reachable from outside the VPN.
+- The static `arm64` binary on hardware: under qemu-user, glibc's `posix_spawn` fails (qemu's `clone`),
+  so it is only tested to start.
+- `state` of a stack compares services and running containers, not images.
+- Signed commits required for `[repo]`.
 - Releases: binaries and image published from a tag, as foco does.
 - Two scripts with the same name and different extensions: today both are listed and `find` takes
   the first.
 - Following logs (`follow`): v1 only answers bounded windows.
-- Per-token node scoping on the HTTP hub: v1 is one token for all nodes.
 - Podman besides Docker.
 - A `.deb` package besides `limen install`.
-- musl builds for OpenWrt nodes.

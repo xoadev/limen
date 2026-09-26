@@ -24,7 +24,11 @@ node:  sshd ──forced command──▶ sudo limen gate --role read ──▶ 
 - **Changes go through another door.** Setup scripts (from a bare machine to a working one, or to
   restore it) and one-off actions run with a second key, the `deploy` role, which the MCP server never
   holds. CI or a person uses it; the agent can only suggest it.
-- **One binary, no runtime.** Kotlin/Native, Linux `amd64` and `arm64`.
+- **A node can follow a repository.** Its scripts, Docker Compose stacks and a `node.toml` saying what
+  must run live in a folder of a Git repository; `limen apply` syncs and converges, and the `state`
+  tool says what is deployed against what should be.
+- **One static binary, any Linux.** Kotlin/Native, `amd64` and `arm64`, carrying its own libc: the same
+  file runs on Debian and on OpenWrt.
 
 The full design is in [`docs/spec.md`](docs/spec.md).
 
@@ -33,27 +37,38 @@ The full design is in [`docs/spec.md`](docs/spec.md).
 | Tool | What it answers |
 |---|---|
 | `nodes` | The machines, whether they answer, their OS and the scripts each one has |
-| `status` | Uptime, load, memory, disks, failed units, unhealthy containers, pending reboot |
-| `services`, `service` | systemd units; one unit with its state, restarts and last journal lines |
+| `status` | Uptime, load, memory, disks, failed services, unhealthy containers, pending reboot |
+| `services`, `service` | systemd units or procd services; one with its state, restarts and last log lines |
 | `containers`, `container` | Docker containers; one with its health, mounts, ports and labels (environment by name only) |
 | `logs` | A unit, the journal, a container or an allowed file, always a bounded window, with `grep` |
 | `read_file`, `list_dir` | Allowed files and the directories that lead to them |
 | `processes`, `ports` | Top processes, listening sockets |
 | `history` | The node's audit log of every request |
+| `state` | The repository commit on the node against the remote, and whether each expected service runs |
 | `check_<name>` | Your check scripts |
 
 ## Setting up a node
 
-As root, on a Debian or Ubuntu machine with systemd:
+As root:
 
 ```sh
-limen install --read-key "$(cat hub.pub)" --from 100.64.0.0/10
+limen install --read-key "$(cat hub.pub)" --deploy-key "$(cat ci.pub)" \
+  --repo https://github.com/you/infra.git --path nodes/$(hostname)
 ```
 
-It installs the binary in `/usr/local/bin`, creates the `limen-read` user with a forced command in
-its `authorized_keys`, a `sudoers` rule for exactly that command, `/etc/limen/` and the audit log. Add
-`--deploy-key` for the deploy role. `--dry-run` shows what it would do, and running it again changes
-nothing. At the end it prints the node's host key for the hub.
+- **Debian, Ubuntu:** the binary goes to `/usr/local/bin`; the `limen-read` and `limen-deploy` users get
+  a forced command in their `authorized_keys` and a `sudoers` rule for exactly that command.
+  `--from 100.64.0.0/10` limits where the keys work.
+- **OpenWrt:** the binary goes to `/usr/bin`; both keys go in root's dropbear `authorized_keys`, each
+  with its forced command, next to the keys already there; sysupgrade keeps limen. Turn dropbear's
+  password logins off: a forced command only holds a login by key, and `install` warns when root has
+  no password.
+- **`--repo`:** when the repository is private, `install` prints a GitHub link that fills in a
+  fine-grained, read-only token (choose the repository in the form), asks for it and checks it before
+  saving it. `limen token` replaces it when it expires.
+
+`--dry-run` shows what it would do, and running it again changes nothing. At the end it prints what to
+add to the hub, host key included.
 
 Then say what may be read, in `/etc/limen/limen.toml`:
 
@@ -80,7 +95,7 @@ host = "100.64.0.2"
 host_key = "ssh-ed25519 AAAA…"
 ```
 
-`host_key` is required: there is no trust on first use.
+`host_key` is required: there is no trust on first use. An OpenWrt node also takes `user = "root"`.
 
 **stdio**, for Claude Code on the same machine:
 
@@ -125,20 +140,40 @@ if (( used >= LIMEN_ARG_THRESHOLD )); then echo "backups at ${used}%"; exit 1; f
 echo "backups at ${used}%"
 ```
 
-Save it as `/etc/limen/checks.d/backup-space.sh`, owned by root and not writable by anyone else, and
-the agent gets `check_backup-space`. Exit `0` ok, `1` warn, `2` fail, `3` unknown; the first line is
+Save it as `checks/backup-space.sh` (in the repository, or in `/etc/limen/checks.d/`), owned by root
+and not writable by anyone else, and the agent gets `check_backup-space`. Exit `0` ok, `1` warn, `2` fail, `3` unknown; the first line is
 the summary. `limen lint` checks every script without running any.
 
-Setup scripts go in `/etc/limen/setup.d/` as `10-packages.sh`, `20-users.sh`… and run in order with
-`limen apply`; actions go in `/etc/limen/actions.d/` and run with `limen action <name>`. Both, from
-elsewhere, only with the deploy key: `limen call hades apply --user limen-deploy --identity deploy_key`.
+Setup scripts go in `setup/` as `10-packages.sh`, `20-users.sh`… and run in order with `limen apply`;
+actions go in `actions/` and run with `limen action <name>`. From elsewhere, only with the deploy key:
+`limen call hades apply --user limen-deploy --identity deploy_key`.
+
+## A repository per node
+
+```
+nodes/hades/
+  node.toml                     # what must be running
+  checks/  actions/  setup/
+  stacks/immich/compose.yaml
+```
+
+```toml
+[expect]
+compose = ["immich"]            # brought up by apply
+units = ["docker.service"]      # systemd
+procd = ["dnsmasq"]             # OpenWrt
+```
+
+Setup scripts say how to get there; `node.toml` says what must run. `limen apply` syncs the checkout to
+the branch, runs the setup scripts, brings up the stacks and fails if something expected is not
+running. Whoever can push to that branch runs code as root on the node: protect it.
 
 ## Building
 
 ```sh
 make check   # lint, build and every test: what CI runs
 make cli     # the binary, in kotlin/build/tasks/_cli_linkLinuxX64Debug/cli.kexe
-make e2e     # a Debian container with sshd, `limen install` inside, and the hub against it
+make e2e     # Debian and OpenWrt containers, `limen install` inside, the hub against them (SUITE=debian|openwrt)
 make help    # the rest
 ```
 

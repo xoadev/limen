@@ -26,7 +26,7 @@ object GitHub {
         buildString {
             for (b in s.encodeToByteArray()) {
                 val c = b.toInt() and 0xff
-                if (c.toChar().isLetterOrDigit() && c < 128 || c.toChar() in "-._~") {
+                if ((c < 128 && c.toChar().isLetterOrDigit()) || c.toChar() in "-._~") {
                     append(c.toChar())
                 } else {
                     append('%').append(c.toString(16).uppercase().padStart(2, '0'))

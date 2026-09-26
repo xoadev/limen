@@ -12,6 +12,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
+import limen.cli.os.FileType
 import limen.cli.os.Fs
 import limen.cli.os.Sys
 import limen.core.ErrorCode
@@ -55,6 +56,8 @@ object Platform {
         val mounts = ProcFs.mounts(Fs.readText("/proc/self/mounts") ?: throw LimenException(ErrorCode.UNAVAILABLE, "no /proc/self/mounts"))
         return buildJsonArray {
             for (m in mounts) {
+                // A file bind-mounted over another (a container's /etc/hostname) is not a filesystem to report.
+                if (Fs.stat(m.point)?.type != FileType.DIRECTORY) continue
                 val (free, total) = Fs.space(m.point) ?: continue
                 if (total == 0L) continue
                 val used = total - free
