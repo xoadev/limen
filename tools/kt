@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+# Single entry point to the build tool. Only Makefile targets and tools/ scripts call this.
+#
+# Verbs:
+#   build                 compile every module for this machine's Linux
+#   cli                   compile only the `limen` binary, for each architecture in ARCH (the host's by default)
+#   artifact [arch]       print the path of what `cli` built for the variant in force (x86_64 or aarch64)
+#   test [pattern]        run every test suite, or only the test classes matching <pattern>
+#   clean
+#
+# The build tool is the Kotlin Toolchain; the project lives in kotlin/ and the wrapper there pins its version.
+# `VARIANT=debug|release` picks what `cli` compiles; debug links in seconds, release is what gets published.
+set -euo pipefail
+ROOT=$(cd "$(dirname "$0")/.." && pwd)
+KOTLIN_PROJECT="$ROOT/kotlin"
+
+VARIANT=${VARIANT:-debug}
+case "$VARIANT" in
+  debug | release) ;;
+  *) echo "tools/kt: VARIANT is '$VARIANT'; it can only be debug or release" >&2; exit 64 ;;
+esac
+# The toolchain capitalises the variant in its task names: `_cli_linkLinuxX64Release`.
+Variant=${VARIANT^}
+
+verb=${1:-}
+[[ -n "$verb" ]] || { sed -n '2,12p' "$0" >&2; exit 64; }
+shift
+
+kt() { (cd "$KOTLIN_PROJECT" && ./kotlin "$@"); }
+
+# `build` and `test` compile this machine's Linux only: the other architecture is cross-compiled by `cli` when
+# asked (ARCH), and its tests could not run here anyway.
+case "$(uname -m)" in
+  aarch64 | arm64) host_platform=linuxArm64 ;;
+  *) host_platform=linuxX64 ;;
+esac
+
+case "$verb" in
+  build) kt build -p "$host_platform" ;;
+  cli)
+    # One architecture after the other: a release link runs LLVM over the whole program, and two at once need
+    # more memory than a CI runner has.
+    for arch in ${ARCH:-$(uname -m)}; do
+      case "$arch" in
+        x86_64) platform=linuxX64 ;;
+        aarch64 | arm64) platform=linuxArm64 ;;
+        *) echo "tools/kt: no cli for architecture '$arch'; it is x86_64 or aarch64" >&2; exit 64 ;;
+      esac
+      kt build -m cli -v "$VARIANT" -p "$platform"
+    done
+    ;;
+  artifact)
+    case "${1:-$(uname -m)}" in
+      x86_64) target=LinuxX64 ;;
+      aarch64 | arm64) target=LinuxArm64 ;;
+      *) echo "tools/kt: no cli for architecture '${1:-}'; it is x86_64 or aarch64" >&2; exit 64 ;;
+    esac
+    out="$KOTLIN_PROJECT/build/tasks/_cli_link$target$Variant/cli.kexe"
+    [[ -f "$out" ]] || { echo "tools/kt: no cli built for $VARIANT; run make cli first" >&2; exit 1; }
+    echo "$out"
+    ;;
+  test)
+    if [[ $# -gt 0 ]]; then
+      kt test -p "$host_platform" --include-classes "$1"
+    else
+      kt test -p "$host_platform"
+    fi
+    ;;
+  clean) kt clean ;;
+  *) echo "tools/kt: unknown verb '$verb'" >&2; exit 64 ;;
+esac

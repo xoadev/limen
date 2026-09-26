@@ -1,0 +1,4 @@
+# The Kotlin Toolchain project of limen: `core` (pure logic) and `cli` (the `limen` binary).
+modules:
+  - cli
+  - core

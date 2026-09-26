@@ -1,0 +1,12 @@
+# Protocol, request schemas, configuration, script headers, path policy and redaction (spec §12). Pure: no
+# processes, no files, no network, so every rule here is tested without a machine.
+product:
+  type: kmp/lib
+  platforms: [linuxX64, linuxArm64]
+
+dependencies:
+  - $libs.kotlinx.serialization.json: exported
+
+settings:
+  kotlin:
+    serialization: json

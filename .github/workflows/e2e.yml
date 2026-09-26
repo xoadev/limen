@@ -1,0 +1,30 @@
+# `make e2e` on demand: a Debian container with sshd, `limen install` inside, and the hub against it.
+name: e2e
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      KOTLIN_CLI_JAVA_OPTIONS: -Xmx2g
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Toolchain and dependencies cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.konan
+            ~/.cache/JetBrains/Kotlin
+          key: kotlin-${{ runner.os }}-${{ hashFiles('kotlin/kotlin', 'kotlin/gradle/libs.versions.toml', 'kotlin/**/module.yaml') }}
+          restore-keys: kotlin-${{ runner.os }}-
+
+      - name: make e2e
+        run: make e2e

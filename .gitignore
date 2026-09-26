@@ -1,0 +1,19 @@
+# build
+kotlin/build/
+.kotlin/
+kotlin/.kotlin/
+*.kexe
+# the build stamp: tools/stamp.sh writes it before every build
+kotlin/core/src/limen/core/BuildStamp.kt
+# ide
+.idea/
+*.iml
+.vscode/
+# os
+.DS_Store
+# claude: repository agents and skills are committed; each machine's settings are not
+.claude/settings.local.json
+.claude/worktrees/
+# local state
+*.env
+/.limen/

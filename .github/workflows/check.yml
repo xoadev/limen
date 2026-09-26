@@ -1,0 +1,50 @@
+# `make check` on every push to main and every pull request: the one mandatory gate. `make e2e` is not here: it
+# needs Docker and pulls an image; it runs on demand (e2e.yml).
+name: check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths-ignore:
+      - '*.md'
+      - 'docs/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: check-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      KOTLIN_CLI_JAVA_OPTIONS: -Xmx2g
+    steps:
+      # Every action pinned by commit SHA, with its version in a comment: a tag can move, a SHA cannot.
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # ktlint is a jar; the toolchain brings its own JRE, but the linter needs one on the machine.
+      - name: Java (ktlint)
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Toolchain, dependencies and linters cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.konan
+            ~/.cache/JetBrains/Kotlin
+            ~/.cache/limen/lint
+          key: kotlin-${{ runner.os }}-${{ hashFiles('kotlin/kotlin', 'kotlin/gradle/libs.versions.toml', 'kotlin/**/module.yaml', 'tools/lint.sh') }}
+          restore-keys: kotlin-${{ runner.os }}-
+
+      - name: make -k check
+        run: make -k check
