@@ -168,9 +168,12 @@ Mistakes made here, with what avoids them. `make check` does not see them.
   arguments reached a node reordered. `shift_remove` keeps the order.
 - **Rust's `regex` has no lookaround.** A redaction pattern that needs "not preceded by" matches that character
   instead and keeps it outside the `secret` group; operators' `redact.patterns` follow the same syntax.
-- **`regex` without `perf-dfa` took 11 s to redact a 16 MiB window**, against 0.2 s with it. The crate is built
-  with `std`, `unicode-perl`, `unicode-case` and `perf-dfa` only: 560 KB less than its defaults. Unicode's `\p{…}`
-  classes are the price; a build that drops `perf-dfa` must measure `logs` over a large file first.
+- **`regex` without `perf-dfa` took 11 s to redact a 16 MiB window**, against 0.2 s with it; without
+  `perf-backtrack`, captures (logread lines, redaction groups) ran four times slower. The crate is built with `std`,
+  `unicode-perl`, `unicode-case`, `perf-dfa` and `perf-backtrack` only: 550 KB less than its defaults. Unicode's
+  `\p{…}` classes are the price; a change to these features must measure `logs` over a large file first.
+- **A regex built inside a function is built on every call.** `logread_line` compiled its pattern per line: 100,000
+  lines took 211 s. Fixed patterns are `static … LazyLock<Regex>`.
 - **Unicode's `\s` and `\w` cost milliseconds to compile**, on every request: the built-in redaction patterns
   spell their classes in ASCII and compile on first use.
 

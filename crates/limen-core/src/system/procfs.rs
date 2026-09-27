@@ -3,6 +3,7 @@
 
 use regex::Regex;
 use std::collections::{BTreeMap, HashSet};
+use std::sync::LazyLock;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Account {
@@ -127,8 +128,8 @@ pub fn mounts(text: &str) -> Vec<Mount> {
 
 /// `\040` and the other octal escapes of `/proc/mounts`.
 fn unescape(s: &str) -> String {
-    Regex::new(r"\\([0-7]{3})")
-        .unwrap()
+    static OCTAL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\\([0-7]{3})").unwrap());
+    OCTAL
         .replace_all(s, |c: &regex::Captures| {
             char::from_u32(u32::from_str_radix(&c[1], 8).unwrap_or(0)).map(String::from).unwrap_or_default()
         })
@@ -263,11 +264,12 @@ const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Au
 /// One `logread` line (OpenWrt): `Sat Sep 26 17:00:00 2026 daemon.info dnsmasq[1234]: message`. The time is the one
 /// logread prints, UTC when it runs with `TZ=UTC`.
 pub fn logread_line(line: &str) -> Option<LogreadEntry> {
-    // weekday month day time year facility.level source[pid]: message
-    let re =
-        Regex::new(r"^\w{3} (\w{3}) +(\d{1,2}) (\d\d:\d\d:\d\d) (\d{4}) (\w+)\.(\w+) ([^\[:]+?)(?:\[(\d+)\])?: ?(.*)$")
-            .unwrap();
-    let g = re.captures(line)?;
+    // weekday month day time year facility.level source[pid]: message. ASCII classes: this runs on every line.
+    static LINE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"^[A-Za-z]{3} ([A-Za-z]{3}) +([0-9]{1,2}) ([0-9:]{8}) ([0-9]{4}) ([a-z0-9]+)\.([a-z]+) ([^\[:]+?)(?:\[([0-9]+)\])?: ?(.*)$")
+            .unwrap()
+    });
+    let g = LINE.captures(line)?;
     let month = MONTHS.iter().position(|m| *m == &g[1])? + 1;
     Some(LogreadEntry {
         time: format!("{}-{month:02}-{:0>2}T{}Z", &g[4], &g[2], &g[3]),

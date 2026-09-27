@@ -10,6 +10,7 @@ use hmac::{Hmac, KeyInit, Mac};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::sync::LazyLock;
 use toml_edit::{DocumentMut, Item, Table, value};
 
 /// `SHA256:<base64>` of the key blob, as `ssh-keygen -lf` prints it: what a person can check with standard tools.
@@ -51,11 +52,13 @@ pub const CODE: &str = "^[a-z2-7]{26}$";
 impl JoinUrl {
     pub fn parse(text: &str) -> Result<JoinUrl> {
         // An address and not a name: the static binary is not the place to resolve them.
-        let re = Regex::new(
+        static LINE: LazyLock<Regex> = LazyLock::new(|| {
+            Regex::new(
             r"^(http://(?:\d{1,3}(?:\.\d{1,3}){3}|\[[0-9a-fA-F:]+\]):\d{1,5})/join/([a-z2-7]{26})#(SHA256:[A-Za-z0-9+/]{43})\.([a-z2-7]{26})$",
-        )
-        .unwrap();
-        let c = re.captures(text.trim()).ok_or_else(|| {
+            )
+            .unwrap()
+        });
+        let c = LINE.captures(text.trim()).ok_or_else(|| {
             bad_request("not a join line from `limen invite`: expected http://<address>:<port>/join/<code>#SHA256:<fingerprint>.<secret>")
         })?;
         Ok(JoinUrl { base: c[1].into(), code: c[2].into(), fingerprint: c[3].into(), secret: c[4].into() })

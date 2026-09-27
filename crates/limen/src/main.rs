@@ -589,7 +589,7 @@ fn parse_args(pairs: &[String], params: &[Param]) -> Result<Map<String, Value>, 
             Some(ParamType::Bool) => {
                 json!(value.parse::<bool>().map_err(|_| Stop::Usage(format!("{key} must be true or false")))?)
             }
-            None if value.parse::<i64>().is_ok() => json!(value.parse::<i64>().unwrap()),
+            None if value.parse::<i64>().is_ok() => json!(value.parse::<i64>().unwrap_or_default()),
             None if value == "true" || value == "false" => json!(value == "true"),
             _ => json!(value),
         };
