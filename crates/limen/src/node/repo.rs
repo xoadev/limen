@@ -13,6 +13,7 @@ use limen_core::protocol::{ErrorCode, LimenError, Result, error};
 use limen_core::time::iso;
 use regex::Regex;
 use serde_json::{Map, Value, json};
+use std::sync::LazyLock;
 use std::time::Duration;
 
 pub struct Commit {
@@ -126,8 +127,10 @@ pub fn access(repo: &RepoConfig, token: Option<&str>) -> Access {
         Err(e) => {
             // What git says when credentials are missing or refused, prompts being off. GitHub answers "not found"
             // for a private repository it won't show.
-            let auth = Regex::new("could not read Username|Authentication failed|terminal prompts disabled|Repository not found|returned error: 40[134]").unwrap();
-            if auth.is_match(&e.message) { Access::NeedsToken } else { Access::Failed(e.message) }
+            static AUTH: LazyLock<Regex> = LazyLock::new(|| {
+                Regex::new("could not read Username|Authentication failed|terminal prompts disabled|Repository not found|returned error: 40[134]").unwrap()
+            });
+            if AUTH.is_match(&e.message) { Access::NeedsToken } else { Access::Failed(e.message) }
         }
     }
 }

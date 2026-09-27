@@ -348,4 +348,13 @@ mod tests {
         assert_eq!(logread_line("Sat Sep  6 07:00:00 2026 kern.warn kernel: x").unwrap().time, "2026-09-06T07:00:00Z");
         assert!(logread_line("garbage").is_none());
     }
+
+    #[test]
+    fn a_long_log_is_parsed_in_a_moment() {
+        // `logs` with a filter scans 100,000 lines: a pattern built per line made that minutes.
+        let line = "Sat Sep 26 17:00:00 2026 daemon.info dnsmasq[1234]: DHCPACK(br-lan) 192.168.1.20";
+        let start = std::time::Instant::now();
+        assert_eq!((0..20_000).filter_map(|_| logread_line(line)).count(), 20_000);
+        assert!(start.elapsed() < std::time::Duration::from_secs(5), "took {:?}", start.elapsed());
+    }
 }
