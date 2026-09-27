@@ -41,7 +41,10 @@ class PathPolicyTest {
         assertIs<PathPolicy.Decision.Denied>(policy.check("/srv/data"))
         for (secret in listOf(
             "/etc/shadow",
+            "/etc/sudoers",
+            "/etc/sudoers.tmp",
             "/etc/sudoers.d/limen",
+            "/etc/dropbear/dropbear_ed25519_host_key",
             "/etc/ssh/ssh_host_rsa_key",
             "/home/ana/.ssh/id_ed25519",
             "/etc/ssl/private/key.pem",
@@ -55,6 +58,15 @@ class PathPolicyTest {
         assertIs<PathPolicy.Decision.Denied>(everything.check("/proc/1/environ"))
         assertIs<PathPolicy.Decision.Denied>(everything.check("/dev/sda"))
         assertIs<PathPolicy.Decision.Denied>(everything.check("/root/.bash_history"))
+        assertEquals(PathPolicy.Decision.Allowed, everything.check("/etc/dropbear/dropbear_ed25519_host_key.pub"))
+    }
+
+    @Test
+    fun normalizeResolvesDotsAsText() {
+        assertEquals("/etc/shadow", PathPolicy.normalize("/etc/nginx/../shadow"))
+        assertEquals("/etc/shadow", PathPolicy.normalize("/../../etc/./shadow"))
+        assertEquals("/", PathPolicy.normalize("/a/.."))
+        assertEquals("/a/b", PathPolicy.normalize("//a//b/"))
     }
 
     @Test

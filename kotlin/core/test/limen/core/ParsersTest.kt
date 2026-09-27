@@ -8,6 +8,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import limen.core.system.Parsers
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 
 class ParsersTest {
     private val redactor = Redactor()
@@ -82,6 +83,7 @@ class ParsersTest {
                 .jsonObject
         val detail = Parsers.containerDetail(inspect, listOf("ghcr.io/immich@sha256:bb"), redactor)
         assertEquals("""["DB_PASSWORD","TZ"]""", detail["env"].toString())
+        assertFalse("secret" in detail.toString())
         assertEquals(JsonPrimitive("start.sh --token=[redacted]"), detail["command"])
         assertEquals(JsonPrimitive("healthy"), detail["state"]!!.jsonObject["health"]!!.jsonObject["status"])
         assertEquals("0123456789ab", detail["id"]!!.jsonPrimitive.content)

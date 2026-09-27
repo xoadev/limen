@@ -83,10 +83,19 @@ class Hub(
     }
 
     /** The HTTP clients' token: `LIMEN_TOKEN`, or the one `init` wrote. */
-    fun token(): String =
-        Sys.env("LIMEN_TOKEN")?.trim()?.takeIf { it.isNotEmpty() }
-            ?: Fs.readText(tokenPath)?.trim()?.takeIf { it.isNotEmpty() }
-            ?: throw LimenException(ErrorCode.UNAVAILABLE, "no token: set LIMEN_TOKEN or run `limen init --serve`")
+    fun token(): String {
+        val token =
+            Sys.env("LIMEN_TOKEN")?.trim()?.takeIf { it.isNotEmpty() }
+                ?: Fs.readText(tokenPath)?.trim()?.takeIf { it.isNotEmpty() }
+                ?: throw LimenException(ErrorCode.UNAVAILABLE, "no token: set LIMEN_TOKEN or run `limen init --serve`")
+        if (token.length < MIN_TOKEN) {
+            throw LimenException(
+                ErrorCode.BAD_REQUEST,
+                "the token is ${token.length} characters long; it needs $MIN_TOKEN characters or more",
+            )
+        }
+        return token
+    }
 
     /** A one-time invitation for [name], valid for [ttl] (spec §10.1). */
     fun invite(
@@ -142,14 +151,7 @@ class Hub(
                     "this invitation does not exist, was used, or expired; ask the hub for another",
                 )
         val address = arrival.address?.takeIf { it.isNotBlank() } ?: from.removePrefix("::ffff:")
-        val entry = HubFile.upsertNode(Fs.readText(configPath).orEmpty(), invite.name, address, arrival.port, arrival.user, arrival.hostKey)
-        // Parsed before it is written: a host key or address that would break the hub's file is refused instead.
-        try {
-            HubConfig.parse(entry)
-        } catch (e: TomlException) {
-            throw LimenException(ErrorCode.BAD_REQUEST, "the node's answer does not fit the hub's configuration: ${e.message}")
-        }
-        Fs.writeAtomic(configPath, entry.encodeToByteArray(), 0b110_000_000)
+        writeNode(invite.name, address, arrival.port, arrival.user, arrival.hostKey)
         Fs.remove("$invites/$code.json")
         val hello =
             try {
@@ -176,15 +178,34 @@ class Hub(
         hostKey: String,
         user: String,
         port: Int,
+    ) = writeNode(name, address, port, user, hostKey)
+
+    /**
+     * Writes one node's table and nothing else. The values are checked by [HubFile.upsertNode]; then, whatever it
+     * wrote, the result must parse and differ from what was there only in that node, or nothing is written.
+     */
+    private fun writeNode(
+        name: String,
+        address: String,
+        port: Int,
+        user: String,
+        hostKey: String,
     ) {
-        Keys.fingerprint(hostKey)
-        val text = HubFile.upsertNode(Fs.readText(configPath).orEmpty(), name, address, port, user, hostKey)
-        try {
-            HubConfig.parse(text)
-        } catch (e: TomlException) {
-            throw LimenException(ErrorCode.BAD_REQUEST, e.message ?: "bad node")
+        val text = Fs.readText(configPath).orEmpty()
+        val before = HubConfig.parse(text)
+        val updated = HubFile.upsertNode(text, name, address, port, user, hostKey)
+        val after =
+            try {
+                HubConfig.parse(updated)
+            } catch (e: TomlException) {
+                throw LimenException(ErrorCode.BAD_REQUEST, "the node does not fit the hub's configuration: ${e.message}")
+            }
+
+        fun without(c: HubConfig) = c.copy(nodes = c.nodes.filter { it.name != name })
+        if (without(after) != without(before) || after.node(name) == null) {
+            throw LimenException(ErrorCode.BAD_REQUEST, "adding $name would change more than $name in $configPath; refused")
         }
-        Fs.writeAtomic(configPath, text.encodeToByteArray(), 0b110_000_000)
+        Fs.writeAtomic(configPath, updated.encodeToByteArray(), 0b110_000_000)
     }
 
     fun remove(name: String): Boolean {
@@ -196,6 +217,9 @@ class Hub(
     }
 
     companion object {
+        /** Spec §9. The token `init` writes has 32. */
+        const val MIN_TOKEN = 16
+
         fun home(option: String?): String =
             option ?: Sys.env("LIMEN_HOME")?.takeIf { it.isNotBlank() } ?: ((Sys.env("HOME") ?: "/root") + "/.limen")
 

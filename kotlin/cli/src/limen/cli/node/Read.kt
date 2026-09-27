@@ -390,13 +390,11 @@ object Read {
         node: Node,
         args: Map<String, JsonElement>,
     ): Answer {
-        val requested = args.string("path")!!
-        val dir = Fs.realPath(requested) ?: throw LimenException(ErrorCode.NOT_FOUND, "$requested does not exist")
-        val info = Fs.stat(dir)!!
-        if (info.type != FileType.DIRECTORY) badRequest("$dir is not a directory")
-        if (!node.policy.allowed(dir) && !node.policy.leadsTo(dir)) {
-            throw LimenException(ErrorCode.DENIED, (node.policy.check(dir) as PathPolicy.Decision.Denied).reason)
-        }
+        val listable = { path: String -> node.policy.allowed(path) || node.policy.leadsTo(path) }
+        val dir = resolve(node, args.string("path")!!, listable)
+        // The policy before the type: what a denied path is, like whether it exists, is not the client's to learn.
+        if (!listable(dir)) throw LimenException(ErrorCode.DENIED, denial(node, dir))
+        if (Fs.stat(dir)?.type != FileType.DIRECTORY) badRequest("$dir is not a directory")
         val max = 1000
         val names = Fs.list(dir)
         val entries =
@@ -445,8 +443,9 @@ object Read {
         val count = args.int("lines") ?: 50
         if (!Fs.exists(node.config.audit)) return Answer(JsonArray(emptyList()))
         val slice = Fs.tail(node.config.audit, count, maxBytes = count.toLong() * 8192)
+        // The log keeps every argument as it came, deploy ones included; what leaves the node is redacted.
         return Answer(
-            JsonArray(slice.lines.mapNotNull { runCatching { LenientJson.parseToJsonElement(it) }.getOrNull() }),
+            JsonArray(slice.lines.mapNotNull { runCatching { LenientJson.parseToJsonElement(node.redactor.redact(it)) }.getOrNull() }),
         )
     }
 
@@ -493,22 +492,45 @@ object Read {
         node: Node,
         requested: String,
     ): String {
-        if (!requested.startsWith("/")) badRequest("$requested is not an absolute path")
-        val resolved = Fs.realPath(requested)
-        if (resolved == null) {
-            // A path that does not exist says nothing either way; one that is not allowed must not say it exists.
-            val denied = node.policy.check(requested) as? PathPolicy.Decision.Denied
-            if (denied != null) throw LimenException(ErrorCode.DENIED, denied.reason)
-            throw LimenException(ErrorCode.NOT_FOUND, "$requested does not exist")
-        }
+        val resolved = resolve(node, requested) { node.policy.allowed(it) }
         when (val decision = node.policy.check(resolved)) {
             is PathPolicy.Decision.Denied -> throw LimenException(ErrorCode.DENIED, decision.reason)
             PathPolicy.Decision.Allowed -> Unit
         }
         val info = Fs.stat(resolved)!!
         if (info.type != FileType.FILE) badRequest("$resolved is not a regular file")
+        // A window of lines can fall between a key's markers, where redaction can't see it. Keys live in small files,
+        // so those are searched whole; in a large one, a log, the redactor only masks keys the window holds entire.
+        if (info.size <= KEY_FILE_MAX_BYTES && Fs.contains(resolved, PRIVATE_KEY, KEY_FILE_MAX_BYTES)) {
+            throw LimenException(ErrorCode.DENIED, "$resolved holds a private key")
+        }
         return resolved
     }
+
+    /**
+     * [requested] with symlinks and `..` resolved. A path that doesn't exist is judged by its normalised form: one
+     * the policy would refuse is `denied` whether or not it exists, so the answer never tells a denied path's
+     * existence.
+     */
+    private fun resolve(
+        node: Node,
+        requested: String,
+        visible: (String) -> Boolean,
+    ): String {
+        if (!requested.startsWith("/")) badRequest("$requested is not an absolute path")
+        Fs.realPath(requested)?.let { return it }
+        val normalised = PathPolicy.normalize(requested)
+        if (!visible(normalised)) throw LimenException(ErrorCode.DENIED, denial(node, normalised))
+        throw LimenException(ErrorCode.NOT_FOUND, "$normalised does not exist")
+    }
+
+    private fun denial(
+        node: Node,
+        path: String,
+    ): String = (node.policy.check(path) as? PathPolicy.Decision.Denied)?.reason ?: "$path is not readable"
+
+    private const val PRIVATE_KEY = "PRIVATE KEY-----"
+    private const val KEY_FILE_MAX_BYTES = 1024L * 1024
 
     /** `30m` (that long ago) or `2026-09-26T08:00Z`. */
     private fun instant(

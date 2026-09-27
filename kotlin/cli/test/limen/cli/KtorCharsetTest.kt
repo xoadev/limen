@@ -26,5 +26,8 @@ class KtorCharsetTest {
             result.isFailure,
             "Ktor's UTF-8 works in the static binary now: use Ktor's HTTP client in limen join and remove HttpLite (docs/openwrt.md)",
         )
+        // Failing for any other reason would keep the tripwire quiet for the wrong one.
+        val message = result.exceptionOrNull()?.message.orEmpty()
+        assertTrue("iconv" in message, "Ktor failed, but not for iconv: $message")
     }
 }

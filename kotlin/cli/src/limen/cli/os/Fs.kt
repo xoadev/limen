@@ -174,6 +174,38 @@ object Fs {
 
     fun readText(path: String): String? = read(path)?.decodeToString()
 
+    /** Whether [path] contains [needle], reading it in chunks, up to [limit] bytes. */
+    fun contains(
+        path: String,
+        needle: String,
+        limit: Long,
+    ): Boolean {
+        val target = needle.encodeToByteArray()
+        val fd = open(path, O_RDONLY or O_CLOEXEC or O_NOFOLLOW)
+        if (fd < 0) return false
+        try {
+            val buffer = ByteArray(CHUNK + target.size)
+            var carried = 0
+            var total = 0L
+            while (total < limit) {
+                val n = buffer.usePinned { read(fd, it.addressOf(carried), CHUNK.convert()).toInt() }
+                if (n <= 0) return false
+                total += n
+                val end = carried + n
+                outer@ for (i in 0..end - target.size) {
+                    for (j in target.indices) if (buffer[i + j] != target[j]) continue@outer
+                    return true
+                }
+                // The tail that could start a match across the chunk boundary goes first in the next round.
+                carried = minOf(target.size - 1, end)
+                buffer.copyInto(buffer, 0, end - carried, end)
+            }
+            return false
+        } finally {
+            close(fd)
+        }
+    }
+
     /**
      * Lines [from]..[from]+[count]-1 of [path] (1-based), reading in chunks so a big file costs what is read, and
      * never more than [maxBytes] of content.

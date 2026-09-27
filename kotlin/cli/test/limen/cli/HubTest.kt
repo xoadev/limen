@@ -9,11 +9,15 @@ import limen.cli.hub.NodeClient
 import limen.cli.os.Fs
 import limen.cli.os.HttpLite
 import limen.cli.os.Proc
+import limen.core.ErrorCode
 import limen.core.LimenException
 import limen.core.NodeResponse
 import limen.core.config.HubConfig
 import limen.core.join.Arrival
 import limen.core.join.Keys
+import platform.posix.setenv
+import platform.posix.unsetenv
+import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -23,9 +27,17 @@ import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
 
 class HubTest {
+    private val dirs = mutableListOf<String>()
+
     private fun hub(): Hub {
         val dir = Proc.run(listOf("/bin/mktemp", "-d")).out.trim()
+        dirs += dir
         return Hub("$dir/hub")
+    }
+
+    @AfterTest
+    fun removeTheHubs() {
+        dirs.forEach { Proc.run(listOf("/bin/rm", "-rf", it)) }
     }
 
     private class Answering : NodeClient {
@@ -99,6 +111,42 @@ class HubTest {
         }
         assertEquals(emptyList(), HubConfig.parse(Fs.readText(hub.configPath)!!).nodes)
         assertNotNull(hub.invitation(code))
+    }
+
+    @Test
+    fun anArrivalCanOnlyAddTheNodeItWasInvitedAs() {
+        val hub = hub()
+        hub.init(serve = false)
+        val before = Fs.readText(hub.configPath)!!
+        val key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIA6gEiSLgluUCGAAsH0PgwdjMmtbI2Ow7steqWQs2UQy"
+        val injections =
+            listOf(
+                Arrival(key, "limen-read", address = "10.0.0.7\"\n[nodes.evil]\nhost = \"6.6.6.6\"\nhost_key = \"$key"),
+                Arrival(key, "limen-read", address = "10.0.0.7\"\n[http]\norigins = [\"http://evil\"]\n#"),
+                Arrival(key, "root\"\n[nodes.evil]\nhost = \"6.6.6.6\"\nhost_key = \"$key\"\n#", address = "10.0.0.7"),
+                Arrival("$key\"\n[http]\nlisten = \"0.0.0.0:1\"\n#", "limen-read", address = "10.0.0.7"),
+                // Well formed: the hub's own `host_key` line completes the injected node.
+                Arrival(key, "limen-read", address = "10.0.0.7\"\nhost_key = \"$key\"\n[nodes.evil]\nhost = \"6.6.6.6"),
+            )
+        for (arrival in injections) {
+            val code = hub.invite("nas")
+            assertFailsWith<LimenException>(arrival.toString()) { runBlocking { hub.arrive(code, arrival, "10.0.0.7", Answering()) } }
+            assertEquals(before, Fs.readText(hub.configPath), "limen.toml changed by $arrival")
+        }
+    }
+
+    @Test
+    fun aShortTokenIsRefused() {
+        val hub = hub()
+        hub.init(serve = true)
+        setenv("LIMEN_TOKEN", "short", 1)
+        try {
+            assertEquals(ErrorCode.BAD_REQUEST, assertFailsWith<LimenException> { hub.token() }.code)
+            setenv("LIMEN_TOKEN", "a".repeat(Hub.MIN_TOKEN), 1)
+            assertEquals("a".repeat(Hub.MIN_TOKEN), hub.token())
+        } finally {
+            unsetenv("LIMEN_TOKEN")
+        }
     }
 
     @Test

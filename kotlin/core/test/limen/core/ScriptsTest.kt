@@ -107,6 +107,10 @@ class ScriptsTest {
             Trust.problem(listOf(script, parents[0], parents[1].copy(mode = 0b111_111_101)) + parents.drop(2), 0),
         )
         assertEquals(
+            "/etc/limen is not owned by root",
+            Trust.problem(listOf(script, parents[0], parents[1].copy(uid = 1000)) + parents.drop(2), 0),
+        )
+        assertEquals(
             "/etc/limen/checks.d/a is not executable",
             Trust.problem(listOf(script.copy(mode = 0b110_100_100)) + parents, 0),
         )

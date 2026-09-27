@@ -130,11 +130,8 @@ object Http {
             call.respond(HttpStatusCode.Forbidden)
             return false
         }
-        val given =
-            call.request.headers["Authorization"]
-                ?.removePrefix("Bearer ")
-                ?.trim()
-                .orEmpty()
+        val header = call.request.headers["Authorization"].orEmpty()
+        val given = if (header.startsWith("Bearer ", ignoreCase = true)) header.substring("Bearer ".length).trim() else ""
         if (!constantTimeEquals(given, token)) {
             call.response.headers.append("WWW-Authenticate", "Bearer")
             call.respond(HttpStatusCode.Unauthorized)

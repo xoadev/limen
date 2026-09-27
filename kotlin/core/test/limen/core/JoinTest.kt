@@ -86,6 +86,22 @@ class JoinTest {
     }
 
     @Test
+    fun hubFileWritesNothingButItsOwnValues() {
+        val key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIA6gEiSLgluUCGAAsH0PgwdjMmtbI2Ow7steqWQs2UQy"
+        val attempts =
+            listOf(
+                listOf("10.0.0.7\"\nhost_key = \"$key\"\n[nodes.evil]\nhost = \"6.6.6.6", "limen-read", key),
+                listOf("10.0.0.7", "root\"\n[http]\nlisten = \"0.0.0.0:1", key),
+                listOf("10.0.0.7", "limen-read", "$key\"\n[http]\nlisten = \"0.0.0.0:1\"\n#"),
+                listOf("10.0.0.7 # comment", "limen-read", key),
+            )
+        for ((host, user, hostKey) in attempts) {
+            assertFailsWith<LimenException>(host + user + hostKey) { HubFile.upsertNode("", "nas", host, 22, user, hostKey) }
+        }
+        assertFailsWith<LimenException> { HubFile.upsertNode("", "nas", "10.0.0.7", 0, "limen-read", key) }
+    }
+
+    @Test
     fun publicUrlIsAnAddress() {
         assertEquals("http://100.64.0.2:7341", HubConfig.parse("[http]\npublic_url = \"http://100.64.0.2:7341/\"").publicUrl)
         assertFailsWith<limen.core.toml.TomlException> { HubConfig.parse("[http]\npublic_url = \"http://hub.lan:7341\"") }

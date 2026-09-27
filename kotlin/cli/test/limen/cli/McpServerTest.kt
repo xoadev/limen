@@ -17,6 +17,7 @@ import limen.core.NodeError
 import limen.core.NodeResponse
 import limen.core.Param
 import limen.core.ParamType
+import limen.core.Requests
 import limen.core.WireJson
 import limen.core.scripts.Catalog
 import limen.core.scripts.ScriptKind
@@ -35,7 +36,7 @@ class McpServerTest {
         val catalogs: MutableMap<String, Catalog>,
     ) : NodeClient {
         val calls = mutableListOf<Triple<String, String, JsonObject>>()
-        override val nodes = catalogs.keys.toList()
+        override val nodes get() = catalogs.keys.toList()
 
         override suspend fun call(
             node: String,
@@ -142,7 +143,9 @@ class McpServerTest {
         val names = tools.map { it["name"]!!.jsonPrimitive.content }
         assertTrue(names.containsAll(listOf("nodes", "status", "logs", "read_file", "list_dir", "check_disk")), names.toString())
         // Nothing that changes a machine, and nothing internal.
-        assertFalse(names.any { it in listOf("apply", "action", "hello", "check") || it.startsWith("action") }, names.toString())
+        val hidden = Requests.all.filter { !it.tool }.map { it.name }
+        assertTrue("sync" in hidden && "apply" in hidden && "action" in hidden)
+        assertFalse(names.any { it in hidden || it.startsWith("action") }, names.toString())
         // `backups` has different arguments on each node: no tool until that is fixed.
         assertFalse("check_backups" in names)
         assertTrue(tools.all { it["annotations"]!!.jsonObject["readOnlyHint"]!!.jsonPrimitive.boolean })
@@ -242,6 +245,32 @@ class McpServerTest {
         callTool(server, "nodes", JsonObject(emptyMap()))
         assertEquals(1, sent.size)
         assertTrue("notifications/tools/list_changed" in sent[0])
+    }
+
+    @Test
+    fun aNodeAddedOrRemovedElsewhereIsPickedUp() {
+        // `limen trust` and `limen forget` change the hub's nodes from another process, under a running server.
+        val client = client()
+        val sent = mutableListOf<String>()
+        val server = McpServer(client, notify = { sent += it })
+        rpc(server, "tools/list")
+        client.catalogs["spare"] = Catalog(checks = listOf(check("certs")))
+        val names =
+            rpc(
+                server,
+                "tools/list",
+            )["result"]!!.jsonObject["tools"]!!.jsonArray.map { it.jsonObject["name"]!!.jsonPrimitive.content }
+        assertTrue("check_certs" in names, names.toString())
+        assertEquals(1, sent.size)
+        client.catalogs.remove("spare")
+        client.catalogs.remove("router")
+        val after =
+            rpc(
+                server,
+                "tools/list",
+            )["result"]!!.jsonObject["tools"]!!.jsonArray.map { it.jsonObject["name"]!!.jsonPrimitive.content }
+        assertFalse("check_certs" in after, after.toString())
+        assertEquals(2, sent.size)
     }
 
     @Test

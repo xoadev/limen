@@ -80,7 +80,9 @@ spec → change → make check → commit
 
 1. Find what you are implementing in `docs/spec.md`. If it is not there, or is wrong, change the spec **first**.
 2. Write or adjust the tests first: `core` with samples, `cli` with fakes, `tools/e2e.sh` for what only a real
-   sshd proves.
+   sshd proves. A test must fail when the promise breaks: break the code on purpose and watch it go red. An e2e
+   scene that checks for an absence (`refuse`) also names something the answer must contain, or an empty answer
+   —a crash— passes it.
 3. Implement.
 4. `make check`. Green means correct; there is no other criterion. Anything touching `gate`, `install`, SSH or
    sudo also needs `make e2e`.
@@ -106,7 +108,7 @@ the script in `tools/`.
 | `make lint` | ktlint over `kotlin/`, shellcheck over `tools/`, actionlint over the workflows. `FIX=1` fixes what can be fixed |
 | `make build` / `make test` | Every module, for this machine's Linux |
 | `make cli` | Only the binary. `VARIANT=release` for the optimised one; `ARCH="x86_64 aarch64"` for both architectures |
-| `make e2e` | Containers with a real SSH server —Debian with OpenSSH and a repository, OpenWrt's image with dropbear—, `limen install` inside, the hub against them with both keys. `SUITE=debian` or `openwrt` for one. Needs Docker. Not in `make check` |
+| `make e2e` | Containers with a real SSH server —Debian with OpenSSH and a repository, OpenWrt's image with dropbear—, `limen install` inside, the hub against them with both keys. `SUITE=debian`, `openwrt` or `join` for one. Needs Docker. Not in `make check` |
 | `make docker` | The hub image, `limen:local` (or `IMAGE=…`, `TAGS=…`, `LABELS=…`), from the binaries of `make cli` (or `BINARY_AMD64=…`, `BINARY_ARM64=…`). `PLATFORMS=linux/amd64,linux/arm64 PUSH=1` pushes both under one tag; without `PUSH`, one platform, because Docker loads one per tag. The release goes through this same target |
 | `make stamp` | `BuildStamp.kt`: version, build date and number. Not committed; everything that compiles depends on it |
 | `make local-install` | The binary in `~/.local/bin` |
@@ -122,10 +124,11 @@ a tag can move, a SHA can't. Secrets reach a step through `env:`, never interpol
 
 | Workflow | When | What |
 |---|---|---|
-| `check.yml` | Every push to `main` and every PR | `make -k check`: the one mandatory gate. On `main`, a red run opens (or comments) the `main-red` issue |
-| `release.yml` | Every push to `main`; publishing a draft release; or by hand | On a push, [convco-version](https://github.com/xoadev/convco-version) reads the conventional commits that touched what goes into the binary or the image and rewrites **one draft** release, `vX.Y.Z`, with what went in. **Publishing it** —a person, from the releases page— creates the tag, and that builds and publishes: waits for `check.yml` green on that commit, stamps the version (`limen --version`), builds both static binaries in release, checks they are static, builds the image per architecture and starts it, pushes it to `ghcr.io/<repo>` as `X.Y.Z`, `latest` and `build<run>`, and attaches the binaries and `SHA256SUMS`. By hand it builds everything as `dev` and publishes nothing |
+| `check.yml` | Every push to `main` and every PR | `make -k check`, and the arm64 binary cross-linked and checked static: the one mandatory gate. On `main`, a red run opens (or comments) the `main-red` issue |
+| `release.yml` | Every push to `main`; publishing a draft release; or by hand | On a push, [convco-version](https://github.com/xoadev/convco-version) reads the conventional commits that touched what goes into the binary or the image and rewrites **one draft** release, `vX.Y.Z`, with what went in. **Publishing it** —a person, from the releases page— creates the tag, and that builds and publishes: waits for `check.yml` green on that commit, stamps the version (`limen --version`), builds both static binaries in release, runs `make e2e` with the release binary, checks they are static, builds the image per architecture and starts it, pushes it to `ghcr.io/<repo>` as `X.Y.Z`, `latest` and `build<run>`, and attaches the binaries and `SHA256SUMS`. By hand it builds everything as `dev` and publishes nothing |
 | `cli.yml` | Label `cli` on a PR, or by hand | Both binaries (debug) as an artifact, with the link commented on the PR: for trying a change on a real node |
-| `e2e.yml` | Label `e2e` on a PR, or by hand | `make e2e`, both suites |
+| `e2e.yml` | Every PR that touches code (`kotlin/`, `tools/`, `etc/`, `install.sh`, `Makefile`); weekly; by hand | `make e2e`, every suite. Weekly because the Debian and OpenWrt images it runs move upstream |
+| `dependabot.yml` | Weekly | Pull requests that update the pinned actions, SHA and version comment together |
 
 The version is never written in the code: the commits decide it, and it only exists once a release is published.
 `tools/stamp.sh` writes it into `BuildStamp.kt` from `LIMEN_VERSION`, `LIMEN_BUILD_DATE` and `LIMEN_BUILD_NUMBER`;
@@ -168,6 +171,9 @@ Mistakes made here, with what avoids them. `make check` does not see them.
   doesn't, so a test of this must convert real text. Ktor's server text APIs don't go through iconv and work
   (`make e2e` sends `ñandú` both ways). docs/openwrt.md has the whole list.
 - **`inet_pton` and `statvfs` are in `platform.linux`**, like `posix_spawn`.
+- **An e2e scene that only checked for an absence passed on a dead hub.** `limen forget` from another process made
+  the running `serve` recurse until its stack overflowed; "and it is gone" found nothing, as it expected. `refuse`
+  now takes a needle the answer must contain.
 - **The static linker is registered on every `tools/kt` run.** Changing `tools/ld-static` needs nothing
   else; changing the Kotlin version may change the dependency names in `kotlin/cli/module.yaml`.
 

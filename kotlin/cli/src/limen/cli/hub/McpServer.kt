@@ -123,10 +123,12 @@ class McpServer(
             Param("node", ParamType.ENUM, "Which machine", values = nodes)
         }
 
+    private suspend fun checkTools() = checkTools(current())
+
     /** Check name → its spec and the nodes that have it. A name declared with different arguments is left out. */
-    private suspend fun checkTools(): Map<String, Pair<ScriptSpec, List<String>>> {
+    private fun checkTools(hellos: Map<String, NodeResponse>): Map<String, Pair<ScriptSpec, List<String>>> {
         val byName = linkedMapOf<String, MutableList<Pair<String, ScriptSpec>>>()
-        for ((node, catalog) in catalogs()) {
+        for ((node, catalog) in catalogs(hellos)) {
             catalog.checks.forEach { byName.getOrPut(it.name) { mutableListOf() } += node to it }
         }
         return byName
@@ -134,18 +136,20 @@ class McpServer(
             .mapValues { (_, list) -> list.first().second to list.map { it.first } }
     }
 
-    private suspend fun catalogs(): Map<String, Catalog> {
-        val hellos = hellos?.takeIf { it.keys == client.nodes.toSet() } ?: refresh()
-        return hellos
+    /** The nodes' `hello`s, asked again when the set of nodes changed. */
+    private suspend fun current(): Map<String, NodeResponse> = hellos?.takeIf { it.keys == client.nodes.toSet() } ?: refresh()
+
+    private fun catalogs(hellos: Map<String, NodeResponse>): Map<String, Catalog> =
+        hellos
             .mapNotNull { (node, r) ->
                 val data = r.data as? JsonObject ?: return@mapNotNull null
                 val catalog = data["catalog"] ?: return@mapNotNull null
                 runCatching { node to LenientJson.decodeFromJsonElement(Catalog.serializer(), catalog) }.getOrNull()
             }.toMap()
-    }
 
     private suspend fun refresh(): Map<String, NodeResponse> {
-        val before = hellos?.let { checkSignature() }
+        // From what was known, not through current(): with the nodes changed, that would refresh again, and again.
+        val before = hellos?.let(::signature)
         val fresh =
             coroutineScope {
                 client.nodes
@@ -162,13 +166,13 @@ class McpServer(
                     .toMap()
             }
         hellos = fresh
-        if (before != null && before != checkSignature()) {
+        if (before != null && before != signature(fresh)) {
             notify?.invoke(WireJson.encodeToString(JsonObject.serializer(), notification("notifications/tools/list_changed")))
         }
         return fresh
     }
 
-    private suspend fun checkSignature() = checkTools().mapValues { it.value.first to it.value.second.sorted() }
+    private fun signature(hellos: Map<String, NodeResponse>) = checkTools(hellos).mapValues { it.value.first to it.value.second.sorted() }
 
     private suspend fun call(params: JsonObject): JsonObject {
         val name = (params["name"] as? JsonPrimitive)?.contentOrNull ?: throw InvalidParams("tools/call needs a name")
@@ -221,7 +225,7 @@ class McpServer(
 
     private suspend fun nodes(): JsonObject {
         val fresh = refresh()
-        val catalogs = catalogs()
+        val catalogs = catalogs(fresh)
         val conflicts =
             catalogs.values
                 .flatMap { it.checks }

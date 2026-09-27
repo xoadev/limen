@@ -1,5 +1,6 @@
 package limen.core
 
+import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
@@ -7,6 +8,7 @@ import kotlinx.serialization.json.put
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 
 class ArgsTest {
     private fun bad(block: () -> Unit): String {
@@ -74,6 +76,20 @@ class ArgsTest {
                 put("since", "2026-09-26T08:00:00Z")
             },
         )
+    }
+
+    @Test
+    fun deployRequestsAreNeverTools() {
+        val deploy = Requests.all.filter { it.role == Role.DEPLOY }
+        assertEquals(listOf("sync", "apply", "action"), deploy.map { it.name })
+        assertFalse(deploy.any { it.tool })
+    }
+
+    @Test
+    fun aFieldNobodyReadsIsAnError() {
+        assertFailsWith<SerializationException> {
+            WireJson.decodeFromString(NodeRequest.serializer(), """{"v":1,"request":"status","role":"deploy"}""")
+        }
     }
 
     @Test

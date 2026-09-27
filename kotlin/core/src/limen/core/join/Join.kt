@@ -92,6 +92,10 @@ data class PendingInvite(
 /**
  * The hub's limen.toml, edited as text so that everything else in it —comments, order, other settings— stays as
  * the operator wrote it: a node's `[nodes.<name>]` table is replaced or appended, nothing more.
+ *
+ * Every value is checked against the pattern the configuration itself enforces before it is written: they come from
+ * the node that joins, and a quote and a newline in an address would otherwise let it write TOML of its own —another
+ * node, or `[http]` settings—.
  */
 object HubFile {
     fun upsertNode(
@@ -102,14 +106,19 @@ object HubFile {
         user: String,
         hostKey: String,
     ): String {
-        require(HubConfig.NODE_NAME.matches(name)) { "bad node name" }
+        val key = Keys.withoutComment(hostKey)
+        if (!HubConfig.NODE_NAME.matches(name)) badRequest("'$name' is not a node name")
+        if (!HubConfig.HOST.matches(host)) badRequest("the address is not an address or host name")
+        if (port !in 1..65535) badRequest("the port is out of range")
+        if (!HubConfig.USER.matches(user)) badRequest("the user is not a user name")
+        if (!HubConfig.HOST_KEY.matches(key)) badRequest("the host key is not '<type> <base64>'")
         val section =
             buildString {
                 append("[nodes.$name]\n")
                 append("host = \"$host\"\n")
                 if (port != 22) append("port = $port\n")
                 if (user != HubConfig.READ_USER) append("user = \"$user\"\n")
-                append("host_key = \"${Keys.withoutComment(hostKey)}\"\n")
+                append("host_key = \"$key\"\n")
             }
         val kept = removeNode(text, name).trimEnd()
         return (if (kept.isEmpty()) "" else "$kept\n\n") + section

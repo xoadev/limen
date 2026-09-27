@@ -34,9 +34,9 @@ data class HubConfig(
     companion object {
         const val READ_USER = "limen-read"
         val NODE_NAME = Regex("^[a-z0-9][a-z0-9_-]{0,31}$")
-        private val HOST_KEY = Regex("^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp(256|384|521)|sk-ssh-ed25519@openssh\\.com) [A-Za-z0-9+/]+=*$")
-        private val HOST = Regex("^[A-Za-z0-9.:_-]{1,253}$")
-        private val USER = Regex("^[a-z_][a-z0-9_-]{0,31}$")
+        val HOST_KEY = Regex("^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp(256|384|521)|sk-ssh-ed25519@openssh\\.com) [A-Za-z0-9+/]+=*$")
+        val HOST = Regex("^[A-Za-z0-9.:_-]{1,253}$")
+        val USER = Regex("^[a-z_][a-z0-9_-]{0,31}$")
         private val LISTEN = Regex("^[^\\s]+:[0-9]{1,5}$")
         val PUBLIC_URL = Regex("^http://(\\d{1,3}(\\.\\d{1,3}){3}|\\[[0-9a-fA-F:]+\\]):\\d{1,5}$")
 

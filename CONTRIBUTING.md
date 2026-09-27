@@ -32,7 +32,8 @@ would miss.
    pull request.
 2. **Tests with it.** Rules and parsers go in `core`, tested with captured samples and no machine. Anything touching
    the gate, `install`, `join`, SSH or sudo also needs a scene in `tools/e2e.sh`.
-3. **`make check` green**, and `make e2e` when the change reaches a real machine.
+3. **`make check` green**, and `make e2e` when the change reaches a real machine. CI runs both on your pull request:
+   `check` always, `e2e` when it touches code.
 4. **Keep the boundary where it is.** No shell anywhere, every path through the path policy, every argument through
    its schema, nothing read by the hub that the node didn't allow. A change that moves a limit from the node to the
    hub will not be merged.

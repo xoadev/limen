@@ -113,14 +113,15 @@ object Gate {
     ) {
         var text = WireJson.encodeToString(NodeResponse.serializer(), response)
         val limit = node?.config?.maxResponseBytes ?: NodeConfig().maxResponseBytes
-        if (text.length > limit) {
+        val size = text.encodeToByteArray().size
+        if (size > limit) {
             text =
                 WireJson.encodeToString(
                     NodeResponse.serializer(),
                     NodeResponse.failure(
                         LimenException(
                             ErrorCode.BAD_REQUEST,
-                            "the answer is ${text.length} bytes, over limits.max_response ($limit); narrow the request",
+                            "the answer is $size bytes, over limits.max_response ($limit); narrow the request",
                         ),
                     ),
                 )

@@ -1,6 +1,8 @@
 package limen.cli
 
+import limen.cli.os.Fs
 import limen.cli.os.Proc
+import platform.posix.usleep
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -35,9 +37,21 @@ class ProcTest {
     @Test
     fun aTimeoutStopsTheWholeGroup() {
         val start = TimeSource.Monotonic.markNow()
-        val r = Proc.run(listOf(sh, "-c", "sleep 30 & sleep 30"), timeout = 1.seconds)
+        val r = Proc.run(listOf(sh, "-c", "sleep 30 & echo \$!; sleep 30"), timeout = 1.seconds)
         assertTrue(r.timedOut)
         assertTrue(start.elapsedNow() < 10.seconds, "took ${start.elapsedNow()}")
+        // The grandchild too, not only the shell that started it: gone, or a zombie waiting for its new parent.
+        val grandchild = r.out.trim()
+        val alive = {
+            Fs
+                .readText("/proc/$grandchild/stat")
+                ?.substringAfterLast(") ")
+                ?.firstOrNull()
+                ?.let { it != 'Z' } ?: false
+        }
+        val deadline = TimeSource.Monotonic.markNow() + 2.seconds
+        while (alive() && deadline.hasNotPassedNow()) usleep(50_000u)
+        assertFalse(alive(), "sleep $grandchild outlived the timeout")
     }
 
     @Test

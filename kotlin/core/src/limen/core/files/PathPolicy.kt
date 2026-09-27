@@ -35,6 +35,19 @@ class PathPolicy(
             allow.any { it.mayMatchBelow(dir) }
 
     companion object {
+        /** An absolute path with `.` and `..` resolved as text, for a path that doesn't exist and so has no realpath. */
+        fun normalize(path: String): String {
+            val out = ArrayDeque<String>()
+            for (segment in path.split('/')) {
+                when (segment) {
+                    "", "." -> Unit
+                    ".." -> out.removeLastOrNull()
+                    else -> out.addLast(segment)
+                }
+            }
+            return "/" + out.joinToString("/")
+        }
+
         /**
          * Can't be overridden by any configuration (spec §7.1): account and sudo secrets, private keys, VPN and
          * Wi-Fi credentials, limen's own directory, root's home, and the pseudo-filesystems, where a "file" can be
@@ -46,9 +59,10 @@ class PathPolicy(
                 "/etc/shadow-",
                 "/etc/gshadow",
                 "/etc/gshadow-",
-                "/etc/sudoers",
+                "/etc/sudoers*",
                 "/etc/sudoers.d/**",
                 "/etc/ssh/ssh_host_*_key",
+                "/etc/dropbear/dropbear_*_host_key",
                 "**/.ssh/id_*",
                 "/etc/ssl/private/**",
                 "/etc/wireguard/**",

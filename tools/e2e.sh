@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # make e2e: the whole chain against real SSH servers, in throwaway containers. `limen install` sets each node up
 # as root; the hub on this machine reaches it with the read key and the deploy key; every scene checks one promise
-# of the spec. Not part of `make check`: it needs Docker and pulls images.
+# of the spec. Not part of `make check`: it needs Docker and pulls images. CI runs it on pull requests that touch
+# code (e2e.yml) and before publishing a release, with the release binary.
 #
 #   SUITE=debian    OpenSSH, sudo, one user per role, a repository the node follows
 #   SUITE=openwrt   OpenWrt's own image: dropbear, root with forced commands, busybox, musl
@@ -13,7 +14,8 @@ command -v docker >/dev/null || { echo "e2e: needs Docker; skipped" >&2; exit 0;
 binary=$("$ROOT/tools/kt" artifact)
 SUITE=${SUITE:-all}
 
-work=$(mktemp -d)
+# Short: ssh's control sockets live under it, and a socket path can't pass 108 bytes.
+work=$(mktemp -d /tmp/le.XXXXXX)
 containers=()
 networks=()
 volumes=()
@@ -48,17 +50,25 @@ expect() {
   out=$("$@" 2>&1) || true
   if [[ "$out" == *"$needle"* ]]; then ok; else ko "expected: $needle" "got: ${out:0:700}"; fi
 }
-# refuse <description> <needle> <command...>: the output must NOT contain <needle>.
+# refuse <description> <needle> <absent> <command...>: the output contains <needle> and nothing matching the
+# extended regex <absent>. The needle proves the command answered: an empty output lacks everything.
 refuse() {
-  local what=$1 needle=$2 out
-  shift 2
+  local what=$1 needle=$2 absent=$3 out
+  shift 3
   scene "$what"
   out=$("$@" 2>&1) || true
-  if [[ "$out" != *"$needle"* ]]; then ok; else ko "did not expect: $needle" "got: ${out:0:700}"; fi
+  if [[ "$out" != *"$needle"* ]]; then
+    ko "expected: $needle" "got: ${out:0:700}"
+  elif grep -Eq -- "$absent" <<< "$out"; then
+    ko "did not expect: $absent" "got: ${out:0:700}"
+  else
+    ok
+  fi
 }
 
 ssh-keygen -q -t ed25519 -N '' -f "$work/read" -C limen-e2e-read
 ssh-keygen -q -t ed25519 -N '' -f "$work/deploy" -C limen-e2e-deploy
+ssh-keygen -q -t ed25519 -N '' -f "$work/stranger" -C limen-e2e-stranger
 
 # hub_config <node> <port> <user> <host key>: a hub home for one node, in $work/<node>.
 hub_config() {
@@ -107,10 +117,12 @@ suite_debian() {
   expect "install.sh sets the node up" "limen is installed" \
     docker exec -e LIMEN_YES=1 -e LIMEN_BINARY=/tmp/limen -e LIMEN_READ_KEY=/tmp/read.pub \
     -e LIMEN_DEPLOY_KEY="$(cat "$work/deploy.pub")" -e LIMEN_REPO=none "$node" sh /tmp/install.sh
-  refuse "install twice changes nothing" "write " \
+  refuse "install twice changes nothing" "limen is installed" "^(write|create|add|remove|run) " \
     docker exec "$node" /tmp/limen install --read-key "$(cat "$work/read.pub")" --deploy-key "$(cat "$work/deploy.pub")"
   expect "sudo gives limen-read its gate and nothing else" "password is required" \
     docker exec -u limen-read "$node" sudo -n /bin/true
+  expect "sudo gives limen-read no deploy gate" "password is required" \
+    docker exec -u limen-read "$node" sudo -n /usr/local/bin/limen gate --role deploy
 
   # What the node lets read, a secret to redact, a check and two setup scripts.
   docker exec -i "$node" sh -c 'cat > /etc/limen/limen.toml' <<'EOF'
@@ -120,27 +132,39 @@ deny = ["**/*.env"]
 EOF
   docker exec "$node" sh -c 'mkdir -p /etc/limen-e2e && printf "user=app\npassword=hunter2\n" > /etc/limen-e2e/app.conf \
     && echo "TOKEN=x" > /etc/limen-e2e/app.env && ln -s /etc/shadow /etc/limen-e2e/shadow-link \
-    && for i in $(seq 1 50); do echo "line $i"; done > /var/log/e2e.log && echo "ERROR disk full" >> /var/log/e2e.log'
+    && { seq 1 50 | sed "s/^/line /"; echo "ERROR disk full"; seq 52 110 | sed "s/^/line /"; } > /var/log/e2e.log \
+    && printf "a\\000b" > /etc/limen-e2e/blob'
   docker exec -i "$node" sh -c 'cat > /etc/limen/checks.d/disk.sh && chmod 0755 /etc/limen/checks.d/disk.sh' <<'EOF'
 #!/bin/sh
 #: description = "Root filesystem usage"
 #: [args.threshold]
 #: type = "int"
-#: default = 99
+#: default = 100
 #: range = [1, 100]
 used=$(df --output=pcent / | tail -1 | tr -dc 0-9)
-if [ "$used" -ge "$LIMEN_ARG_THRESHOLD" ]; then echo "root at ${used}%"; exit 1; fi
-echo "root at ${used}%"
+echo "root at ${used}%, threshold ${LIMEN_ARG_THRESHOLD}%"
+[ "$used" -lt "$LIMEN_ARG_THRESHOLD" ] || exit 1
+EOF
+  docker exec -i "$node" sh -c 'cat > /etc/limen/checks.d/slow.sh && chmod 0755 /etc/limen/checks.d/slow.sh' <<'EOF'
+#!/bin/sh
+#: description = "Never finishes in time"
+#: timeout = "1s"
+sleep 30
+EOF
+  docker exec -i "$node" sh -c 'cat > /etc/limen/checks.d/loose.sh && chmod 0775 /etc/limen/checks.d/loose.sh' <<'EOF'
+#!/bin/sh
+#: description = "Group-writable: anyone in the group could change what root runs"
+echo ran
 EOF
   docker exec -i "$node" sh -c 'cat > /etc/limen/setup.d/10-marker.sh && chmod 0755 /etc/limen/setup.d/10-marker.sh' <<'EOF'
 #!/bin/sh
 #: description = "Leaves a marker"
-touch /var/tmp/limen-applied && echo "marker written"
+touch /var/tmp/limen-applied && echo 10 >> /var/tmp/limen-order && echo "marker written"
 EOF
   docker exec -i "$node" sh -c 'cat > /etc/limen/setup.d/20-noisy.sh && chmod 0755 /etc/limen/setup.d/20-noisy.sh' <<'EOF'
 #!/bin/sh
 #: description = "Writes to both streams"
-echo "to stdout"; echo "to stderr" >&2
+echo 20 >> /var/tmp/limen-order; echo "to stdout"; echo "to stderr" >&2
 EOF
 
   host_key=$(docker exec "$node" cat /etc/ssh/ssh_host_ed25519_key.pub | cut -d' ' -f1,2)
@@ -148,7 +172,8 @@ EOF
   limen() { "$binary" "$@" --home "$work/debian"; }
 
   echo "e2e/debian: read role"
-  expect "hello reports the catalog" '"disk"' limen call debian check_disk
+  expect "hello reports the catalog" '"name": "disk"' limen call debian hello
+  expect "hello reports a script it won't run, and why" 'loose.sh is writable by group or others' limen call debian hello
   expect "status answers, disks from statvfs" '"mount": "/"' limen call debian status
   expect "an allowed file is read" '"content": "' limen call debian read_file --arg path=/etc/hostname
   expect "a secret in an allowed file is redacted" 'password=[redacted]' limen call debian read_file --arg path=/etc/limen-e2e/app.conf
@@ -158,24 +183,52 @@ EOF
   expect "a symlink to a secret stays denied" 'is never readable' limen call debian read_file --arg path=/etc/limen-e2e/shadow-link
   expect "list_dir walks towards allowed files" '"name": "limen-e2e"' limen call debian list_dir --arg path=/etc
   expect "list_dir names owners without NSS" '"owner": "root"' limen call debian list_dir --arg path=/etc
-  refuse "list_dir hides what is not allowed" '"passwd"' limen call debian list_dir --arg path=/etc
-  expect "file logs with grep" 'ERROR disk full' limen call debian logs --arg source=file --arg name=/var/log/e2e.log --arg grep=error
+  refuse "list_dir hides what is not allowed" '"name": "limen-e2e"' '"(passwd|shadow|limen)"' limen call debian list_dir --arg path=/etc
+  expect "a denied path that doesn't exist is denied too" 'is never readable' limen call debian read_file --arg path=/root/nothing
+  expect "a denied path is denied before its type is told" 'is never readable' limen call debian list_dir --arg path=/etc/shadow
+  expect "a binary file answers its size, no content" '"binary": true' limen call debian read_file --arg path=/etc/limen-e2e/blob
+  expect "file logs: the last lines" '"line 110"' limen call debian logs --arg source=file --arg name=/var/log/e2e.log --arg lines=5
+  refuse "file logs: only the lines asked for" '"line 110"' 'ERROR' \
+    limen call debian logs --arg source=file --arg name=/var/log/e2e.log --arg lines=5
+  expect "file logs: grep searches beyond them" 'ERROR disk full' \
+    limen call debian logs --arg source=file --arg name=/var/log/e2e.log --arg lines=5 --arg grep=error
+  expect "more lines than logs.max_lines: cut, and said so" '"truncated": true' \
+    limen call debian logs --arg source=file --arg name=/var/log/e2e.log --arg lines=5000
   expect "a check runs with its default" '"status": "ok"' limen call debian check_disk
-  expect "a check runs with an argument" '"status": "warn"' limen call debian check_disk --arg threshold=1
+  expect "the default reaches the script" 'threshold 100%' limen call debian check_disk
+  expect "an argument reaches the script" 'threshold 1%' limen call debian check_disk --arg threshold=1
+  expect "exit 1 is warn" '"status": "warn"' limen call debian check_disk --arg threshold=1
   expect "a bad argument never reaches the script" 'threshold must be at most 100' limen call debian check_disk --arg threshold=500
   expect "processes, from /proc" '"sshd' limen call debian processes
   expect "ports, from /proc: sshd on 22" '"port": 22' limen call debian ports
   expect "history records the client" '"client": "' limen call debian history --arg lines=3
+  expect "a check past its timeout is stopped" '"code": "timeout"' limen call debian check_slow
+  expect "a group-writable script is not run" 'writable by group or others' limen call debian check_loose
+  docker exec "$node" sh -c 'cp /etc/limen/limen.toml /tmp/limen.toml && printf "[limits]\nmax_response = 300\n" >> /etc/limen/limen.toml'
+  expect "an answer over limits.max_response is refused" 'over limits.max_response' limen call debian status
+  docker exec "$node" cp /tmp/limen.toml /etc/limen/limen.toml
 
   echo "e2e/debian: the gate is the only way in"
   read -ra read_ssh <<< "$(ssh_as read limen-read "$port")"
   expect "a command sent over ssh is ignored" 'no request on stdin' "${read_ssh[@]}" 'cat /etc/shadow' </dev/null
   expect "the read key can't apply" "not allowed for the read role" "${read_ssh[@]}" <<< '{"v":1,"request":"apply"}'
   expect "an unknown protocol version says so" '"versions":[1]' "${read_ssh[@]}" <<< '{"v":9,"request":"status"}'
+  expect "a field nobody reads is an error" 'bad_request' "${read_ssh[@]}" <<< '{"v":1,"request":"status","role":"deploy"}'
+  expect "no forwarding through the gate" 'stdio forwarding failed' "${read_ssh[0]}" -W 127.0.0.1:22 "${read_ssh[@]:1}" </dev/null
+  read -ra crossed_ssh <<< "$(ssh_as read limen-deploy "$port")"
+  expect "the read key doesn't open the deploy user" 'Permission denied' "${crossed_ssh[@]}" <<< '{"v":1,"request":"status"}'
+  read -ra stranger_ssh <<< "$(ssh_as stranger limen-read "$port")"
+  expect "an unknown key doesn't get in" 'Permission denied' "${stranger_ssh[@]}" <<< '{"v":1,"request":"status"}'
+  docker exec "$node" limen install --read-key "$(cat "$work/read.pub")" --deploy-key "$(cat "$work/deploy.pub")" \
+    --from 10.99.0.0/16 >/dev/null
+  expect "--from: the read key only from there" 'Permission denied' "${read_ssh[@]}" <<< '{"v":1,"request":"status"}'
+  docker exec "$node" limen install --read-key "$(cat "$work/read.pub")" --deploy-key "$(cat "$work/deploy.pub")" >/dev/null
+  expect "install without --from lifts it" '"ok":true' "${read_ssh[@]}" <<< '{"v":1,"request":"status"}'
 
   echo "e2e/debian: deploy role"
-  expect "apply runs the setup scripts in order" "limen: apply finished: 2 script(s)" \
+  expect "apply runs every setup script" "limen: apply finished: 2 script(s)" \
     limen call debian apply --user limen-deploy --identity "$work/deploy"
+  expect "in the order of their names" $'10\n20' docker exec "$node" cat /var/tmp/limen-order
   expect "apply streams stderr too" "to stderr" \
     limen call debian apply --user limen-deploy --identity "$work/deploy" --arg from=20
   expect "the setup script ran as root" "root" docker exec "$node" stat -c %U /var/tmp/limen-applied
@@ -213,14 +266,15 @@ EOF
   docker exec "$node" sh -c 'echo two > /tmp/w/f && git -C /tmp/w add -A \
     && git -C /tmp/w -c user.name=e2e -c user.email=e2e@e2e commit -qm second && git -C /tmp/w push -q /srv/cloud.git main'
   expect "state: behind after a push" 'the node is behind main' limen call debian state
-  expect "sync catches up" "<== sync:" limen call debian sync --user limen-deploy --identity "$work/deploy"
+  expect "sync catches up" " -> " limen call debian sync --user limen-deploy --identity "$work/deploy"
   expect "state: up to date again" '"up_to_date": true' limen call debian state
 
   echo "e2e/debian: hub"
   expect "mcp lists the node's check as a tool" '"name":"check_from-repo"' mcp_session debian check_from-repo
   expect "mcp calls it" 'repo check' mcp_session debian check_from-repo
-  refuse "mcp exposes no action or apply" '"name":"apply"' mcp_session debian status
-  sed -i "s|^host_key = .*|host_key = \"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOtherKeyOtherKeyOtherKeyOtherKeyOtherKey1\"|" "$work/debian/limen.toml"
+  refuse "mcp exposes nothing that changes a machine" '"name":"status"' '"name":"(sync|apply|action[^"]*)"' mcp_session debian status
+  # Someone else's host key: a real one, so ssh refuses it for not matching and for nothing else.
+  sed -i "s|^host_key = .*|host_key = \"$(cut -d' ' -f1,2 "$work/stranger.pub")\"|" "$work/debian/limen.toml"
   # A fresh control socket: a multiplexed connection would skip the host key check (AGENTS.md).
   XDG_RUNTIME_DIR="$work/rt-debian-2" && mkdir -m 0700 "$XDG_RUNTIME_DIR"
   expect "a host key that does not match is refused" "host_key_mismatch" limen call debian status
@@ -255,7 +309,7 @@ suite_openwrt() {
     docker exec "$node" /tmp/limen install --read-key "$(cat "$work/read.pub")" --deploy-key "$(cat "$work/deploy.pub")"
   expect "the administrator's key is kept" "admin" docker exec "$node" cat /etc/dropbear/authorized_keys
   expect "sysupgrade keeps limen" "/usr/bin/limen" docker exec "$node" cat /lib/upgrade/keep.d/limen
-  refuse "install twice changes nothing" "write " \
+  refuse "install twice changes nothing" "limen is installed" "^(write|create|add|remove|run) " \
     docker exec "$node" /tmp/limen install --read-key "$(cat "$work/read.pub")" --deploy-key "$(cat "$work/deploy.pub")"
   expect "--from is refused: dropbear can't do it" "dropbear has no from=" \
     docker exec "$node" /tmp/limen install --read-key "$(cat "$work/read.pub")" --from 10.0.0.0/8
@@ -287,14 +341,17 @@ EOF
   read -ra read_ssh <<< "$(ssh_as read root "$port")"
   expect "a command sent over ssh is ignored" 'no request on stdin' "${read_ssh[@]}" 'cat /etc/shadow' </dev/null
   expect "the read key can't apply" "not allowed for the read role" "${read_ssh[@]}" <<< '{"v":1,"request":"apply"}'
+  read -ra deploy_ssh <<< "$(ssh_as deploy root "$port")"
+  expect "the deploy key can't read" "not allowed for the deploy role" "${deploy_ssh[@]}" <<< '{"v":1,"request":"status"}'
+  read -ra stranger_ssh <<< "$(ssh_as stranger root "$port")"
+  expect "an unknown key doesn't get in" 'Permission denied' "${stranger_ssh[@]}" <<< '{"v":1,"request":"status"}'
   expect "apply with the deploy key" "limen: apply finished: 1 script(s)" \
     limen call openwrt apply --user root --identity "$work/deploy"
   expect "the setup script ran" "present" docker exec "$node" sh -c 'test -f /tmp/limen-applied && echo present'
 
   echo "e2e/openwrt: uninstall"
   expect "uninstall" "limen is uninstalled" docker exec "$node" limen uninstall --purge
-  refuse "limen's keys are gone" "limen gate" docker exec "$node" cat /etc/dropbear/authorized_keys
-  expect "the administrator's key is still there" "admin" docker exec "$node" cat /etc/dropbear/authorized_keys
+  refuse "limen's keys are gone, the administrator's kept" "admin" "limen gate" docker exec "$node" cat /etc/dropbear/authorized_keys
 }
 
 suite_join() {
@@ -312,6 +369,7 @@ suite_join() {
   hub_ip=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$hub")
   url="http://$hub_ip:7341"
   for _ in $(seq 1 50); do docker logs "$hub" 2>&1 | grep -q "serving MCP" && break; sleep 0.2; done
+  docker logs "$hub" 2>&1 | grep -q "serving MCP" || { docker logs "$hub" >&2; echo "e2e/join: the hub did not start" >&2; exit 1; }
   hub_exec() { docker exec -e LIMEN_PUBLIC_URL="$url" "$hub" limen "$@"; }
 
   expect "the hub creates itself on first start" "created /data/id_ed25519" docker logs "$hub"
@@ -372,9 +430,15 @@ suite_join() {
   # Text both ways with more than ASCII: Ktor's server must not go through iconv, which the static binary lacks.
   expect "UTF-8 in and out of the server" 'unknown tool ñandú' \
     mcp_http '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"ñandú","arguments":{}}}'
-  expect "without the token, nothing" "401" curl -s -o /dev/null -w '%{http_code}' -X POST "$url/mcp" -d '{}'
+  status_of() { curl -s -o /dev/null -w '%{http_code}' -X POST "$url/mcp" -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' "$@"; }
+  expect "without the token, nothing" "401" status_of
+  expect "another token, nothing" "401" status_of -H "Authorization: Bearer ${token}x"
+  expect "the token, but not as a bearer, nothing" "401" status_of -H "Authorization: $token"
+  expect "a web page on another origin, nothing" "403" status_of -H "Authorization: Bearer $token" -H "Origin: http://evil.example"
+  expect "a hub won't serve with a short LIMEN_TOKEN" "16 characters" \
+    docker run --rm -e LIMEN_TOKEN=short limen-e2e-hub:local
   expect "forget takes a node off the hub" "removed" hub_exec forget spare
-  refuse "and it is gone" '"spare"' mcp_http '{"jsonrpc":"2.0","id":3,"method":"tools/list"}'
+  expect "and it is gone" '"enum":["nas","router"]' mcp_http '{"jsonrpc":"2.0","id":3,"method":"tools/list"}'
 }
 
 case "$SUITE" in

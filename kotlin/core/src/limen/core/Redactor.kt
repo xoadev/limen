@@ -33,11 +33,17 @@ class Redactor(
     companion object {
         const val MASK = "[redacted]"
 
+        private const val SECRET_NAME =
+            "(?i)(?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|client[_-]?secret)"
+
         val BUILT_IN =
             listOf(
-                // key = value, key: value, --key=value, "key": "value", for the usual names of secrets.
-                """(?i)(?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|client[_-]?secret)""" +
-                    """["']?\s*[:=]\s*["']?(?<secret>[^\s"',;&]+)""",
+                // key = value, key: value, --key=value, "key": "value", for the usual names of secrets. A quoted value
+                // is masked to its closing quote (or the end of the line), spaces included; a bare one to the next
+                // space or separator.
+                "$SECRET_NAME[\"']?\\s*[:=]\\s*\"(?<secret>[^\"\\n]*)",
+                "$SECRET_NAME[\"']?\\s*[:=]\\s*'(?<secret>[^'\\n]*)",
+                "$SECRET_NAME[\"']?\\s*[:=]\\s*(?<secret>[^\\s\"',;&]+)",
                 """(?i)authorization:\s*(?:bearer|basic|token)\s+(?<secret>\S+)""",
                 // Credentials inside a URL: scheme://user:password@host.
                 """[a-zA-Z][a-zA-Z0-9+.-]*://[^/\s:@]+:(?<secret>[^@\s/]+)@""",

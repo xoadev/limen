@@ -270,17 +270,21 @@ token_file = "/etc/limen/repo-token"
   suggestions commented out. Everything readable ends up in a model provider's context, so the
   operator decides it path by path.
 - A built-in deny list applies on top and can't be overridden: `/etc/shadow`, `/etc/gshadow`,
-  `/etc/sudoers*`, SSH private keys, `/etc/ssl/private/`, `/etc/wireguard/`, NetworkManager
+  `/etc/sudoers*`, SSH and dropbear private keys, `/etc/ssl/private/`, `/etc/wireguard/`, NetworkManager
   connections, `/etc/limen/`, `/root/`, and the pseudo-filesystems `/proc/`, `/sys/` and `/dev/`,
   where a "file" can be a process's environment or a whole disk.
 - Only regular files are read; a binary file (a NUL in its first 8 KiB) answers its size and no
   content.
 - Paths are resolved (symlinks, `..`) before matching, and the resolved path is the one opened: a
-  link from an allowed place to a denied one stays denied.
-- Redaction applies to files, logs, check output and process and container command lines. The
-  built-in patterns catch `key=value` for the usual names of secrets, `Authorization` headers,
-  credentials in URLs and PEM private keys; `redact.patterns` adds to them, and a group named `secret`
-  limits what is replaced. It is a safety net; the protection is not allowing files that hold secrets.
+  link from an allowed place to a denied one stays denied. A denied path answers `denied` whether it
+  exists or not, and before anything about its type.
+- A file of up to 1 MiB that holds a PEM private key is not read at all: a range of lines can fall
+  between the key's markers, where redaction can't recognise it.
+- Redaction applies to files, logs, check output, process and container command lines, and
+  `history`. The built-in patterns catch `key=value` for the usual names of secrets (a quoted value
+  up to its closing quote), `Authorization` headers, credentials in URLs and PEM private keys;
+  `redact.patterns` adds to them, and a group named `secret` limits what is replaced. It is a safety
+  net; the protection is not allowing files that hold secrets.
 - A container's environment is never read: `container` lists variable names only.
 
 ### 7.2 Hub: `$LIMEN_HOME/limen.toml`
@@ -334,7 +338,8 @@ host_key = "ssh-ed25519 AAAA…"
   operator's own machine.
 - **HTTP** — `limen serve`: MCP Streamable HTTP on `POST /mcp`, JSON responses, no SSE (every call
   is a request and a response).
-  - Requires a bearer token (`LIMEN_TOKEN`, 16 characters or more) and refuses to start without one.
+  - Requires a bearer token (`LIMEN_TOKEN`, 16 characters or more) and refuses to start without one
+    or with a shorter one.
     It is compared in constant time.
   - Validates `Origin`, against DNS rebinding.
   - Listens on `127.0.0.1:7341` unless told otherwise. The image listens on every interface;
