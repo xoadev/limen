@@ -5,50 +5,56 @@
 //! Best-effort by nature: the protection is not allowing files that hold secrets. This only catches the usual shapes.
 
 use regex::{Captures, Regex};
+use std::sync::OnceLock;
 
 pub const MASK: &str = "[redacted]";
 
 const SECRET_NAME: &str =
     "(?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|client[_-]?secret)";
 
+/// Whitespace and its opposite, ASCII: Unicode's classes cost milliseconds to compile, on every request.
+const SPACE: &str = r"[\t\n\x0B\x0C\r ]";
+const NOT_SPACE: &str = r"[^\t\n\x0B\x0C\r ]";
+
 pub fn built_in() -> Vec<String> {
+    let s = SPACE;
     vec![
         // key = value, key: value, --key=value, "key": "value", for the usual names of secrets. A quoted value is
         // masked to its closing quote (or the end of the line), spaces included; a bare one to the next space or
         // separator.
-        format!(r#"(?i){SECRET_NAME}["']?\s*[:=]\s*"(?<secret>[^"\n]*)"#),
-        format!(r#"(?i){SECRET_NAME}["']?\s*[:=]\s*'(?<secret>[^'\n]*)"#),
-        format!(r#"(?i){SECRET_NAME}["']?\s*[:=]\s*(?<secret>[^\s"',;&]+)"#),
+        format!(r#"(?i){SECRET_NAME}["']?{s}*[:=]{s}*"(?<secret>[^"\n]*)"#),
+        format!(r#"(?i){SECRET_NAME}["']?{s}*[:=]{s}*'(?<secret>[^'\n]*)"#),
+        format!(r#"(?i){SECRET_NAME}["']?{s}*[:=]{s}*(?<secret>[^\t\n\x0B\x0C\r "',;&]+)"#),
         // --password value: a flag and its value, apart. The character before it is matched, not looked behind.
-        format!(r#"(?i)(?:^|[^\w-])--?{SECRET_NAME}\s+(?<secret>[^\s"'-][^\s"']*)"#),
-        r"(?i)authorization:\s*(?:bearer|basic|token)\s+(?<secret>\S+)".into(),
+        format!(r#"(?i)(?:^|[^A-Za-z0-9_-])--?{SECRET_NAME}{s}+(?<secret>[^\t\n\x0B\x0C\r "'-][^\t\n\x0B\x0C\r "']*)"#),
+        format!(r"(?i)authorization:{s}*(?:bearer|basic|token){s}+(?<secret>{NOT_SPACE}+)"),
         // Credentials inside a URL: scheme://user:password@host.
-        r"[a-zA-Z][a-zA-Z0-9+.-]*://[^/\s:@]+:(?<secret>[^@\s/]+)@".into(),
-        r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----".into(),
+        r"[a-zA-Z][a-zA-Z0-9+.-]*://[^/\t\n\x0B\x0C\r :@]+:(?<secret>[^@\t\n\x0B\x0C\r /]+)@".into(),
+        r"-----BEGIN [A-Z ]*PRIVATE KEY-----(?s:.)*?-----END [A-Z ]*PRIVATE KEY-----".into(),
     ]
 }
 
-#[derive(Debug, Clone)]
+/// Compiled on the first text it redacts: most requests redact nothing, and every request is a process of its own.
+#[derive(Debug, Clone, Default)]
 pub struct Redactor {
-    patterns: Vec<Regex>,
-}
-
-impl Default for Redactor {
-    fn default() -> Self {
-        Self::new(&[]).expect("the built-in patterns compile")
-    }
+    extra: Vec<String>,
+    patterns: OnceLock<Vec<Regex>>,
 }
 
 impl Redactor {
-    /// The built-in patterns and [extra], the operator's `redact.patterns`.
-    pub fn new(extra: &[String]) -> Result<Self, regex::Error> {
-        let patterns = built_in().iter().chain(extra).map(|p| Regex::new(p)).collect::<Result<_, _>>()?;
-        Ok(Self { patterns })
+    /// The built-in patterns and [extra], the operator's `redact.patterns`, which reading the configuration already
+    /// checked: one that doesn't compile is left out rather than stop every answer.
+    pub fn new(extra: &[String]) -> Self {
+        Self { extra: extra.to_vec(), patterns: OnceLock::new() }
+    }
+
+    fn patterns(&self) -> &[Regex] {
+        self.patterns.get_or_init(|| built_in().iter().chain(&self.extra).filter_map(|p| Regex::new(p).ok()).collect())
     }
 
     pub fn redact(&self, text: &str) -> String {
         let mut out = text.to_string();
-        for regex in &self.patterns {
+        for regex in self.patterns() {
             out = regex
                 .replace_all(&out, |caps: &Captures| {
                     let whole = caps.get(0).unwrap();
@@ -111,6 +117,13 @@ mod tests {
     }
 
     #[test]
+    fn every_built_in_pattern_compiles() {
+        for p in built_in() {
+            Regex::new(&p).unwrap_or_else(|e| panic!("{p}: {e}"));
+        }
+    }
+
+    #[test]
     fn leaves_ordinary_text_alone() {
         let text = "Started nginx.service - A high performance web server.";
         assert_eq!(r(text), text);
@@ -118,7 +131,7 @@ mod tests {
 
     #[test]
     fn extra_patterns_with_and_without_group() {
-        let red = Redactor::new(&["sk-[A-Za-z0-9]{8,}".into(), r"pin (?<secret>\d{4})".into()]).unwrap();
+        let red = Redactor::new(&["sk-[A-Za-z0-9]{8,}".into(), r"pin (?<secret>\d{4})".into()]);
         assert_eq!(red.redact("key sk-abcdefgh123 and pin 1234"), "key [redacted] and pin [redacted]");
     }
 }

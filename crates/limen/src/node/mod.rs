@@ -30,8 +30,7 @@ pub struct Node {
 
 impl Node {
     pub fn new(config: NodeConfig) -> Self {
-        // The patterns were compiled when the configuration was read.
-        let redactor = Redactor::new(&config.redact).unwrap_or_default();
+        let redactor = Redactor::new(&config.redact);
         let policy = PathPolicy::new(&config.allow, &config.deny);
         Node { config, redactor, policy, trusted_owner: sys::euid() }
     }
