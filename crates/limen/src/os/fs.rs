@@ -2,14 +2,18 @@
 
 use limen_core::system::procfs::{self, Account};
 use limen_core::trust::FileStat;
+use rustix::fs::{AtFlags, Mode, OFlags};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
+use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::sync::atomic::{AtomicU32, Ordering};
 
 const CHUNK: usize = 64 * 1024;
 /// Not following a link at the end of the path; std adds `O_CLOEXEC` to every open itself.
-const NOFOLLOW: i32 = rustix::fs::OFlags::NOFOLLOW.bits() as i32;
+const NOFOLLOW: i32 = OFlags::NOFOLLOW.bits() as i32;
+/// Not waiting on a FIFO swapped in for a file: it is opened, found not to be a file, and refused.
+const NONBLOCK: i32 = OFlags::NONBLOCK.bits() as i32;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FileType {
@@ -39,28 +43,36 @@ pub struct FileInfo {
     pub uid: u32,
     pub gid: u32,
     pub modified: i64,
+    /// Hard links: a file with more than one can be reached by a path the policy never saw.
+    pub links: u64,
 }
 
 impl FileInfo {
     fn of(path: &str, m: &fs::Metadata) -> Self {
-        let t = m.file_type();
-        let kind = if t.is_symlink() {
-            FileType::Link
-        } else if t.is_file() {
-            FileType::File
-        } else if t.is_dir() {
-            FileType::Directory
-        } else {
-            FileType::Other
-        };
         FileInfo {
             path: path.into(),
-            kind,
+            kind: kind_of(m.mode()),
             size: m.size(),
             mode: m.mode(),
             uid: m.uid(),
             gid: m.gid(),
             modified: m.mtime(),
+            links: m.nlink(),
+        }
+    }
+
+    // The widths of `stat`'s fields differ between architectures.
+    #[allow(clippy::unnecessary_cast)]
+    fn of_stat(path: &str, st: &rustix::fs::Stat) -> Self {
+        FileInfo {
+            path: path.into(),
+            kind: kind_of(st.st_mode as u32),
+            size: st.st_size.max(0) as u64,
+            mode: st.st_mode as u32,
+            uid: st.st_uid,
+            gid: st.st_gid,
+            modified: st.st_mtime as i64,
+            links: st.st_nlink as u64,
         }
     }
 
@@ -72,6 +84,15 @@ impl FileInfo {
             is_directory: self.kind == FileType::Directory,
             is_regular: self.kind == FileType::File,
         }
+    }
+}
+
+fn kind_of(mode: u32) -> FileType {
+    match rustix::fs::FileType::from_raw_mode(mode) {
+        rustix::fs::FileType::Symlink => FileType::Link,
+        rustix::fs::FileType::RegularFile => FileType::File,
+        rustix::fs::FileType::Directory => FileType::Directory,
+        _ => FileType::Other,
     }
 }
 
@@ -114,29 +135,89 @@ pub fn list(dir: &str) -> Result<Vec<String>, String> {
     Ok(names)
 }
 
-/// Opens [path] without following a link at its end: the caller resolved the path and checked it, and a link
-/// swapped in since then must not be followed. With [exact], a directory on the way swapped for a link is caught
-/// too: the file opened must be the one named, as `/proc/self/fd` says.
-fn open_read(path: &str, exact: bool) -> Result<File, String> {
-    let file = OpenOptions::new()
-        .read(true)
-        .custom_flags(NOFOLLOW)
-        .open(path)
-        .map_err(|e| format!("cannot open {path}: {e}"))?;
-    if exact {
-        use std::os::fd::AsRawFd;
-        if let Some(opened) = read_link(&format!("/proc/self/fd/{}", file.as_raw_fd())) {
-            if opened != path {
-                return Err(format!("{path} changed while it was opened"));
-            }
+/// Opens [path] without following a link at its end.
+pub fn open_read(path: &str) -> Result<File, String> {
+    OpenOptions::new().read(true).custom_flags(NOFOLLOW).open(path).map_err(|e| format!("cannot open {path}: {e}"))
+}
+
+/// A file the read role opened, and what it is: everything checked about it is checked on this descriptor, never
+/// on the path again, so a file swapped in after the check is not the one read.
+pub struct Opened {
+    pub file: File,
+    pub info: FileInfo,
+}
+
+/// Why [open_exact] failed.
+pub enum OpenError {
+    Missing,
+    NotDirectory,
+    Other(String),
+}
+
+/// Opens [path], resolved and checked by the caller, as exactly that: no link at its end, and no directory on the
+/// way swapped for one since, as `/proc/self/fd` says of what was opened.
+pub fn open_exact(path: &str) -> Result<Opened, OpenError> {
+    let file = OpenOptions::new().read(true).custom_flags(NOFOLLOW | NONBLOCK).open(path).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            OpenError::Missing
+        } else {
+            OpenError::Other(format!("cannot open {path}: {e}"))
         }
+    })?;
+    same_path(file.as_raw_fd(), path)?;
+    let info = FileInfo::of(path, &file.metadata().map_err(|e| OpenError::Other(format!("cannot stat {path}: {e}")))?);
+    Ok(Opened { file, info })
+}
+
+fn same_path(fd: i32, path: &str) -> Result<(), OpenError> {
+    match read_link(&format!("/proc/self/fd/{fd}")) {
+        Some(opened) if opened == path => Ok(()),
+        Some(_) => Err(OpenError::Other(format!("{path} changed while it was opened"))),
+        None => Err(OpenError::Other("cannot tell what was opened: no /proc".into())),
     }
-    Ok(file)
+}
+
+/// A directory opened as exactly [path], like [open_exact]: its entries are read and looked at through it.
+pub struct OpenDir {
+    fd: OwnedFd,
+    path: String,
+}
+
+pub fn open_dir_exact(path: &str) -> Result<OpenDir, OpenError> {
+    let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+    let fd = rustix::fs::open(path, flags, Mode::empty()).map_err(|e| match e {
+        rustix::io::Errno::NOENT => OpenError::Missing,
+        rustix::io::Errno::NOTDIR => OpenError::NotDirectory,
+        e => OpenError::Other(format!("cannot open {path}: {e}")),
+    })?;
+    same_path(fd.as_raw_fd(), path)?;
+    Ok(OpenDir { fd, path: path.into() })
+}
+
+impl OpenDir {
+    /// Every entry and what it is itself —a link as a link—, by name.
+    pub fn entries(&self) -> Result<Vec<(String, FileInfo)>, String> {
+        let dir = rustix::fs::Dir::read_from(&self.fd).map_err(|e| format!("cannot read {}: {e}", self.path))?;
+        let mut out = Vec::new();
+        for entry in dir {
+            let entry = entry.map_err(|e| format!("cannot read {}: {e}", self.path))?;
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name == "." || name == ".." {
+                continue;
+            }
+            // Gone since it was listed: not an entry any more.
+            let Ok(st) = rustix::fs::statat(&self.fd, entry.file_name(), AtFlags::SYMLINK_NOFOLLOW) else { continue };
+            let full = if self.path == "/" { format!("/{name}") } else { format!("{}/{name}", self.path) };
+            out.push((name, FileInfo::of_stat(&full, &st)));
+        }
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        Ok(out)
+    }
 }
 
 /// At most [max] bytes of [path], or None when it can't be opened.
 pub fn read(path: &str, max: usize) -> Option<Vec<u8>> {
-    let file = open_read(path, false).ok()?;
+    let file = open_read(path).ok()?;
     let mut out = Vec::new();
     file.take(max as u64).read_to_end(&mut out).ok()?;
     Some(out)
@@ -158,9 +239,29 @@ pub fn write_following(path: &str, bytes: &[u8], mode: u32) -> Result<(), String
     write_atomic(&real_path(path).unwrap_or_else(|| path.to_string()), bytes, mode)
 }
 
-/// Whether [path] contains [needle], reading it in chunks, up to [limit] bytes.
-pub fn contains(path: &str, needle: &[u8], limit: u64) -> bool {
-    let Ok(file) = open_read(path, false) else { return false };
+/// Takes the lock of [path] —made if missing, never through a link— if nobody holds it: the lock lasts as long as the
+/// file returned. None when it is held.
+pub fn try_lock(path: &str) -> Result<Option<File>, String> {
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .mode(0o600)
+        .custom_flags(NOFOLLOW)
+        .open(path)
+        .map_err(|e| format!("cannot open {path}: {e}"))?;
+    match rustix::fs::flock(&file, rustix::fs::FlockOperation::NonBlockingLockExclusive) {
+        Ok(()) => Ok(Some(file)),
+        Err(rustix::io::Errno::WOULDBLOCK) => Ok(None),
+        Err(e) => Err(format!("cannot lock {path}: {e}")),
+    }
+}
+
+/// Whether [file] contains [needle], reading it from the start in chunks, up to [limit] bytes.
+pub fn contains(mut file: &File, needle: &[u8], limit: u64) -> bool {
+    if file.seek(SeekFrom::Start(0)).is_err() {
+        return false;
+    }
     let mut reader = file.take(limit);
     let mut buffer = vec![0u8; CHUNK + needle.len()];
     let mut carried = 0;
@@ -183,10 +284,17 @@ fn is_binary(bytes: &[u8]) -> bool {
     bytes[..bytes.len().min(8192)].contains(&0)
 }
 
-/// Lines [from]..[from]+[count]-1 of [path] (1-based), reading in chunks so a big file costs what is read, and never
-/// more than [max_bytes] of content.
-pub fn read_lines(path: &str, from: usize, count: usize, max_bytes: usize, exact: bool) -> Result<LineSlice, String> {
-    let mut file = open_read(path, exact)?;
+/// Lines [from]..[from]+[count]-1 of [file] (1-based), reading in chunks so a big file costs what is read, and never
+/// more than [max_bytes] of content. Reaching line [from] may not take more than [max_skip] bytes.
+pub fn read_lines(
+    mut file: &File,
+    from: usize,
+    count: usize,
+    max_bytes: usize,
+    max_skip: u64,
+) -> Result<LineSlice, String> {
+    file.seek(SeekFrom::Start(0)).map_err(|e| e.to_string())?;
+    let mut skipped: u64 = 0;
     let mut lines = Vec::new();
     let mut line_no = 1;
     let mut bytes = 0;
@@ -195,9 +303,15 @@ pub fn read_lines(path: &str, from: usize, count: usize, max_bytes: usize, exact
     let mut first = true;
     let cut = |lines: Vec<String>| Ok(LineSlice { lines, eof: false, binary: false });
     loop {
-        let n = file.read(&mut buffer).map_err(|e| format!("cannot read {path}: {e}"))?;
+        let n = file.read(&mut buffer).map_err(|e| e.to_string())?;
         if n == 0 {
             break;
+        }
+        if line_no < from {
+            skipped += n as u64;
+            if skipped > max_skip {
+                return Err(format!("line {from} is past the first {} MiB", max_skip >> 20));
+            }
         }
         if first && is_binary(&buffer[..n]) {
             return Ok(LineSlice { lines: vec![], eof: true, binary: true });
@@ -237,14 +351,13 @@ pub fn read_lines(path: &str, from: usize, count: usize, max_bytes: usize, exact
     Ok(LineSlice { lines, eof: true, binary: false })
 }
 
-/// The last [count] lines of [path], reading backwards from the end at most [max_bytes].
-pub fn tail(path: &str, count: usize, max_bytes: u64, exact: bool) -> Result<LineSlice, String> {
-    let mut file = open_read(path, exact)?;
-    let size = file.metadata().map_err(|e| format!("cannot read {path}: {e}"))?.len();
+/// The last [count] lines of [file], reading backwards from the end at most [max_bytes].
+pub fn tail(mut file: &File, count: usize, max_bytes: u64) -> Result<LineSlice, String> {
+    let size = file.metadata().map_err(|e| e.to_string())?.len();
     let start = size.saturating_sub(max_bytes);
-    file.seek(SeekFrom::Start(start)).map_err(|e| format!("cannot read {path}: {e}"))?;
+    file.seek(SeekFrom::Start(start)).map_err(|e| e.to_string())?;
     let mut all = Vec::new();
-    file.take(max_bytes).read_to_end(&mut all).map_err(|e| format!("cannot read {path}: {e}"))?;
+    file.take(max_bytes).read_to_end(&mut all).map_err(|e| e.to_string())?;
     if is_binary(&all) {
         return Ok(LineSlice { lines: vec![], eof: true, binary: true });
     }
@@ -389,20 +502,23 @@ mod tests {
         let dir = temp();
         let path = format!("{dir}/f");
         write_atomic(&path, b"one\ntwo\nthree\nfour", 0o644).unwrap();
-        let s = read_lines(&path, 2, 2, 1000, true).unwrap();
+        let file = &open_exact(&path).ok().unwrap().file;
+        let s = read_lines(file, 2, 2, 1000, 1000).unwrap();
         assert_eq!(s.lines, ["two", "three"]);
         assert!(!s.eof);
         assert_eq!(
-            read_lines(&path, 3, 10, 1000, false).unwrap(),
+            read_lines(file, 3, 10, 1000, 1000).unwrap(),
             LineSlice { lines: vec!["three".into(), "four".into()], eof: true, binary: false }
         );
-        assert_eq!(read_lines(&path, 99, 10, 1000, false).unwrap().lines, Vec::<String>::new());
-        assert_eq!(tail(&path, 2, 1000, true).unwrap().lines, ["three", "four"]);
+        assert_eq!(read_lines(file, 99, 10, 1000, 1000).unwrap().lines, Vec::<String>::new());
+        // Reaching a line far into a file costs what is read on the way: that is bounded.
+        assert!(read_lines(file, 3, 10, 1000, 5).is_err());
+        assert_eq!(tail(file, 2, 1000).unwrap().lines, ["three", "four"]);
         // Reading from the middle drops the partial first line.
-        assert_eq!(tail(&path, 10, 11, false).unwrap().lines, ["three", "four"]);
-        assert_eq!(tail(&path, 10, 9, false).unwrap().lines, ["four"]);
+        assert_eq!(tail(file, 10, 11).unwrap().lines, ["three", "four"]);
+        assert_eq!(tail(file, 10, 9).unwrap().lines, ["four"]);
         write_atomic(&path, b"a\0b", 0o644).unwrap();
-        assert!(read_lines(&path, 1, 10, 1000, false).unwrap().binary);
+        assert!(read_lines(&open_read(&path).unwrap(), 1, 10, 1000, 1000).unwrap().binary);
         fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -413,11 +529,26 @@ mod tests {
         let mut text = vec![b'x'; CHUNK - 3];
         text.extend_from_slice(b"PRIVATE KEY-----");
         write_atomic(&path, &text, 0o644).unwrap();
-        assert!(contains(&path, b"PRIVATE KEY-----", 1 << 20));
-        assert!(!contains(&path, b"nothing", 1 << 20));
+        let file = open_read(&path).unwrap();
+        assert!(contains(&file, b"PRIVATE KEY-----", 1 << 20));
+        assert!(!contains(&file, b"nothing", 1 << 20));
         std::os::unix::fs::symlink(&path, format!("{dir}/link")).unwrap();
         assert!(read(&format!("{dir}/link"), 10).is_none());
+        assert!(matches!(open_exact(&format!("{dir}/link")), Err(OpenError::Other(_))));
         assert!(read_following(&format!("{dir}/link")).is_some());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_fifo_is_opened_without_waiting_and_is_not_a_file() {
+        let dir = temp();
+        let path = format!("{dir}/fifo");
+        rustix::fs::mknodat(rustix::fs::CWD, path.as_str(), rustix::fs::FileType::Fifo, Mode::from_raw_mode(0o600), 0)
+            .unwrap();
+        let Ok(opened) = open_exact(&path) else { panic!("a FIFO opens without a writer") };
+        assert_eq!(opened.info.kind, FileType::Other);
+        let listed = open_dir_exact(&dir).ok().unwrap().entries().unwrap();
+        assert_eq!(listed.iter().map(|(n, i)| (n.as_str(), i.kind)).collect::<Vec<_>>(), [("fifo", FileType::Other)]);
         fs::remove_dir_all(&dir).unwrap();
     }
 

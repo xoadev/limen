@@ -31,7 +31,7 @@ pub struct Node {
 impl Node {
     pub fn new(config: NodeConfig) -> Self {
         let redactor = Redactor::new(&config.redact);
-        let policy = PathPolicy::new(&config.allow, &config.deny);
+        let policy = PathPolicy::new(&config.allow, &config.deny).with_private(config.private_paths());
         Node { config, redactor, policy, trusted_owner: sys::euid() }
     }
 

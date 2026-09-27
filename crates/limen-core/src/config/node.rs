@@ -69,6 +69,8 @@ pub struct NodeConfig {
     pub max_lines: usize,
     pub scan_lines: usize,
     pub max_response_bytes: usize,
+    /// Read requests that may run at once on this node, from every hub together.
+    pub concurrency: usize,
     pub redact: Vec<String>,
     pub explicit_checks: Option<String>,
     pub explicit_actions: Option<String>,
@@ -88,6 +90,7 @@ impl Default for NodeConfig {
             max_lines: 2000,
             scan_lines: 100_000,
             max_response_bytes: 1024 * 1024,
+            concurrency: 8,
             redact: vec![],
             explicit_checks: None,
             explicit_actions: None,
@@ -132,6 +135,7 @@ struct Logs {
 #[serde(deny_unknown_fields, default)]
 struct Limits {
     max_response: Option<i64>,
+    concurrency: Option<i64>,
 }
 
 #[derive(Deserialize, Default)]
@@ -185,6 +189,13 @@ impl NodeConfig {
         self.repo.as_ref().map(|r| format!("{}/stacks", r.base()))
     }
 
+    /// limen's own files, wherever the configuration puts them: never readable through the read role.
+    pub fn private_paths(&self) -> Vec<String> {
+        let mut paths = vec![self.audit.clone(), format!("{}.1", self.audit), self.runs.clone()];
+        paths.extend(self.repo.as_ref().map(|r| r.token_file.clone()));
+        paths
+    }
+
     /// What must be running: `node.toml` in the node's folder of the repository.
     pub fn expectations(&self) -> Option<String> {
         self.repo.as_ref().map(|r| format!("{}/node.toml", r.base()))
@@ -210,6 +221,7 @@ impl NodeConfig {
             max_lines: positive("logs.max_lines", f.logs.max_lines)?.unwrap_or(d.max_lines),
             scan_lines: positive("logs.scan_lines", f.logs.scan_lines)?.unwrap_or(d.scan_lines),
             max_response_bytes: positive("limits.max_response", f.limits.max_response)?.unwrap_or(d.max_response_bytes),
+            concurrency: positive("limits.concurrency", f.limits.concurrency)?.unwrap_or(d.concurrency),
             allow: f.files.allow,
             deny: f.files.deny,
             redact: f.redact.patterns,

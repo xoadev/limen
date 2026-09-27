@@ -631,6 +631,10 @@ deny = [
 # max_lines = 2000
 # scan_lines = 100000
 
+[limits]
+# max_response = 1048576
+# concurrency = 8
+
 [redact]
 # Added to the built-in patterns. A group named `secret` limits what is replaced.
 patterns = []

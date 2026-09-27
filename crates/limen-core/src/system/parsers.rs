@@ -10,15 +10,16 @@ pub fn key_values(text: &str) -> BTreeMap<String, String> {
     text.lines().filter_map(|l| l.split_once('=')).map(|(k, v)| (k.to_string(), v.to_string())).collect()
 }
 
-/// `systemctl list-units --no-legend --plain`: UNIT LOAD ACTIVE SUB DESCRIPTION.
-pub fn units(text: &str) -> Value {
+/// `systemctl list-units --no-legend --plain`: UNIT LOAD ACTIVE SUB DESCRIPTION. A description is whatever the unit
+/// file says, so it is redacted like any other text.
+pub fn units(text: &str, redactor: &Redactor) -> Value {
     let rows: Vec<Value> = text
         .lines()
         .map(str::trim)
         .filter(|l| !l.is_empty())
         .filter_map(|line| {
             let parts = split_whitespace(line, 5);
-            let description = parts.get(4).copied().unwrap_or("");
+            let description = redactor.redact(parts.get(4).copied().unwrap_or(""));
             match parts[..] {
                 [unit, load, active, sub, ..] => {
                     Some(json!({"unit": unit, "load": load, "active": active, "sub": sub, "description": description}))
@@ -58,11 +59,11 @@ fn non_empty(v: Option<&String>) -> Option<&str> {
 }
 
 /// The service view of `systemctl show`: the properties an agent needs, with systemd's "unset" as null.
-pub fn unit(props: &BTreeMap<String, String>) -> Value {
+pub fn unit(props: &BTreeMap<String, String>, redactor: &Redactor) -> Value {
     let num = |k: &str| props.get(k).and_then(|v| v.parse::<i64>().ok());
     json!({
         "name": props.get("Id"),
-        "description": props.get("Description"),
+        "description": props.get("Description").map(|d| redactor.redact(d)),
         "load": props.get("LoadState"),
         "active": props.get("ActiveState"),
         "sub": props.get("SubState"),
@@ -187,7 +188,7 @@ pub fn container_detail(o: &Map<String, Value>, digests: &[String], redactor: &R
         "finished_at": state.and_then(|s| str_of(s, "FinishedAt")),
         "exit_code": field(state, "ExitCode"),
         "oom_killed": field(state, "OOMKilled"),
-        "error": state.and_then(|s| str_of(s, "Error")).filter(|e| !e.is_empty()),
+        "error": state.and_then(|s| str_of(s, "Error")).filter(|e| !e.is_empty()).map(|e| redactor.redact(e)),
     });
     if let Some(health) = state.and_then(|s| obj(s, "Health")) {
         let log = arr(health, "Log");
@@ -294,7 +295,8 @@ mod tests {
 
     #[test]
     fn units_of_list_units() {
-        let rows = units("ssh.service    loaded active   running OpenBSD Secure  Shell server\n\nbad\n");
+        let rows =
+            units("ssh.service    loaded active   running OpenBSD Secure  Shell server\n\nbad\n", &Redactor::default());
         assert_eq!(rows[0]["unit"], "ssh.service");
         assert_eq!(rows[0]["active"], "active");
         assert_eq!(rows[0]["description"], "OpenBSD Secure  Shell server");
@@ -306,7 +308,7 @@ mod tests {
         let props = key_values(
             "Id=nginx.service\nMainPID=0\nMemoryCurrent=18446744073709551615\nUnitFileState=\nNRestarts=3\nActiveState=active",
         );
-        let u = unit(&props);
+        let u = unit(&props, &Redactor::default());
         assert_eq!(u["name"], "nginx.service");
         assert_eq!(u["main_pid"], Value::Null);
         assert_eq!(u["memory_bytes"], Value::Null);

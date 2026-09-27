@@ -7,6 +7,7 @@ use rustix::process::{Pid, Signal, kill_process_group};
 use std::io::{ErrorKind, Read, Write};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::process::{Child, Command, ExitStatus, Stdio};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 const CHUNK: usize = 64 * 1024;
@@ -78,6 +79,16 @@ impl Default for Run<'_> {
     }
 }
 
+/// The process groups running now, for [stop_all].
+static RUNNING: Mutex<Vec<Pid>> = Mutex::new(Vec::new());
+
+/// Kills every process group still running: a request out of time leaves nothing behind.
+pub fn stop_all() {
+    for pid in RUNNING.lock().unwrap_or_else(|e| e.into_inner()).iter() {
+        kill_process_group(*pid, Signal::KILL).ok();
+    }
+}
+
 /// Runs [argv] to completion. `argv[0]` is an absolute path (see [which]).
 pub fn run(argv: &[String], mut opts: Run) -> Result<ProcResult, String> {
     let program = argv
@@ -103,7 +114,18 @@ pub fn run(argv: &[String], mut opts: Run) -> Result<ProcResult, String> {
         timed_out: false,
         max_output: opts.max_output,
     };
+    let pid = running.pid;
+    let running_now = |add: bool| {
+        let mut list = RUNNING.lock().unwrap_or_else(|e| e.into_inner());
+        match pid {
+            Some(pid) if add => list.push(pid),
+            Some(pid) => list.retain(|p| *p != pid),
+            None => {}
+        }
+    };
+    running_now(true);
     let status = running.await_child(&mut child, opts.stdin.take(), opts.timeout, &mut opts.on_chunk);
+    running_now(false);
     let (exit_code, signal) = match status {
         Some(s) => match s.code() {
             Some(code) => (code, None),

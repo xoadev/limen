@@ -48,9 +48,23 @@ fn no_init() -> limen_core::protocol::LimenError {
     error(ErrorCode::Unavailable, "no systemd or procd on this node")
 }
 
-/// The board, where the system says it (OpenWrt).
+/// The board, where the system says it: OpenWrt, in `/tmp`. Only a small regular file root wrote, in a directory
+/// only root writes: anywhere else, anyone could put there a FIFO to hang the request, or a link to another file.
 pub fn board() -> Option<String> {
-    fs::read_text("/tmp/sysinfo/model").map(|b| b.trim().to_string()).filter(|b| !b.is_empty())
+    const DIR: &str = "/tmp/sysinfo";
+    if !openwrt() {
+        return None;
+    }
+    let dir = fs::lstat(DIR).filter(|d| d.kind == fs::FileType::Directory && d.uid == 0 && d.mode & 0o022 == 0)?;
+    let opened = fs::open_exact(&format!("{}/model", dir.path)).ok()?;
+    let info = &opened.info;
+    if info.kind != fs::FileType::File || info.uid != 0 || info.links != 1 || info.size > 4096 {
+        return None;
+    }
+    let mut text = String::new();
+    std::io::Read::read_to_string(&mut std::io::Read::take(&opened.file, 4096), &mut text).ok()?;
+    let board = text.lines().next().unwrap_or("").trim().to_string();
+    (!board.is_empty()).then_some(board)
 }
 
 pub fn disks() -> Result<Value> {
@@ -180,7 +194,7 @@ pub fn failed_services(node: &Node) -> Result<Vec<String>> {
     match init() {
         Init::Systemd => {
             let out = node.exec_ok(&["systemctl", "list-units", "--failed", "--no-legend", "--plain", "--no-pager"])?;
-            Ok(parsers::units(&out)
+            Ok(parsers::units(&out, &node.redactor)
                 .as_array()
                 .into_iter()
                 .flatten()
@@ -350,8 +364,6 @@ pub fn logread(node: &Node, lines: usize, f: &LogFilter) -> Result<Vec<Value>> {
         return Err(error(ErrorCode::Unavailable, format!("logread: {last}")));
     }
     let max_level = f.priority.and_then(parsers::priority_number);
-    let grep = f.grep.map(str::to_lowercase);
-    let has = |text: &str| grep.as_ref().is_none_or(|g| text.to_lowercase().contains(g));
     let out = r.out();
     let entries: Vec<Value> = out
         .lines()
@@ -359,7 +371,7 @@ pub fn logread(node: &Node, lines: usize, f: &LogFilter) -> Result<Vec<Value>> {
         .filter_map(|line| {
             let Some(e) = procfs::logread_line(line) else {
                 let unfiltered = f.source.is_none() && max_level.is_none() && f.since.is_none() && f.until.is_none();
-                return (unfiltered && has(line)).then(|| json!({"message": node.redactor.redact(line)}));
+                return unfiltered.then(|| json!({"message": node.redactor.redact(line)}));
             };
             if let Some(source) = f.source {
                 if e.source != source && !e.source.starts_with(&format!("{source}-")) {
@@ -375,9 +387,6 @@ pub fn logread(node: &Node, lines: usize, f: &LogFilter) -> Result<Vec<Value>> {
             if f.since.is_some_and(|s| at.is_none_or(|t| t < s)) || f.until.is_some_and(|u| at.is_none_or(|t| t > u)) {
                 return None;
             }
-            if !has(&e.message) {
-                return None;
-            }
             Some(json!({
                 "time": e.time,
                 "priority": e.priority,
@@ -387,8 +396,7 @@ pub fn logread(node: &Node, lines: usize, f: &LogFilter) -> Result<Vec<Value>> {
             }))
         })
         .collect();
-    let from = entries.len().saturating_sub(lines);
-    Ok(entries[from..].to_vec())
+    Ok(super::read::last_matching(entries, f.grep, lines, |e| e["message"].as_str().unwrap_or("")))
 }
 
 #[cfg(test)]

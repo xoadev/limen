@@ -225,12 +225,18 @@ pub fn known_hosts_text(nodes: &[NodeEntry]) -> String {
     nodes.iter().map(|n| format!("{} {}\n", alias(n), n.host_key)).collect()
 }
 
-/// `/tmp/limen-<uid>/<hub>`, for the control sockets: short, because a Unix socket path has a limit of 108 bytes,
-/// refused if someone else owns it, and one per hub directory, so two hubs never share a connection.
+/// `$XDG_RUNTIME_DIR/limen-<uid>/<hub>`, or under `/tmp` when that is too long, for the control sockets: a Unix
+/// socket path has a limit of 108 bytes, and ssh adds `/cm-`, 40 characters of `%C` and 17 of its own to it. Refused
+/// if someone else owns it, and one per hub directory, so two hubs never share a connection.
 fn runtime_dir(home: &str) -> Result<String> {
-    let base = sys::env("XDG_RUNTIME_DIR").filter(|b| !b.is_empty() && b.len() < 40).unwrap_or_else(|| "/tmp".into());
-    let user_dir = format!("{base}/limen-{}", sys::euid());
-    let hub = &limen_core::join::hex(&limen_core::join::sha256(home.as_bytes()))[..12];
+    const MAX_DIR: usize = 107 - 4 - 40 - 17;
+    let hub = &limen_core::join::hex(&limen_core::join::sha256(home.as_bytes()))[..8];
+    let user_dir = |base: &str| format!("{base}/limen-{}", sys::euid());
+    let user_dir = sys::env("XDG_RUNTIME_DIR")
+        .filter(|b| b.starts_with('/'))
+        .map(|b| user_dir(&b))
+        .filter(|d| d.len() + 1 + hub.len() <= MAX_DIR)
+        .unwrap_or_else(|| user_dir("/tmp"));
     let dir = format!("{user_dir}/{hub}");
     fs::mkdirs(&dir, 0o700).map_err(|e| error(ErrorCode::Internal, e))?;
     for d in [&user_dir, &dir] {

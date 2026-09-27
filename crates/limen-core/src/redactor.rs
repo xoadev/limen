@@ -9,8 +9,12 @@ use std::sync::OnceLock;
 
 pub const MASK: &str = "[redacted]";
 
-const SECRET_NAME: &str =
-    "(?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|client[_-]?secret)";
+const SECRET_NAME: &str = "(?:password|passwd|passphrase|pwd|secret|token|psk|api[_-]?key|access[_-]?key|private[_-]?key|\
+     preshared[_-]?key|client[_-]?secret)";
+
+/// OpenWrt's UCI options that hold a secret: `option key '…'` is the Wi-Fi key.
+const UCI_SECRET: &str =
+    "(?:key|psk|private_key|preshared_key|priv_key_pwd|[a-z0-9_]*(?:password|passwd|secret|token))";
 
 /// Whitespace and its opposite, ASCII: Unicode's classes cost milliseconds to compile, on every request.
 const SPACE: &str = r"[\t\n\x0B\x0C\r ]";
@@ -28,9 +32,18 @@ pub fn built_in() -> Vec<String> {
         // --password value: a flag and its value, apart. The character before it is matched, not looked behind.
         format!(r#"(?i)(?:^|[^A-Za-z0-9_-])--?{SECRET_NAME}{s}+(?<secret>[^\t\n\x0B\x0C\r "'-][^\t\n\x0B\x0C\r "']*)"#),
         format!(r"(?i)authorization:{s}*(?:bearer|basic|token){s}+(?<secret>{NOT_SPACE}+)"),
+        // UCI: option key 'value', quoted or not.
+        format!(r#"(?m)^[\t ]*option[\t ]+{UCI_SECRET}[\t ]+['"]?(?<secret>[^'"\n]*)"#),
+        // Passwords some commands take in their own way: curl -u user:pass, sshpass -p pass, mysql -ppass.
+        r#"(?-u:\b)curl(?-u:\b)[^\n]*?[\t ](?:-u|--user)(?:[\t ]+|=)['"]?[^\t\n :'"]*:(?<secret>[^\t\n '"]+)"#.into(),
+        r#"(?-u:\b)sshpass(?-u:\b)[^\n]*?[\t ]-p[\t ]*(?<secret>[^\t\n '"-][^\t\n '"]*)"#.into(),
+        r#"(?-u:\b)mysql(?:dump|admin)?(?-u:\b)[^\n]*?[\t ]-p(?<secret>[^\t\n '"]+)"#.into(),
         // Credentials inside a URL: scheme://user:password@host.
         r"[a-zA-Z][a-zA-Z0-9+.-]*://[^/\t\n\x0B\x0C\r :@]+:(?<secret>[^@\t\n\x0B\x0C\r /]+)@".into(),
         r"-----BEGIN [A-Z ]*PRIVATE KEY-----(?s:.)*?-----END [A-Z ]*PRIVATE KEY-----".into(),
+        // A line of base64 alone, as a key's body is written: a window of lines that starts inside a key has no
+        // markers to find it by.
+        r"(?m)^[A-Za-z0-9+/]{64,}={0,2}\r?$".into(),
     ]
 }
 
@@ -114,6 +127,33 @@ mod tests {
         assert_eq!(r("postgres://app:pa55@db:5432/x"), "postgres://app:[redacted]@db:5432/x");
         let pem = "a\n-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaA\n-----END OPENSSH PRIVATE KEY-----\nz";
         assert_eq!(r(pem), "a\n[redacted]\nz");
+    }
+
+    #[test]
+    fn openwrt_and_the_usual_tools() {
+        assert_eq!(
+            r("config wifi-iface\n\toption ssid 'home'\n\toption key 'hunter22'"),
+            "config wifi-iface\n\toption ssid 'home'\n\toption key '[redacted]'"
+        );
+        assert_eq!(r("\toption private_key \"wgkey=\""), "\toption private_key \"[redacted]\"");
+        assert_eq!(r("\toption password s3cr3t"), "\toption password [redacted]");
+        assert_eq!(r("wpa_passphrase=hunter22\npsk=\"abc def\""), "wpa_passphrase=[redacted]\npsk=\"[redacted]\"");
+        assert_eq!(r("PresharedKey = abc="), "PresharedKey = [redacted]");
+        assert_eq!(r("curl -s -u ana:pa55 https://x"), "curl -s -u ana:[redacted] https://x");
+        assert_eq!(r("sshpass -p pa55 ssh host"), "sshpass -p [redacted] ssh host");
+        assert_eq!(r("mysql -u root -ppa55 db"), "mysql -u root -p[redacted] db");
+        // Not every -u or -p is a password.
+        assert_eq!(r("docker run -u 1000:1000 -p 80:80 app"), "docker run -u 1000:1000 -p 80:80 app");
+    }
+
+    #[test]
+    fn a_key_body_without_its_markers() {
+        let body = "b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW";
+        assert_eq!(
+            r(&format!("{body}\n{body}\n-----END OPENSSH PRIVATE KEY-----")),
+            "[redacted]\n[redacted]\n-----END OPENSSH PRIVATE KEY-----"
+        );
+        assert_eq!(r("short line of text"), "short line of text");
     }
 
     #[test]

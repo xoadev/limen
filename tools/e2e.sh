@@ -186,15 +186,17 @@ EOF
   expect "status answers, disks from statvfs" '"mount": "/"' limen call debian status
   expect "an allowed file is read" '"content": "' limen call debian read_file --arg path=/etc/hostname
   expect "a secret in an allowed file is redacted" 'password=[redacted]' limen call debian read_file --arg path=/etc/limen-e2e/app.conf
-  expect "a file outside the allowlist is denied" 'not in files.allow' limen call debian read_file --arg path=/etc/passwd
-  expect "files.deny wins over files.allow" 'denied by files.deny' limen call debian read_file --arg path=/etc/limen-e2e/app.env
-  expect "the built-in deny list can't be allowed" 'is never readable' limen call debian read_file --arg path=/etc/shadow
-  expect "a symlink to a secret stays denied" 'is never readable' limen call debian read_file --arg path=/etc/limen-e2e/shadow-link
+  expect "a file outside the allowlist is denied" '/etc/passwd is not readable' limen call debian read_file --arg path=/etc/passwd
+  expect "files.deny wins over files.allow" 'app.env is not readable' limen call debian read_file --arg path=/etc/limen-e2e/app.env
+  expect "the built-in deny list can't be allowed" '/etc/shadow is not readable' limen call debian read_file --arg path=/etc/shadow
+  expect "a symlink to a secret stays denied" 'shadow-link is not readable' limen call debian read_file --arg path=/etc/limen-e2e/shadow-link
   expect "list_dir walks towards allowed files" '"name": "limen-e2e"' limen call debian list_dir --arg path=/etc
   expect "list_dir names owners without NSS" '"owner": "root"' limen call debian list_dir --arg path=/etc
   refuse "list_dir hides what is not allowed" '"name": "limen-e2e"' '"(passwd|shadow|limen)"' limen call debian list_dir --arg path=/etc
-  expect "a denied path that doesn't exist is denied too" 'is never readable' limen call debian read_file --arg path=/root/nothing
-  expect "a denied path is denied before its type is told" 'is never readable' limen call debian list_dir --arg path=/etc/shadow
+  expect "a denied path that doesn't exist is denied too" '/root/nothing is not readable' limen call debian read_file --arg path=/root/nothing
+  expect "a denied path is denied before its type is told" '"denied"' limen call debian list_dir --arg path=/etc/shadow
+  expect "dots are walked where links lead, not as text" '/var/run/../etc/shadowX is not readable' \
+    limen call debian read_file --arg path=/var/run/../etc/shadowX
   expect "a binary file answers its size, no content" '"binary": true' limen call debian read_file --arg path=/etc/limen-e2e/blob
   expect "file logs: the last lines" '"line 110"' limen call debian logs --arg source=file --arg name=/var/log/e2e.log --arg lines=5
   refuse "file logs: only the lines asked for" '"line 110"' 'ERROR' \
@@ -363,6 +365,7 @@ EOF
   expect "hello: the OS" '"os": "OpenWrt' limen call openwrt hello
   expect "status: disks from statvfs" '"mount": "/"' limen call openwrt status
   expect "an allowed uci file is read" '"path": "/etc/config/' limen call openwrt read_file --arg path=/etc/config/dropbear
+  expect "the Wi-Fi keys are never read" 'wireless is not readable' limen call openwrt read_file --arg path=/etc/config/wireless
   expect "root's files are owned by root, without NSS" '"owner": "root"' limen call openwrt list_dir --arg path=/etc/config
   expect "processes, from /proc: dropbear" 'dropbear' limen call openwrt processes
   expect "ports, from /proc: dropbear on 22" '"name": "dropbear"' limen call openwrt ports

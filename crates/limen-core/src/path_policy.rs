@@ -14,17 +14,31 @@ pub enum Decision {
 pub struct PathPolicy {
     allow: Vec<Glob>,
     deny: Vec<Glob>,
+    /// limen's own files wherever the configuration puts them —the audit log, the runs' output, the repository
+    /// token—, and what is below them: paths, not patterns.
+    private: Vec<String>,
 }
 
 impl PathPolicy {
     /// The patterns were checked when the configuration was read; one that isn't absolute matches nothing.
     pub fn new(allow: &[String], deny: &[String]) -> Self {
         let globs = |list: &[String]| list.iter().filter_map(|p| Glob::new(p).ok()).collect();
-        Self { allow: globs(allow), deny: globs(deny) }
+        Self { allow: globs(allow), deny: globs(deny), private: vec![] }
+    }
+
+    pub fn with_private(mut self, paths: Vec<String>) -> Self {
+        self.private = paths.into_iter().map(|p| normalize(&p)).collect();
+        self
+    }
+
+    fn is_private(&self, resolved: &str) -> bool {
+        self.private
+            .iter()
+            .any(|p| resolved == p || resolved.strip_prefix(p.as_str()).is_some_and(|r| r.starts_with('/')))
     }
 
     pub fn check(&self, resolved: &str) -> Decision {
-        if built_in_deny().iter().any(|g| g.matches(resolved)) {
+        if built_in_deny().iter().any(|g| g.matches(resolved)) || self.is_private(resolved) {
             return Decision::Denied(format!("{resolved} is never readable"));
         }
         if let Some(g) = self.deny.iter().find(|g| g.matches(resolved)) {
@@ -43,6 +57,7 @@ impl PathPolicy {
     /// A directory that is not allowed itself but on the way to something that is: listable, to find it.
     pub fn leads_to(&self, dir: &str) -> bool {
         !built_in_deny().iter().any(|g| g.matches(dir))
+            && !self.is_private(dir)
             && !self.deny.iter().any(|g| g.matches(dir))
             && self.allow.iter().any(|g| g.may_match_below(dir))
     }
@@ -63,9 +78,9 @@ pub fn normalize(path: &str) -> String {
     format!("/{}", out.join("/"))
 }
 
-/// Can't be overridden by any configuration (spec §7.1): account and sudo secrets, private keys, VPN and Wi-Fi
-/// credentials, limen's own directory, root's home, and the pseudo-filesystems, where a "file" can be a process's
-/// environment or a whole disk.
+/// Can't be overridden by any configuration (spec §7.1): account and sudo secrets and their backups, private keys,
+/// VPN and Wi-Fi credentials, systemd's service credentials, limen's own directories, root's home, and the
+/// pseudo-filesystems, where a "file" can be a process's environment or a whole disk.
 pub fn built_in_deny() -> &'static [Glob] {
     static DENY: OnceLock<Vec<Glob>> = OnceLock::new();
     DENY.get_or_init(|| {
@@ -82,7 +97,11 @@ pub fn built_in_deny() -> &'static [Glob] {
             "/etc/ssl/private/**",
             "/etc/wireguard/**",
             "/etc/NetworkManager/system-connections/**",
+            "/etc/config/wireless",
+            "/run/credentials/**",
+            "/var/backups/*shadow*",
             "/etc/limen/**",
+            "/var/log/limen/**",
             "/root/**",
             "/proc/**",
             "/sys/**",
@@ -121,6 +140,10 @@ mod tests {
             "/etc/wireguard/wg0.conf",
             "/etc/NetworkManager/system-connections/home.nmconnection",
             "/etc/limen/limen.toml",
+            "/etc/config/wireless",
+            "/run/credentials/app.service/db",
+            "/var/backups/shadow.bak",
+            "/var/log/limen/audit.jsonl",
         ] {
             assert!(!p.allowed(secret), "{secret}");
         }
@@ -129,6 +152,16 @@ mod tests {
         assert!(!everything.allowed("/dev/sda"));
         assert!(!everything.allowed("/root/.bash_history"));
         assert!(everything.allowed("/etc/dropbear/dropbear_ed25519_host_key.pub"));
+    }
+
+    #[test]
+    fn limens_own_files_wherever_they_are() {
+        let p =
+            policy(&["/srv/**"], &[]).with_private(vec!["/srv/limen/audit.jsonl".into(), "/srv/limen/runs/".into()]);
+        assert!(!p.allowed("/srv/limen/audit.jsonl"));
+        assert!(!p.allowed("/srv/limen/runs/x.log"));
+        assert!(!p.leads_to("/srv/limen/runs"));
+        assert!(p.allowed("/srv/limen/audit.jsonl.old") && p.allowed("/srv/limen/runs2"));
     }
 
     #[test]

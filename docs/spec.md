@@ -140,9 +140,11 @@ Each read request is an MCP tool with an extra `node` argument. Every tool is an
 
 - Data comes from commands with machine-readable output (`systemctl show`, `journalctl -o json`,
   `docker inspect`, `ubus call`), run without a shell, and from `/proc` and `statvfs` (§12).
-- `grep` is a fixed string, case-insensitive, and filters before `lines` applies: the answer is the
-  last N matching lines in the window. The journal filters itself (`journalctl --grep`); containers and
-  files are scanned over their last `logs.scan_lines` lines, and a file over its last 16 MiB at most.
+- `grep` is a fixed string, case-insensitive, matched against the redacted text —never the raw one, or a
+  guess at a secret would be told apart by whether a line comes back— and filters before `lines` applies:
+  the answer is the last N matching lines in the window. The journal narrows the search itself
+  (`journalctl --grep` over its last `logs.scan_lines` matches); containers and files are scanned over
+  their last `logs.scan_lines` lines, and a file over its last 16 MiB at most.
 - `lines` above `logs.max_lines` is cut to it, and the answer says it was truncated.
 - A node's catalog is not trusted: a check whose name, description, arguments or patterns aren't plain and
   bounded, or that declares a `node` argument, is left out and reported in `nodes`. Its text reaches the model
@@ -188,7 +190,7 @@ set -euo pipefail
 ```
 
 - Argument types: `int` (`range`), `bool`, `enum` (`values`), `string` (`pattern`, by default
-  `^[A-Za-z0-9._-]{1,64}$`). An argument is required unless it has a `default` or says
+  `^[A-Za-z0-9_][A-Za-z0-9._-]{0,63}$`: never an option, `.` or `..`). An argument is required unless it has a `default` or says
   `required = false`. They reach the script as environment variables `LIMEN_ARG_<NAME>`, next to
   `LIMEN_KIND`, `LIMEN_SCRIPT` and `LIMEN_NODE` (the machine's hostname).
 - A `pattern`, like `redact.patterns` (§7.1), is a Rust `regex` that must match the whole value: `\w`, `\d`,
@@ -265,6 +267,7 @@ scan_lines = 100000
 
 [limits]
 max_response = 1048576
+concurrency = 8
 
 [redact]
 patterns = ['sk-[A-Za-z0-9]{20,}', 'pin (?<secret>\d{4})']
@@ -294,26 +297,39 @@ token_file = "/etc/limen/repo-token"
   request answer `internal` with the reason.
 - `limen.toml` may be a link to a file kept elsewhere; limen reads and rewrites the file it leads to.
 - An answer bigger than `limits.max_response` is replaced by a `bad_request` asking to narrow it.
+- The node bounds its read requests itself, whatever hub sends them: at most `limits.concurrency` at once (a lock
+  on one of `/run/limen/slot-<n>`; one more gets `unavailable`), ten seconds to send the request, and two minutes
+  in all —a check, its own timeout on top—. A request out of time has what it started killed, answers `timeout`
+  and is audited as such. `read_file` goes at most 64 MiB into a file to reach its first line; `logs` with
+  `source = file` reads the end.
 
 - **Nothing is readable by default.** `files.allow` starts empty; `limen install` writes it with
   suggestions commented out. Everything readable ends up in a model provider's context, so the
   operator decides it path by path.
-- A built-in deny list applies on top and can't be overridden: `/etc/shadow`, `/etc/gshadow`,
-  `/etc/sudoers*`, SSH and dropbear private keys, `/etc/ssl/private/`, `/etc/wireguard/`, NetworkManager
-  connections, `/etc/limen/`, `/root/`, and the pseudo-filesystems `/proc/`, `/sys/` and `/dev/`,
-  where a "file" can be a process's environment or a whole disk.
-- Only regular files are read; a binary file (a NUL in its first 8 KiB) answers its size and no
-  content.
-- Paths are resolved (symlinks, `..`) before matching, and the resolved path is the one opened: a
-  link from an allowed place to a denied one stays denied, and a directory swapped for a link between
-  the check and the open is caught. A denied path answers `denied` whether it exists or not, and
-  before anything about its type; for one that doesn't exist, the part that does is resolved.
+- A built-in deny list applies on top and can't be overridden: `/etc/shadow`, `/etc/gshadow` and their
+  backups in `/var/backups/`, `/etc/sudoers*`, SSH and dropbear private keys, `/etc/ssl/private/`,
+  `/etc/wireguard/`, NetworkManager connections, OpenWrt's `/etc/config/wireless`, systemd's
+  `/run/credentials/`, `/etc/limen/`, `/var/log/limen/`, `/root/`, and the pseudo-filesystems `/proc/`,
+  `/sys/` and `/dev/`, where a "file" can be a process's environment or a whole disk. So are the audit log,
+  the runs' directory and the repository token wherever `[audit]` and `[repo]` put them.
+- Only regular files with a single hard link are read: another name for the same file could be anywhere,
+  and a hard link into an allowed directory would carry a denied file with it. A binary file (a NUL in its
+  first 8 KiB) answers its size and no content.
+- Paths are walked one component at a time, as the kernel does: links followed, `..` taken from where
+  the walk is. Every step must be allowed or lead to something allowed, so nothing is learnt of a place
+  the policy hides, not even whether it exists; past a missing component the walk goes on as text. The
+  walked path is the one opened, once, without following links and checked through `/proc/self/fd`, and
+  the type, links and keys are checked on what was opened: a directory swapped for a link between the
+  check and the open is caught. A refusal names the path as asked and gives no reason, which would tell
+  where it leads. `list_dir` reads its entries through the directory it opened.
 - A file of up to 1 MiB that holds a PEM private key is not read at all: a range of lines can fall
   between the key's markers, where redaction can't recognise it. In larger files, logs, a window is
   redacted as a whole, so a key it holds entire is masked.
 - Redaction applies to files, logs, check output, process and container command lines, and
-  `history`. The built-in patterns catch `key=value` for the usual names of secrets (a quoted value
-  up to its closing quote), `Authorization` headers, credentials in URLs and PEM private keys;
+  `history`, and to unit descriptions and container errors. The built-in patterns catch `key=value` for the
+  usual names of secrets (a quoted value up to its closing quote), UCI's `option key '…'`, `Authorization`
+  headers, credentials in URLs, `curl -u`, `sshpass -p`, `mysql -p`, PEM private keys and lines of base64
+  alone, as a key's body is written;
   `redact.patterns` adds to them, and a group named `secret` limits what is replaced. It is a safety
   net; the protection is not allowing files that hold secrets.
 - A container's environment is never read: `container` lists variable names only.
@@ -516,12 +532,13 @@ key opened.
 | Prompt injection through logs or files | The same: the model can only ask for more reads |
 | Argument injection | Arguments are typed, validated on the node and never reach a shell |
 | Symlink from an allowed path to a secret | Resolved before matching (§7.1) |
-| Expensive requests | Timeouts, output caps and per-node concurrency |
+| Expensive requests | Timeouts, output caps, and on the node itself a deadline per request and `limits.concurrency` |
 | An invitation leaks | Whoever uses it first adds *one* machine, with that name, to the hub —a machine the agent will then read—; one hour, one use |
 | Someone between a joining node and the hub | Can't swap the hub's key —the fingerprint in the line stops the node— nor put their machine in the node's place: the arrival is signed with a secret that never travels. The source address is not signed: replaying the arrival from elsewhere files a wrong address, which `StrictHostKeyChecking` then refuses. Denial of service; join again |
 | The token leaks | It is in `$LIMEN_HOME/token`, printed by `connect`, and in the container's environment if given as `LIMEN_TOKEN` (`docker inspect`). Reads what the nodes allow; rotate it by replacing the file or the variable |
 | A malicious hub at join time | Installs its key for the read role, as the node's owner asked. Can't write the node's configuration beyond its own values |
-| A hub that floods a node with requests | Can rotate old entries out of the node's audit log, which is bounded. Ship it elsewhere if it must outlive that |
+| A hub that floods a node with requests | Gets `unavailable` past `limits.concurrency`. Can rotate old entries out of the node's audit log, which is bounded. Ship it elsewhere if it must outlive that |
+| A local user racing the gate | Links swapped in, directories swapped for links, FIFOs and hard links put in allowed directories: the walk, the single open and the checks on the open file refuse them |
 | A malicious or buggy check script | **Not covered.** Scripts belong to root; limen trusts them |
 | Secrets inside allowed files | Partly: redaction is best-effort |
 | Data leaving the machine | **By design**: whatever is readable reaches the model provider |
