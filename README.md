@@ -250,7 +250,8 @@ What is readable reaches the model provider, by design. The full threat model is
 ## Platforms
 
 - Machines: Debian and Ubuntu (systemd, OpenSSH, sudo) and OpenWrt (procd, dropbear, `logread`). Docker optional.
-- Binaries: Linux x86-64 and arm64, static; the same file runs on glibc and musl.
+- Binaries: Linux x86-64 and arm64, static; the same file runs on glibc and musl. How and why:
+  [`docs/openwrt.md`](docs/openwrt.md).
 - Hub: anything that runs the binary and OpenSSH's `ssh`; the image is `ghcr.io/xoadev/limen`, amd64 and arm64.
 
 ## Develop

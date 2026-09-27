@@ -369,6 +369,9 @@ suite_join() {
     mcp_http '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
   expect "a tool call reaches a node" 'uptime_seconds' \
     mcp_http '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"status","arguments":{"node":"nas"}}}'
+  # Text both ways with more than ASCII: Ktor's server must not go through iconv, which the static binary lacks.
+  expect "UTF-8 in and out of the server" 'unknown tool ñandú' \
+    mcp_http '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"ñandú","arguments":{}}}'
   expect "without the token, nothing" "401" curl -s -o /dev/null -w '%{http_code}' -X POST "$url/mcp" -d '{}'
   expect "forget takes a node off the hub" "removed" hub_exec forget spare
   refuse "and it is gone" '"spare"' mcp_http '{"jsonrpc":"2.0","id":3,"method":"tools/list"}'

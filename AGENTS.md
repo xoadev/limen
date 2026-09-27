@@ -19,7 +19,7 @@ memory, where the next session, another agent or a person can't read it.
 
 | Folder | What |
 |---|---|
-| `docs/` | `spec.md` |
+| `docs/` | `spec.md`; `openwrt.md`, why the binary is static and what that costs |
 | `kotlin/` | The Kotlin Toolchain project: `project.yaml`, a `module.yaml` per module, the `kotlin` wrapper that pins the toolchain |
 | `kotlin/core/` | Pure rules: protocol, request schemas, argument validation, configuration, TOML, script headers, path policy, redaction, parsers of what system programs print. No processes, files or network |
 | `kotlin/cli/` | The `limen` binary: `os/` (processes, files), `node/` (gate, requests, platforms, repository, scripts, install), `hub/` (SSH client, MCP server, transports) |
@@ -58,7 +58,7 @@ Each one had an alternative. Changing one is changing this table and the spec's 
 | CLI | `clikt-core` | The `clikt` artifact with markdown duplicates symbols when linking |
 | libc | glibc, linked statically (`tools/ld-static`) | Kotlin/Native has no musl target; static, one file runs on glibc and musl alike. A glibc bundle next to the binary also worked, with a directory of libraries to carry |
 | System facts | `/proc`, `statvfs`, `/etc/passwd` | `ps`, `ss` and `df` differ between distributions and busybox; NSS is out of reach of a static glibc |
-| HTTP | Ktor server, CIO engine | Validated on Native by foco |
+| HTTP | **Ktor first**: the server is Ktor (CIO) with its ordinary text APIs | Validated on Native by foco. Own code only where Ktor is shown not to work in the static binary, with a test that notices when it would: today only `HttpLite` for `limen join`, watched by `KtorCharsetTest` (docs/openwrt.md) |
 
 ## Conventions
 
@@ -162,9 +162,10 @@ Mistakes made here, with what avoids them. `make check` does not see them.
 - **A forced command only holds a login by key.** OpenWrt's image has root without a password and dropbear
   accepts it: the e2e "passed" a session that never used the key. Its dropbear runs with password logins off
   (`-s`), and `install` warns about an empty root password.
-- **glibc's iconv doesn't work in the static binary**, and Ktor reaches for it to encode or decode text: its
-  client failed with `Failed to open iconv for charset UTF-8`. `limen join` uses `HttpLite`, and the server reads and
-  writes bytes (`receiveChannel().toByteArray()`, `respondBytes`), never `receiveText`/`respondText`.
+- **glibc's iconv has only UTF-8 built in in the static binary**, and Ktor's client encodes text through UTF-16:
+  it failed with `Failed to open iconv for charset UTF-8`, a misleading name. Creating the encoder works; converting
+  doesn't, so a test of this must convert real text. Ktor's server text APIs don't go through iconv and work
+  (`make e2e` sends `ñandú` both ways). docs/openwrt.md has the whole list.
 - **`inet_pton` and `statvfs` are in `platform.linux`**, like `posix_spawn`.
 - **The static linker is registered on every `tools/kt` run.** Changing `tools/ld-static` needs nothing
   else; changing the Kotlin version may change the dependency names in `kotlin/cli/module.yaml`.
@@ -178,8 +179,9 @@ Mistakes made here, with what avoids them. `make check` does not see them.
   command-line text without `Redactor`.
 - Reading `SSH_ORIGINAL_COMMAND`.
 - Calling glibc's NSS from the binary: `getpwnam`, `getpwuid`, `getgrgid`, `getaddrinfo` of a name. The static
-  binary can't load its plugins; use `Fs.accounts()` and friends. Nor iconv: Ktor's `receiveText`, `respondText` and
-  its HTTP client.
+  binary can't load its plugins; use `Fs.accounts()` and friends.
+- Replacing a Ktor piece with own code without showing, in the static binary, that Ktor fails there, and without a
+  test that notices when it stops failing.
 - Reading what `/proc` or `statvfs` say through `ps`, `ss` or `df`.
 - Removing entries from `PathPolicy.BUILT_IN_DENY` or making it configurable.
 - Adding a dependency to `core`.

@@ -6,14 +6,13 @@ import io.ktor.server.application.ApplicationCall
 import io.ktor.server.cio.CIO
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.plugins.origin
-import io.ktor.server.request.receiveChannel
+import io.ktor.server.request.receiveText
 import io.ktor.server.response.respond
-import io.ktor.server.response.respondBytes
+import io.ktor.server.response.respondText
 import io.ktor.server.routing.delete
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import io.ktor.server.routing.routing
-import io.ktor.utils.io.toByteArray
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
@@ -73,11 +72,11 @@ object Http {
                         call.respond(HttpStatusCode.PayloadTooLarge)
                         return@post
                     }
-                    val answer = server.handle(call.receiveChannel().toByteArray().decodeToString())
+                    val answer = server.handle(call.receiveText())
                     if (answer == null) {
                         call.respond(HttpStatusCode.Accepted)
                     } else {
-                        call.respondBytes(answer.encodeToByteArray(), ContentType.Application.Json)
+                        call.respondText(answer, ContentType.Application.Json)
                     }
                 }
                 // No SSE stream and no sessions to end: every call is a request and its answer.
@@ -87,16 +86,13 @@ object Http {
                 get("/join/{code}") {
                     val invitation = hub.invitation(call.parameters["code"].orEmpty())
                     if (invitation == null) {
-                        call.respondBytes(
-                            joinError("this invitation does not exist, was used, or expired").encodeToByteArray(),
+                        call.respondText(
+                            joinError("this invitation does not exist, was used, or expired"),
                             ContentType.Application.Json,
                             HttpStatusCode.NotFound,
                         )
                     } else {
-                        call.respondBytes(
-                            WireJson.encodeToString(Invitation.serializer(), invitation).encodeToByteArray(),
-                            ContentType.Application.Json,
-                        )
+                        call.respondText(WireJson.encodeToString(Invitation.serializer(), invitation), ContentType.Application.Json)
                     }
                 }
                 post("/join/{code}") {
@@ -107,26 +103,15 @@ object Http {
                     }
                     val code = call.parameters["code"].orEmpty()
                     try {
-                        val arrival =
-                            LenientJson.decodeFromString(
-                                Arrival.serializer(),
-                                call.receiveChannel().toByteArray().decodeToString(),
-                            )
+                        val arrival = LenientJson.decodeFromString(Arrival.serializer(), call.receiveText())
                         val welcome = hub.arrive(code, arrival, call.request.origin.remoteHost, live)
                         Sys.err("limen: node ${welcome.name} joined from ${welcome.address}: ${welcome.detail}\n")
-                        call.respondBytes(
-                            WireJson.encodeToString(Welcome.serializer(), welcome).encodeToByteArray(),
-                            ContentType.Application.Json,
-                        )
+                        call.respondText(WireJson.encodeToString(Welcome.serializer(), welcome), ContentType.Application.Json)
                     } catch (e: LimenException) {
                         val status = if (e.code == ErrorCode.NOT_FOUND) HttpStatusCode.NotFound else HttpStatusCode.BadRequest
-                        call.respondBytes(joinError(e.message ?: "rejected").encodeToByteArray(), ContentType.Application.Json, status)
+                        call.respondText(joinError(e.message ?: "rejected"), ContentType.Application.Json, status)
                     } catch (e: Exception) {
-                        call.respondBytes(
-                            joinError("malformed request").encodeToByteArray(),
-                            ContentType.Application.Json,
-                            HttpStatusCode.BadRequest,
-                        )
+                        call.respondText(joinError("malformed request"), ContentType.Application.Json, HttpStatusCode.BadRequest)
                     }
                 }
             }

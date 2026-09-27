@@ -335,8 +335,6 @@ host_key = "ssh-ed25519 AAAA…"
   - Listens on `127.0.0.1:7341` unless told otherwise. The image listens on every interface;
     whoever publishes the port decides who gets in.
 - `GET /join/<code>` and `POST /join/<code>` (§10.1) need no token: the one-time code is the authorisation.
-- Bodies are read and written as bytes: Ktor's text conversions reach for glibc's iconv, which a static binary
-  can't load.
 - Catalogs are fetched when a session starts, when `nodes` is called and when the set of nodes changes. A change is announced with
   `notifications/tools/list_changed` over stdio; over HTTP without SSE it shows up in the next
   session.
@@ -415,7 +413,8 @@ key opened.
 ## 11. Distribution and platforms
 
 - **One static binary per architecture**, `amd64` and `arm64`, for any Linux: it carries its own glibc,
-  so it runs the same on Debian, Alpine or OpenWrt (musl), whatever their libc version.
+  so it runs the same on Debian, Alpine or OpenWrt (musl), whatever their libc version. Why, how, and what it costs:
+  [`openwrt.md`](openwrt.md).
 - Hub image `ghcr.io/xoadev/limen`, one tag for `amd64` and `arm64`: `debian:trixie-slim` with
   `openssh-client` and the binary. Volume `/data` holds `limen.toml` and the SSH key.
 - **Releases** follow the conventional commits: every push to `main` rewrites a draft release with the next
@@ -487,7 +486,7 @@ key opened.
 | `/proc` and `statvfs` | `ps`, `ss`, `df` | busybox's versions lack the options, and the formats differ between distributions |
 | Scripts converge, `node.toml` declares | limen installing packages and services | limen would become a configuration manager for every distribution; scripts already know how |
 | Joining with a one-time invitation | Copying keys by hand, or the hub logging into nodes with an administrator's SSH | Nothing to carry but one line; the hub never holds more than its read key |
-| Own HTTP client for `join` | Ktor's client | It encodes UTF-8 through glibc's iconv, which the static binary can't load |
+| Ktor first; own HTTP client only for `join` | Ktor's client there too | Ktor's client encodes text through glibc's iconv, whose modules the static binary can't load. `KtorCharsetTest` fails the day that changes (docs/openwrt.md) |
 | A fine-grained token for private repositories | A deploy key per node | One link fills in the token; a deploy key needs an SSH client for git on OpenWrt and a manual step in GitHub per node |
 
 ## 15. Open questions
