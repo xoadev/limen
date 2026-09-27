@@ -78,7 +78,14 @@ impl Hub {
         let mut config =
             HubConfig::parse(&text).map_err(|e| error(ErrorCode::BadRequest, format!("{}: {e}", self.config_path)))?;
         if let Some(url) = sys::env("LIMEN_PUBLIC_URL").filter(|u| !u.trim().is_empty()) {
-            config.public_url = Some(url.trim_end_matches('/').to_string());
+            let url = url.trim_end_matches('/').to_string();
+            if !is(hub::PUBLIC_URL, &url) {
+                return Err(error(
+                    ErrorCode::BadRequest,
+                    "LIMEN_PUBLIC_URL: expected http://<address>:<port>, an address and not a name",
+                ));
+            }
+            config.public_url = Some(url);
         }
         Ok(config)
     }

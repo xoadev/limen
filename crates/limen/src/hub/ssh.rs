@@ -44,8 +44,9 @@ pub struct SshClient {
 impl SshClient {
     pub fn new(config: HubConfig, home: &str) -> Result<SshClient> {
         let ssh = proc::which("ssh").ok_or_else(|| error(ErrorCode::Unavailable, "ssh is not installed on the hub"))?;
-        let runtime = runtime_dir()?;
-        let known_hosts = format!("{runtime}/known_hosts");
+        let runtime = runtime_dir(home)?;
+        // In the hub's own directory: two hubs of one user must not check their nodes against each other's keys.
+        let known_hosts = format!("{home}/known_hosts");
         let identity = if config.identity.starts_with('/') {
             config.identity.clone()
         } else {
@@ -87,7 +88,7 @@ impl SshClient {
         proc::run(
             &argv,
             proc::Run {
-                env: env(),
+                env: env(true),
                 stdin: Some(line.as_bytes().to_vec()),
                 timeout,
                 on_chunk: Some(on_chunk),
@@ -99,7 +100,11 @@ impl SshClient {
 
     fn argv(&self, entry: &NodeEntry, user: &str, key: &str, multiplex: bool) -> Vec<String> {
         let mut options = vec![
-            "BatchMode=yes".to_string(),
+            // Nothing forwarded to a node, which may be hostile: not the operator's agent, not a port.
+            "ForwardAgent=no".to_string(),
+            "ForwardX11=no".into(),
+            "ClearAllForwardings=yes".into(),
+            "BatchMode=yes".into(),
             "IdentitiesOnly=yes".into(),
             "StrictHostKeyChecking=yes".into(),
             format!("UserKnownHostsFile={}", self.known_hosts),
@@ -118,7 +123,8 @@ impl SshClient {
         } else {
             options.extend(["ControlMaster=no".into(), "ControlPath=none".into()]);
         }
-        let mut argv = vec![self.ssh.clone(), "-T".into(), "-i".into(), key.into()];
+        // `-F none`: the operator's ~/.ssh/config, with its ProxyCommand or ForwardAgent, doesn't apply to the hub.
+        let mut argv = vec![self.ssh.clone(), "-F".into(), "none".into(), "-T".into(), "-i".into(), key.into()];
         for o in options {
             argv.extend(["-o".into(), o]);
         }
@@ -173,7 +179,7 @@ impl NodeClient for SshClient {
             proc::run(
                 &argv,
                 proc::Run {
-                    env: env(),
+                    env: env(false),
                     stdin: Some(line.into_bytes()),
                     timeout,
                     max_output: 32 << 20,
@@ -197,9 +203,12 @@ fn failure(code: ErrorCode, message: String) -> NodeResponse {
     }
 }
 
-fn env() -> Vec<String> {
+/// ssh's environment: what it needs to run, and the agent only for a person's deploy request, whose key may live
+/// there; never for the hub's own calls.
+fn env(agent: bool) -> Vec<String> {
     let mut env = vec!["PATH=/usr/local/bin:/usr/bin:/bin".to_string(), "LANG=C.UTF-8".to_string()];
-    for name in ["HOME", "USER", "SSH_AUTH_SOCK"] {
+    let names: &[&str] = if agent { &["HOME", "USER", "SSH_AUTH_SOCK"] } else { &["HOME", "USER"] };
+    for name in names {
         if let Some(v) = sys::env(name) {
             env.push(format!("{name}={v}"));
         }
@@ -216,14 +225,21 @@ pub fn known_hosts_text(nodes: &[NodeEntry]) -> String {
     nodes.iter().map(|n| format!("{} {}\n", alias(n), n.host_key)).collect()
 }
 
-/// `/tmp/limen-<uid>`, for the control sockets and `known_hosts`: short, because a Unix socket path has a limit of
-/// 108 bytes, and refused if someone else owns it.
-fn runtime_dir() -> Result<String> {
+/// `/tmp/limen-<uid>/<hub>`, for the control sockets: short, because a Unix socket path has a limit of 108 bytes,
+/// refused if someone else owns it, and one per hub directory, so two hubs never share a connection.
+fn runtime_dir(home: &str) -> Result<String> {
     let base = sys::env("XDG_RUNTIME_DIR").filter(|b| !b.is_empty() && b.len() < 40).unwrap_or_else(|| "/tmp".into());
-    let dir = format!("{base}/limen-{}", sys::euid());
+    let user_dir = format!("{base}/limen-{}", sys::euid());
+    let hub = &limen_core::join::hex(&limen_core::join::sha256(home.as_bytes()))[..12];
+    let dir = format!("{user_dir}/{hub}");
     fs::mkdirs(&dir, 0o700).map_err(|e| error(ErrorCode::Internal, e))?;
-    match fs::lstat(&dir) {
-        Some(i) if i.kind == fs::FileType::Directory && i.uid == sys::euid() && i.mode & 0o077 == 0 => Ok(dir),
-        _ => Err(error(ErrorCode::Internal, format!("{dir} must be a directory of this user with mode 0700"))),
+    for d in [&user_dir, &dir] {
+        match fs::lstat(d) {
+            Some(i) if i.kind == fs::FileType::Directory && i.uid == sys::euid() && i.mode & 0o077 == 0 => {}
+            _ => {
+                return Err(error(ErrorCode::Internal, format!("{d} must be a directory of this user with mode 0700")));
+            }
+        }
     }
+    Ok(dir)
 }

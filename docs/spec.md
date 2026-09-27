@@ -144,6 +144,9 @@ Each read request is an MCP tool with an extra `node` argument. Every tool is an
   last N matching lines in the window. The journal filters itself (`journalctl --grep`); containers and
   files are scanned over their last `logs.scan_lines` lines, and a file over its last 16 MiB at most.
 - `lines` above `logs.max_lines` is cut to it, and the answer says it was truncated.
+- A node's catalog is not trusted: a check whose name, description, arguments or patterns aren't plain and
+  bounded, or that declares a `node` argument, is left out and reported in `nodes`. Its text reaches the model
+  as it is, so it is kept short.
 - A `check_<name>` tool accepts only the nodes whose catalog has that check; the hub refuses the others
   itself. The same check name on
   several nodes must declare the same arguments; if it doesn't, the hub reports the conflict in
@@ -373,13 +376,15 @@ host_key = "ssh-ed25519 AAAA…"
   is a request and a response).
   - Requires a bearer token, compared in constant time. `serve` creates one on its first start, or takes
     `LIMEN_TOKEN`, which must have 16 characters or more.
-  - A body is read only with its `Content-Length`, up to a limit: `Transfer-Encoding` gets `411`.
+  - Its own small HTTP/1.1 server, one request per connection: at most 64 connections, 16 KiB of head
+    and 15 seconds for the whole request. The token and `Origin` are checked before the body is read, and a body
+    is read only with its `Content-Length`, up to 1 MiB (16 KiB for a join): `Transfer-Encoding` gets `411`.
   - Validates `Origin`, against DNS rebinding.
   - Listens on `127.0.0.1:7341` unless told otherwise. The image listens on every interface;
     whoever publishes the port decides who gets in.
 - `GET /join/<code>` and `POST /join/<code>` (§10.1) need no token: the one-time code is the authorisation.
-- Catalogs are fetched when a session starts (`initialize`), when `nodes` is called and when the set
-  of nodes changes. A change is announced with `notifications/tools/list_changed` over stdio; over HTTP
+- Catalogs are fetched when the set of nodes changes, and when a session starts (`initialize`) or `nodes`
+  is called, at most once every ten seconds. A change is announced with `notifications/tools/list_changed` over stdio; over HTTP
   without SSE it shows up in the next session.
 
 ## 10. CLI
@@ -497,7 +502,7 @@ key opened.
   environment, stdout and stderr on separate pipes read with a cap; timeouts send `SIGTERM` to the group,
   then `SIGKILL`.
 - SSH: the system `ssh` binary with `BatchMode=yes`, `IdentitiesOnly=yes` and connection
-  multiplexing (`ControlMaster`, sockets in `$XDG_RUNTIME_DIR/limen-<uid>` or `/tmp/limen-<uid>`).
+  multiplexing (`ControlMaster`, sockets in `$XDG_RUNTIME_DIR/limen-<uid>/<hub>` or `/tmp/limen-<uid>/<hub>`, directories of mode `0700` that must be the user's; `-F none`, and no agent or port forwarding).
 - TOML: `toml_edit`. Files are read into `#[derive(Deserialize)]` types that refuse unknown keys, so a typo
   fails with its line; the hub's and node's `limen.toml` are edited as documents, comments kept.
 
@@ -506,12 +511,15 @@ key opened.
 | Threat | Outcome |
 |---|---|
 | Hub, token or MCP client compromised | Reads what the nodes allow. Changes nothing: it holds no key for that |
+| A compromised node | Answers what it likes about itself. Its catalog can't name tools or arguments beyond plain, bounded text, nor reach other nodes |
+| Someone who reaches the HTTP port without the token | Gets `401` before any body is read. Connections, heads and bodies are bounded; a flood denies service, it doesn't stop the hub |
 | Prompt injection through logs or files | The same: the model can only ask for more reads |
 | Argument injection | Arguments are typed, validated on the node and never reach a shell |
 | Symlink from an allowed path to a secret | Resolved before matching (§7.1) |
 | Expensive requests | Timeouts, output caps and per-node concurrency |
 | An invitation leaks | Whoever uses it first adds *one* machine, with that name, to the hub —a machine the agent will then read—; one hour, one use |
-| Someone between a joining node and the hub | Can't swap the hub's key —the fingerprint in the line stops the node— nor put their machine in the node's place: the arrival is signed with a secret that never travels |
+| Someone between a joining node and the hub | Can't swap the hub's key —the fingerprint in the line stops the node— nor put their machine in the node's place: the arrival is signed with a secret that never travels. The source address is not signed: replaying the arrival from elsewhere files a wrong address, which `StrictHostKeyChecking` then refuses. Denial of service; join again |
+| The token leaks | It is in `$LIMEN_HOME/token`, printed by `connect`, and in the container's environment if given as `LIMEN_TOKEN` (`docker inspect`). Reads what the nodes allow; rotate it by replacing the file or the variable |
 | A malicious hub at join time | Installs its key for the read role, as the node's owner asked. Can't write the node's configuration beyond its own values |
 | A hub that floods a node with requests | Can rotate old entries out of the node's audit log, which is bounded. Ship it elsewhere if it must outlive that |
 | A malicious or buggy check script | **Not covered.** Scripts belong to root; limen trusts them |

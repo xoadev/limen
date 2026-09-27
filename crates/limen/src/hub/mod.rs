@@ -2,6 +2,7 @@
 
 pub mod dir;
 pub mod mcp;
+pub mod server;
 pub mod ssh;
 pub mod transports;
 

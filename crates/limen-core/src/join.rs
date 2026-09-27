@@ -27,6 +27,10 @@ pub fn without_comment(public_key: &str) -> String {
     public_key.split_whitespace().take(2).collect::<Vec<_>>().join(" ")
 }
 
+pub fn sha256(bytes: &[u8]) -> Vec<u8> {
+    Sha256::digest(bytes).to_vec()
+}
+
 pub fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
