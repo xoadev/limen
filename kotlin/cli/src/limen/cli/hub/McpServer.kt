@@ -27,6 +27,8 @@ import limen.core.Role
 import limen.core.WireJson
 import limen.core.scripts.Catalog
 import limen.core.scripts.ScriptSpec
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.seconds
 import kotlin.time.TimeSource
 
 /**
@@ -66,10 +68,17 @@ class McpServer(
             }
         } catch (e: InvalidParams) {
             error(id, INVALID_PARAMS, e.message ?: "invalid params")
+        } catch (e: LimenException) {
+            // The hub's own trouble —a broken limen.toml, a missing key—: said to the client, and the server lives on.
+            error(id, INTERNAL_ERROR, e.message ?: "hub error")
+        } catch (e: Exception) {
+            error(id, INTERNAL_ERROR, e.message ?: e::class.simpleName ?: "hub error")
         }
     }
 
     private fun initialize(params: JsonObject): JsonObject {
+        // A new session sees the checks as they are now: new scripts, a node that was down.
+        hellos = null
         val asked = (params["protocolVersion"] as? JsonPrimitive)?.contentOrNull
         return buildJsonObject {
             put("protocolVersion", if (asked in PROTOCOL_VERSIONS) asked else PROTOCOL_VERSIONS.first())
@@ -185,11 +194,14 @@ class McpServer(
         val node = (arguments["node"] as? JsonPrimitive)?.contentOrNull ?: return toolError("missing argument 'node'")
         if (node !in client.nodes) return toolError("no node named '$node'; the nodes are ${client.nodes.joinToString(", ")}")
         val rest = JsonObject(arguments - "node")
+        var timeout: Duration? = null
         val (request, args) =
             when {
                 name.startsWith("check_") -> {
                     val check = name.removePrefix("check_")
-                    val spec = checkTools()[check]?.first ?: throw InvalidParams("unknown tool $name")
+                    val (spec, on) = checkTools()[check] ?: throw InvalidParams("unknown tool $name")
+                    if (node !in on) return toolError("$node has no check $check; it is on ${on.joinToString(", ")}")
+                    timeout = spec.timeoutSeconds.seconds + CHECK_MARGIN
                     try {
                         Args.validate(spec.params, rest)
                     } catch (e: LimenException) {
@@ -215,7 +227,7 @@ class McpServer(
         val started = TimeSource.Monotonic.markNow()
         val response =
             try {
-                client.call(node, request, args)
+                client.call(node, request, args, timeout)
             } catch (e: LimenException) {
                 NodeResponse.failure(e)
             }
@@ -352,6 +364,10 @@ class McpServer(
         const val INVALID_REQUEST = -32600
         const val METHOD_NOT_FOUND = -32601
         const val INVALID_PARAMS = -32602
+        const val INTERNAL_ERROR = -32603
+
+        /** ssh and the node's own work on top of a check's timeout. */
+        private val CHECK_MARGIN = 15.seconds
 
         private const val NODES_DESCRIPTION =
             "The machines this server can inspect: whether each answers, its OS and limen version, and the scripts it " +

@@ -10,8 +10,6 @@ class TomlReader(
 ) {
     private val read = mutableSetOf<String>()
 
-    val keys: Set<String> get() = table.entries.keys
-
     fun string(key: String): String? = get(key)?.let { (it as? TomlString)?.value ?: fail(key, "expected a string") }
 
     fun long(key: String): Long? = get(key)?.let { (it as? TomlInt)?.value ?: fail(key, "expected an integer") }

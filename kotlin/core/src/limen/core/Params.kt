@@ -163,7 +163,8 @@ fun Map<String, JsonElement>.string(name: String): String? = (this[name] as? Jso
 
 fun Map<String, JsonElement>.long(name: String): Long? = (this[name] as? JsonPrimitive)?.longOrNull
 
-fun Map<String, JsonElement>.int(name: String): Int? = long(name)?.toInt()
+fun Map<String, JsonElement>.int(name: String): Int? =
+    long(name)?.let { if (it in Int.MIN_VALUE..Int.MAX_VALUE) it.toInt() else badRequest("$name is out of range") }
 
 fun Map<String, JsonElement>.bool(name: String): Boolean? = (this[name] as? JsonPrimitive)?.booleanOrNull
 

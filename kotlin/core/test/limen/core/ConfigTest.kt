@@ -47,6 +47,22 @@ class ConfigTest {
     }
 
     @Test
+    fun aRepoSectionCannotWriteMoreThanItself() {
+        val ok = NodeConfig.parse(NodeConfig.repoSection("https://github.com/you/infra.git", "main", "nodes/nas/"))
+        assertEquals("nodes/nas", ok.repo!!.path)
+        // A hub that names the node like this must not point the checks at the actions, or `dir` at /usr/lib.
+        for (hostile in listOf("x\"\n[scripts]\nchecks = \"/opt/limen/repo/nodes/x/actions\"\n#", "x\"\ndir = \"/usr/lib\"\n#")) {
+            val e =
+                assertFailsWith<TomlException> {
+                    NodeConfig.parse(
+                        NodeConfig.repoSection("https://github.com/you/infra.git", "main", "nodes/$hostile"),
+                    )
+                }
+            assertTrue(e.message!!.startsWith("repo.path"), e.message)
+        }
+    }
+
+    @Test
     fun hub() {
         val config =
             HubConfig.parse(

@@ -28,8 +28,9 @@ data class Commit(
 )
 
 /**
- * The node's copy of its repository (spec §6.1). `sync` makes it exactly what the remote branch has —a clean
- * checkout, local edits discarded— because the repository is the source of truth, not the machine.
+ * The node's copy of its repository (spec §6.1). `sync` makes it what the remote branch has —local edits and
+ * untracked files discarded, ignored ones such as a stack's `.env` kept— because the repository is the source of
+ * truth, not the machine.
  *
  * The token never goes in a URL or an argument, where `ps` and logs would show it: git gets it as an HTTP header
  * through `GIT_CONFIG_*` in its environment.
@@ -62,9 +63,12 @@ object Repo {
                         repo.dir,
                     )
                 } else {
+                    // The URL of limen.toml, not the one of the first clone: changing [repo].url moves the node.
+                    git(repo, token, repo.dir, "remote", "set-url", "origin", repo.url)
                     git(repo, token, repo.dir, "fetch", "--quiet", "--depth", "1", "origin", "--", "refs/heads/${repo.branch}")
                     git(repo, token, repo.dir, "reset", "--quiet", "--hard", "FETCH_HEAD")
-                    git(repo, token, repo.dir, "clean", "--quiet", "-ffdx")
+                    // Untracked files go; ignored ones stay: a stack's `.env`, kept out of the repository on purpose.
+                    git(repo, token, repo.dir, "clean", "--quiet", "-ffd")
                 }
                 deployed(repo)?.hash ?: throw LimenException(ErrorCode.INTERNAL, "git: no commit after sync")
             }
@@ -181,7 +185,7 @@ object Repo {
         token: String?,
     ): List<String> {
         // No prompt ever, no system or user configuration: what git does is what limen asks.
-        val base = Proc.SYSTEM_ENV + listOf("HOME=/root", "GIT_TERMINAL_PROMPT=0", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null")
+        val base = Proc.ROOT_ENV + listOf("GIT_TERMINAL_PROMPT=0", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null")
         if (token == null || !repo.url.startsWith("https://")) return base
         val basic = Base64.encode("x-access-token:$token".encodeToByteArray())
         val host = repo.url.removePrefix("https://").substringBefore('/')

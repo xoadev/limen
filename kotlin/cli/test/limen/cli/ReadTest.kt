@@ -37,6 +37,7 @@ class ReadTest {
         write("outside/real", "x\n")
         write("etc/deploy.pem", "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaA\nAAAA\n-----END OPENSSH PRIVATE KEY-----\n")
         Proc.run(listOf("/bin/ln", "-s", "$dir/outside/real", "$dir/etc/link"))
+        Proc.run(listOf("/bin/ln", "-s", "$dir/etc/private", "$dir/etc/privlink"))
     }
 
     @AfterTest
@@ -65,7 +66,9 @@ class ReadTest {
 
     @Test
     fun aDeniedPathSaysNothingOfItsExistence() {
-        for (denied in listOf("private/real", "private/missing", "../outside/real", "../outside/missing", "link")) {
+        val denied =
+            listOf("private/real", "private/missing", "../outside/real", "../outside/missing", "link", "privlink/real", "privlink/missing")
+        for (denied in denied) {
             assertEquals(ErrorCode.DENIED, refused { Read.readFile(node, path("$dir/etc/$denied")) }, "read_file $denied")
             assertEquals(ErrorCode.DENIED, refused { Read.listDir(node, path("$dir/etc/$denied")) }, "list_dir $denied")
         }
@@ -91,6 +94,18 @@ class ReadTest {
         // A window of lines between the markers would carry the key's body past redaction.
         val window = mapOf("path" to JsonPrimitive("$dir/etc/deploy.pem"), "from" to JsonPrimitive(2), "lines" to JsonPrimitive(2))
         assertEquals(ErrorCode.DENIED, refused { Read.readFile(node, window) })
+    }
+
+    @Test
+    fun aKeyInABigLogIsMaskedWhenTheWindowHoldsIt() {
+        // Over the size searched whole for keys: the window is redacted as one text, markers and body together.
+        val filler = "x".repeat(99) + "\n"
+        val key = "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaA\nAAAA\n-----END OPENSSH PRIVATE KEY-----\n"
+        write("etc/big.log", filler.repeat(12_000) + key + "done\n")
+        val args = mapOf("source" to JsonPrimitive("file"), "name" to JsonPrimitive("$dir/etc/big.log"), "lines" to JsonPrimitive(10))
+        val lines = Read.logs(node, args).data.toString()
+        assertTrue("done" in lines, lines)
+        assertFalse("b3BlbnNzaA" in lines, lines)
     }
 
     @Test

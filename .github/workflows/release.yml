@@ -228,8 +228,8 @@ jobs:
           {
             echo "**limen $VERSION** · build $GITHUB_RUN_NUMBER · $BUILD_DATE"
             echo
-            echo "- \`limen-$VERSION-linux-x86_64\` and \`limen-$VERSION-linux-aarch64\`: one static binary per architecture, for any Linux (Debian, Ubuntu, OpenWrt…). Pick the one \`uname -m\` names; on a node, \`sudo ./limen-… install --read-key …\`."
-            echo "- \`docker pull $IMAGE:$VERSION\`: the hub, for amd64 and arm64 under one tag: \`-v ./limen:/data -p 7341:7341 -e LIMEN_TOKEN=…\`."
+            echo "- \`$IMAGE:$VERSION\`: the hub, for amd64 and arm64 under one tag. Start it and join machines as the [README](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}#install) says."
+            echo "- \`limen-$VERSION-linux-x86_64\` and \`limen-$VERSION-linux-aarch64\`: one static binary per architecture, for any Linux (Debian, Ubuntu, OpenWrt…). \`install.sh\` picks the one \`uname -m\` names."
             echo "- \`SHA256SUMS\`: to check what you downloaded."
           } > "$notes"
           echo "path=$notes" >> "$GITHUB_OUTPUT"

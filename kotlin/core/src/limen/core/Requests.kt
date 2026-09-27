@@ -27,9 +27,9 @@ data class RequestDef(
 )
 
 object Requests {
-    private const val UNIT = "^[A-Za-z0-9@._:\\\\-]{1,256}$"
+    const val UNIT = "^[A-Za-z0-9@._:\\\\-]{1,256}$"
     private const val UNIT_GLOB = "^[A-Za-z0-9@._:*?\\[\\]\\\\-]{1,256}$"
-    private const val CONTAINER = "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"
+    const val CONTAINER = "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"
     private const val ABSOLUTE_PATH = "^/[^\\u0000-\\u001f]{0,4095}$"
     private const val TIME = "^(\\d{1,6}[smhd]|\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}(:\\d{2})?Z)$"
     const val SCRIPT_NAME = "^[a-z0-9][a-z0-9_-]{0,47}$"
@@ -48,15 +48,15 @@ object Requests {
         RequestDef(
             "status",
             Role.READ,
-            "Overview of a node: uptime, load, memory, disk usage per mount, failed systemd units, containers that are " +
-                "not running or unhealthy, and whether a reboot is pending. Start here.",
+            "Overview of a node: uptime, load, memory, disk usage per mount, failed services (systemd, or procd on OpenWrt), " +
+                "containers that are not running or unhealthy, and whether a reboot is pending. Start here.",
         )
 
     val SERVICES =
         RequestDef(
             "services",
             Role.READ,
-            "systemd units with their load, active and sub state.",
+            "Services with their state: systemd units (load, active and sub state), or procd services on OpenWrt. `type` is systemd's.",
             listOf(
                 Param(
                     "state",
@@ -80,9 +80,16 @@ object Requests {
         RequestDef(
             "service",
             Role.READ,
-            "One systemd unit: state, result, restarts, main PID, memory, unit file, enablement, and its last journal lines.",
+            "One service with its last log lines: a systemd unit's state, result, restarts, main PID, memory, unit file and " +
+                "enablement, or a procd service's instances on OpenWrt.",
             listOf(
-                Param("name", ParamType.STRING, "Unit name; `.service` is assumed without a suffix", required = true, pattern = UNIT),
+                Param(
+                    "name",
+                    ParamType.STRING,
+                    "Unit or service name; `.service` is assumed without a suffix",
+                    required = true,
+                    pattern = UNIT,
+                ),
                 Param("lines", ParamType.INT, "Journal lines to include", default = JsonPrimitive(20), min = 0, max = 200),
             ),
         )
@@ -108,8 +115,8 @@ object Requests {
         RequestDef(
             "logs",
             Role.READ,
-            "Log lines from a systemd unit, the whole journal, a Docker container, or an allowed file. Always a bounded " +
-                "window: the last `lines` lines, optionally within `since`/`until` and matching `grep`.",
+            "Log lines from a service (systemd's journal, or logread on OpenWrt), the whole log, a Docker container, or an " +
+                "allowed file. Always a bounded window: the last `lines` lines, optionally within `since`/`until` and matching `grep`.",
             listOf(
                 Param("source", ParamType.ENUM, "Where to read", required = true, values = listOf("unit", "journal", "container", "file")),
                 Param(
@@ -120,7 +127,8 @@ object Requests {
                 ),
                 Param("since", ParamType.STRING, "Start of the window. $time. Not for files", pattern = TIME),
                 Param("until", ParamType.STRING, "End of the window. $time. Not for files", pattern = TIME),
-                Param("lines", ParamType.INT, "How many lines, newest last", default = JsonPrimitive(200), min = 1, max = 10000),
+                // No maximum here: the node cuts at its logs.max_lines and says so, whatever the operator set it to.
+                Param("lines", ParamType.INT, "How many lines, newest last", default = JsonPrimitive(200), min = 1),
                 Param(
                     "grep",
                     ParamType.STRING,

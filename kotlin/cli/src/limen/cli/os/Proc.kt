@@ -101,6 +101,9 @@ object Proc {
 
     private val KILL_GRACE = 2.seconds
 
+    /** What root's programs and scripts get: [SYSTEM_ENV] and root's home. */
+    val ROOT_ENV: List<String> get() = SYSTEM_ENV + "HOME=/root"
+
     /** What a command the gate runs sees: a fixed PATH, C locale with UTF-8, UTC, no pagers or colours. */
     val SYSTEM_ENV =
         listOf(
@@ -314,7 +317,8 @@ object Proc {
                     reap(0)
                 }
             }
-            val s = status ?: 0
+            // A child whose end couldn't be learnt did not succeed.
+            val s = status ?: return ProcResult(-1, null, out.bytes(), err.bytes(), timedOut, truncated)
             val signal = if (s and 0x7f != 0) s and 0x7f else null
             val code = if (signal == null) (s shr 8) and 0xff else -1
             return ProcResult(code, signal, out.bytes(), err.bytes(), timedOut, truncated)

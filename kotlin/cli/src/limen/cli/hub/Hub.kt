@@ -2,6 +2,8 @@ package limen.cli.hub
 
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.IO
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -40,13 +42,14 @@ class Hub(
     val keyPath = "${this.home}/id_ed25519"
     val tokenPath = "${this.home}/token"
     private val invites = "${this.home}/invites"
+    private val arrivals = Mutex()
 
     val publicKey: String
-        get() = Fs.readText("$keyPath.pub")?.trim() ?: throw LimenException(ErrorCode.UNAVAILABLE, "no hub key; run `limen init`")
+        get() = Fs.readFollowing("$keyPath.pub")?.trim() ?: throw LimenException(ErrorCode.UNAVAILABLE, "no hub key; run `limen init`")
 
     fun config(): HubConfig {
         val text =
-            Fs.realPath(configPath)?.let { Fs.readText(it) }
+            Fs.readFollowing(configPath)
                 ?: throw LimenException(ErrorCode.UNAVAILABLE, "no $configPath; run `limen init`")
         return try {
             HubConfig.parse(text).let { c ->
@@ -86,7 +89,7 @@ class Hub(
     fun token(): String {
         val token =
             Sys.env("LIMEN_TOKEN")?.trim()?.takeIf { it.isNotEmpty() }
-                ?: Fs.readText(tokenPath)?.trim()?.takeIf { it.isNotEmpty() }
+                ?: Fs.readFollowing(tokenPath)?.trim()?.takeIf { it.isNotEmpty() }
                 ?: throw LimenException(ErrorCode.UNAVAILABLE, "no token: set LIMEN_TOKEN or run `limen init --serve`")
         if (token.length < MIN_TOKEN) {
             throw LimenException(
@@ -101,7 +104,7 @@ class Hub(
     fun invite(
         name: String,
         ttl: Duration = 1.hours,
-    ): String {
+    ): IssuedInvite {
         if (!HubConfig.NODE_NAME.matches(
                 name,
             )
@@ -110,13 +113,14 @@ class Hub(
         }
         Fs.mkdirs(invites, 0b111_000_000)
         val code = random(26)
-        val pending = PendingInvite(name, (Clock.System.now() + ttl).epochSeconds)
+        val secret = random(26)
+        val pending = PendingInvite(name, (Clock.System.now() + ttl).epochSeconds, secret)
         Fs.writeAtomic(
             "$invites/$code.json",
             WireJson.encodeToString(PendingInvite.serializer(), pending).encodeToByteArray(),
             0b110_000_000,
         )
-        return code
+        return IssuedInvite(code, secret)
     }
 
     fun pending(code: String): PendingInvite? {
@@ -144,15 +148,7 @@ class Hub(
         from: String,
         client: NodeClient,
     ): Welcome {
-        val invite =
-            pending(code)
-                ?: throw LimenException(
-                    ErrorCode.NOT_FOUND,
-                    "this invitation does not exist, was used, or expired; ask the hub for another",
-                )
-        val address = arrival.address?.takeIf { it.isNotBlank() } ?: from.removePrefix("::ffff:")
-        writeNode(invite.name, address, arrival.port, arrival.user, arrival.hostKey)
-        Fs.remove("$invites/$code.json")
+        val (invite, address) = arrivals.withLock { admit(code, arrival, from) }
         val hello =
             try {
                 withContext(Dispatchers.IO) { client.call(invite.name, "hello", JsonObject(emptyMap())) }
@@ -169,6 +165,28 @@ class Hub(
                 "${hello.error?.code}: ${hello.error?.message}"
             }
         return Welcome(invite.name, address, hello.ok, detail)
+    }
+
+    /** Checks the arrival, writes the node and spends the invitation: one join at a time, so neither is done twice. */
+    private fun admit(
+        code: String,
+        arrival: Arrival,
+        from: String,
+    ): Pair<PendingInvite, String> {
+        val invite =
+            pending(code)
+                ?: throw LimenException(
+                    ErrorCode.NOT_FOUND,
+                    "this invitation does not exist, was used, or expired; ask the hub for another",
+                )
+        // Refused without spending the invitation: a forged arrival must not take the real node's place, or its turn.
+        if (!Http.constantTimeEquals(arrival.proof, arrival.proofWith(invite.secret))) {
+            throw LimenException(ErrorCode.BAD_REQUEST, "the arrival is not signed with the join line's secret")
+        }
+        val address = arrival.address?.takeIf { it.isNotBlank() } ?: from.removePrefix("::ffff:")
+        writeNode(invite.name, address, arrival.port, arrival.user, arrival.hostKey)
+        Fs.remove("$invites/$code.json")
+        return invite to address
     }
 
     /** Adds or replaces a node by hand (`limen trust`). */
@@ -191,7 +209,7 @@ class Hub(
         user: String,
         hostKey: String,
     ) {
-        val text = Fs.readText(configPath).orEmpty()
+        val text = Fs.readFollowing(configPath).orEmpty()
         val before = HubConfig.parse(text)
         val updated = HubFile.upsertNode(text, name, address, port, user, hostKey)
         val after =
@@ -205,14 +223,14 @@ class Hub(
         if (without(after) != without(before) || after.node(name) == null) {
             throw LimenException(ErrorCode.BAD_REQUEST, "adding $name would change more than $name in $configPath; refused")
         }
-        Fs.writeAtomic(configPath, updated.encodeToByteArray(), 0b110_000_000)
+        Fs.writeFollowing(configPath, updated.encodeToByteArray(), 0b110_000_000)
     }
 
     fun remove(name: String): Boolean {
-        val text = Fs.readText(configPath) ?: return false
+        val text = Fs.readFollowing(configPath) ?: return false
         val updated = HubFile.removeNode(text, name)
         if (updated == text) return false
-        Fs.writeAtomic(configPath, updated.encodeToByteArray(), 0b110_000_000)
+        Fs.writeFollowing(configPath, updated.encodeToByteArray(), 0b110_000_000)
         return true
     }
 
@@ -247,6 +265,12 @@ class Hub(
     }
 }
 
+/** An invitation as `limen invite` prints it: the code goes on the wire, the secret stays in the line's fragment. */
+data class IssuedInvite(
+    val code: String,
+    val secret: String,
+)
+
 /**
  * A [NodeClient] that follows limen.toml: the file is read on every call and the SSH client rebuilt when it changed,
  * so a node that joins is there for the next request, with no restart.
@@ -265,7 +289,7 @@ class LiveHub(
     fun config(): HubConfig = current().config
 
     private fun current(): State {
-        val text = Fs.readText(hub.configPath).orEmpty()
+        val text = Fs.readFollowing(hub.configPath).orEmpty()
         state.value?.let { if (it.text == text) return it }
         val config = hub.config()
         val fresh = State(text, config, SshClient(config, hub.home))
@@ -279,7 +303,8 @@ class LiveHub(
         node: String,
         request: String,
         args: JsonObject,
-    ): NodeResponse = current().client.call(node, request, args)
+        timeout: Duration?,
+    ): NodeResponse = current().client.call(node, request, args, timeout)
 
     val ssh: SshClient get() = current().client
 }

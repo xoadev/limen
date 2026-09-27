@@ -1,5 +1,6 @@
 package limen.core.config
 
+import limen.core.Requests
 import limen.core.toml.Toml
 import limen.core.toml.TomlReader
 
@@ -15,11 +16,9 @@ data class Expectations(
     /** procd services (OpenWrt) that must have a running instance. */
     val procd: List<String> = emptyList(),
 ) {
-    val isEmpty: Boolean get() = compose.isEmpty() && units.isEmpty() && procd.isEmpty()
-
     companion object {
         private val STACK = Regex("^[a-z0-9][a-z0-9_-]{0,62}$")
-        private val UNIT = Regex("^[A-Za-z0-9@._:\\\\-]{1,256}$")
+        private val UNIT = Regex(Requests.UNIT)
         private val SERVICE = Regex("^[A-Za-z0-9._-]{1,64}$")
 
         fun parse(text: String): Expectations {

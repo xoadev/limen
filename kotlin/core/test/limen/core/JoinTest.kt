@@ -5,6 +5,8 @@ import limen.core.join.HubFile
 import limen.core.join.JoinUrl
 import limen.core.join.Keys
 import limen.core.join.Sha256
+import limen.core.toml.Toml
+import limen.core.toml.TomlString
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -41,13 +43,44 @@ class JoinTest {
     }
 
     @Test
+    fun hmacMatchesRfc4231() {
+        assertEquals(
+            "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843",
+            Sha256.toHex(Sha256.hmac("Jefe".encodeToByteArray(), "what do ya want for nothing?".encodeToByteArray())),
+        )
+        // A key longer than the block is hashed first (test case 6).
+        assertEquals(
+            "60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54",
+            Sha256.toHex(
+                Sha256.hmac(ByteArray(131) { 0xaa.toByte() }, "Test Using Larger Than Block-Size Key - Hash Key First".encodeToByteArray()),
+            ),
+        )
+    }
+
+    @Test
+    fun aQuotedTomlStringStaysOneValue() {
+        for (hostile in listOf("x\"\n[scripts]\nchecks = \"/tmp\"\n#", "a\\\"b", "tab\there", "\u0000\u007f", "é ñ")) {
+            val table = Toml.parse("k = ${Toml.quote(hostile)}")
+            assertEquals(setOf("k"), table.entries.keys)
+            assertEquals(TomlString(hostile), table.entries["k"])
+        }
+    }
+
+    @Test
     fun joinUrls() {
-        val url = JoinUrl.parse("http://100.64.0.2:7341/join/abcdefghijklmnopqrstuvwxyz#SHA256:/e0jvmq8w0ulx75514RErZFch0647RozrdByE6ZZjnU")
+        val line =
+            "http://100.64.0.2:7341/join/abcdefghijklmnopqrstuvwxyz" +
+                "#SHA256:/e0jvmq8w0ulx75514RErZFch0647RozrdByE6ZZjnU.zyxwvutsrqponmlkjihgfedcba"
+        val url = JoinUrl.parse(line)
         assertEquals("http://100.64.0.2:7341", url.base)
         assertEquals("100.64.0.2", url.host)
         assertEquals(7341, url.port)
         assertEquals("abcdefghijklmnopqrstuvwxyz", url.code)
+        assertEquals("SHA256:/e0jvmq8w0ulx75514RErZFch0647RozrdByE6ZZjnU", url.fingerprint)
+        assertEquals("zyxwvutsrqponmlkjihgfedcba", url.secret)
+        assertEquals(line, url.toString())
         for (bad in listOf(
+            "http://100.64.0.2:7341/join/abcdefghijklmnopqrstuvwxyz#SHA256:/e0jvmq8w0ulx75514RErZFch0647RozrdByE6ZZjnU",
             "http://hub.lan:7341/join/abcdefghijklmnopqrstuvwxyz#SHA256:/e0jvmq8w0ulx75514RErZFch0647RozrdByE6ZZjnU",
             "http://100.64.0.2:7341/join/abcdefghijklmnopqrstuvwxyz",
             "https://100.64.0.2:7341/join/abcdefghijklmnopqrstuvwxyz#SHA256:/e0jvmq8w0ulx75514RErZFch0647RozrdByE6ZZjnU",

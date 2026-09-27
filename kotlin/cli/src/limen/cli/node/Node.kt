@@ -41,7 +41,7 @@ class Node(
         val path = Proc.which(argv[0]) ?: throw LimenException(ErrorCode.UNAVAILABLE, "${argv[0]} is not installed on this node")
         val result =
             try {
-                Proc.run(listOf(path) + argv.drop(1), env = Proc.SYSTEM_ENV + "HOME=/root", timeout = timeout, maxOutput = maxOutput)
+                Proc.run(listOf(path) + argv.drop(1), env = Proc.ROOT_ENV, timeout = timeout, maxOutput = maxOutput)
             } catch (e: SpawnException) {
                 throw LimenException(ErrorCode.INTERNAL, e.message ?: "cannot run ${argv[0]}")
             }
@@ -71,7 +71,7 @@ class Node(
 
     companion object {
         fun load(path: String): Node {
-            val text = Fs.readText(path) ?: return Node(NodeConfig())
+            val text = Fs.readFollowing(path) ?: return Node(NodeConfig())
             return try {
                 Node(NodeConfig.parse(text))
             } catch (e: TomlException) {

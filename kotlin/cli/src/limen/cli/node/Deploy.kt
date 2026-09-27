@@ -56,7 +56,7 @@ object Deploy {
         syncFirst: Boolean = true,
     ): Boolean {
         if (syncFirst && !dryRun && node.config.repo != null && !sync(node)) return false
-        val entries = Scripts.discover(node, ScriptKind.SETUP)
+        val entries = Scripts.discover(node, ScriptKind.SETUP).filterNot { it.ignored }
         // Every script is validated before the first runs: a broken one halfway would leave the machine half done.
         val problems = entries.mapNotNull { it.problem }
         if (problems.isNotEmpty()) {
@@ -119,11 +119,11 @@ object Deploy {
         val r =
             Proc.run(
                 listOf(docker, "compose", "-p", stack, "-f", file, "up", "-d", "--remove-orphans"),
-                env = Proc.SYSTEM_ENV + "HOME=/root",
+                env = Proc.ROOT_ENV,
                 timeout = 30.minutes,
                 onChunk = { _, bytes -> Sys.outBytes(bytes) },
             )
-        val ok = r.exitCode == 0 && !r.timedOut
+        val ok = r.ok
         say(if (ok) "<== stack $stack: ok\n" else "<== stack $stack: FAILED (exit ${r.exitCode})\n")
         return ok
     }
@@ -157,7 +157,7 @@ object Deploy {
                 Sys.outBytes(bytes)
                 if (logOk) runCatching { Fs.append(log, bytes) }
             })
-        val ok = r.exitCode == 0 && !r.timedOut
+        val ok = r.ok
         val result =
             when {
                 r.timedOut -> "timed out after ${spec.timeoutSeconds}s"

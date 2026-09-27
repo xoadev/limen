@@ -8,6 +8,7 @@ import limen.cli.os.HttpLite
 import limen.cli.os.Sys
 import limen.core.LenientJson
 import limen.core.WireJson
+import limen.core.config.HubConfig
 import limen.core.join.Arrival
 import limen.core.join.Invitation
 import limen.core.join.JoinUrl
@@ -42,7 +43,7 @@ class Joiner(
         say("Joining the hub at ${url.base} as '${invitation.name}' (hub key $fingerprint)")
         installer.install(invitation.hubKey, deployKey, from, repo?.invoke(invitation.name), announce = false)
         val hostKey = installer.hostKey() ?: fail("cannot read this machine's SSH host key")
-        val welcome = arrive(url, Arrival(Keys.withoutComment(hostKey), installer.readUser, sshPort, address))
+        val welcome = arrive(url, Arrival(Keys.withoutComment(hostKey), installer.readUser, sshPort, address).signed(url.secret))
         say("")
         return if (welcome.reachable) {
             say("${welcome.name} is on the hub, at ${welcome.address}: ${welcome.detail}.")
@@ -85,9 +86,13 @@ class Joiner(
     private fun fetch(url: JoinUrl): Invitation {
         val r = http("GET", url, null)
         if (r.status != 200) fail(errorOf(r.body) ?: "the hub answered HTTP ${r.status}")
-        return runCatching {
-            LenientJson.decodeFromString(Invitation.serializer(), r.body)
-        }.getOrElse { fail("the hub's answer is not an invitation") }
+        val invitation =
+            runCatching {
+                LenientJson.decodeFromString(Invitation.serializer(), r.body)
+            }.getOrElse { fail("the hub's answer is not an invitation") }
+        // The name becomes the repository folder in this node's limen.toml: from a hub, it is checked like any input.
+        if (!HubConfig.NODE_NAME.matches(invitation.name)) fail("the hub named this machine '${invitation.name}', which is not a node name")
+        return invitation
     }
 
     private fun arrive(

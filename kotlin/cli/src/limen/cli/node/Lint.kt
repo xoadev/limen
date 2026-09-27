@@ -11,8 +11,15 @@ object Lint {
             val dir = node.config.directory(kind)
             val entries = Scripts.discover(node, kind)
             Sys.out("$dir: ${entries.size} file(s)\n")
+            // disk.sh and disk.py are both `disk`: which one runs would depend on the order of the directory.
+            entries.filter { it.spec != null }.groupBy { it.spec!!.name }.filterValues { it.size > 1 }.forEach { (name, same) ->
+                problems++
+                Sys.out("  FAIL ${same.joinToString(" and ") { it.file }} are both '$name'; keep one\n")
+            }
             for (e in entries) {
-                if (e.problem != null) {
+                if (e.ignored) {
+                    Sys.out("  skip ${e.problem}\n")
+                } else if (e.problem != null) {
                     problems++
                     Sys.out("  FAIL ${e.problem}\n")
                 } else {

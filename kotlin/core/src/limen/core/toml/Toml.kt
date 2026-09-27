@@ -40,6 +40,21 @@ class TomlException(
 
 object Toml {
     fun parse(text: String): TomlTable = Parser(text).parse()
+
+    /** [value] as a TOML basic string: whatever it holds stays a value, and can't start a table or a key. */
+    fun quote(value: String): String =
+        buildString {
+            append('"')
+            for (c in value) {
+                when {
+                    c == '"' -> append("\\\"")
+                    c == '\\' -> append("\\\\")
+                    c < ' ' || c == '\u007f' -> append("\\u").append(c.code.toString(16).padStart(4, '0'))
+                    else -> append(c)
+                }
+            }
+            append('"')
+        }
 }
 
 private class Parser(

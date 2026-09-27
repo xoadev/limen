@@ -229,7 +229,15 @@ object Parsers {
                     }
                 },
             )
-            put("labels", config?.obj("Labels") ?: JsonObject(emptyMap()))
+            put(
+                "labels",
+                JsonObject(
+                    // With its key: `db.password=hunter2` is what the patterns recognise; `hunter2` alone isn't.
+                    config?.obj("Labels").orEmpty().mapValues { (k, v) ->
+                        (v as? JsonPrimitive)?.contentOrNull?.let { JsonPrimitive(redactor.redact("$k=$it").removePrefix("$k=")) } ?: v
+                    },
+                ),
+            )
             put(
                 "env",
                 JsonArray(

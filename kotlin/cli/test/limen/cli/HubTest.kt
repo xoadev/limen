@@ -24,6 +24,7 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 
 class HubTest {
@@ -47,6 +48,7 @@ class HubTest {
             node: String,
             request: String,
             args: JsonObject,
+            timeout: Duration?,
         ) = NodeResponse.success(
             buildJsonObject {
                 put("os", "Debian GNU/Linux 13")
@@ -70,10 +72,10 @@ class HubTest {
     fun anInvitationJoinsOnceWithTheAddressItCameFrom() {
         val hub = hub()
         hub.init(serve = false)
-        val code = hub.invite("nas")
+        val (code, secret) = hub.invite("nas")
         assertEquals("nas", hub.invitation(code)!!.name)
         val hostKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIA6gEiSLgluUCGAAsH0PgwdjMmtbI2Ow7steqWQs2UQy root@nas"
-        val welcome = runBlocking { hub.arrive(code, Arrival(hostKey, "limen-read"), "::ffff:10.0.0.7", Answering()) }
+        val welcome = runBlocking { hub.arrive(code, Arrival(hostKey, "limen-read").signed(secret), "::ffff:10.0.0.7", Answering()) }
         assertTrue(welcome.reachable)
         assertEquals("10.0.0.7", welcome.address)
         assertEquals("Debian GNU/Linux 13, limen 0.1.0", welcome.detail)
@@ -81,14 +83,35 @@ class HubTest {
         assertEquals("10.0.0.7", node.host)
         assertEquals(Keys.withoutComment(hostKey), node.hostKey)
         assertNull(hub.invitation(code))
-        assertFailsWith<LimenException> { runBlocking { hub.arrive(code, Arrival(hostKey, "limen-read"), "10.0.0.8", Answering()) } }
+        assertFailsWith<LimenException> {
+            runBlocking { hub.arrive(code, Arrival(hostKey, "limen-read").signed(secret), "10.0.0.8", Answering()) }
+        }
+    }
+
+    @Test
+    fun anArrivalWithoutTheSecretTakesNobodysPlace() {
+        // Whoever sees the code on the wire arrives first, with their own machine: refused, and the invitation waits.
+        val hub = hub()
+        hub.init(serve = false)
+        val (code, secret) = hub.invite("nas")
+        val theirs = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIA6gEiSLgluUCGAAsH0PgwdjMmtbI2Ow7steqWQs2UQy"
+        for (forged in listOf(Arrival(theirs, "limen-read"), Arrival(theirs, "limen-read").signed("a".repeat(26)))) {
+            assertFailsWith<LimenException> { runBlocking { hub.arrive(code, forged, "10.0.0.66", Answering()) } }
+        }
+        // Nor can a real arrival be changed on the way: the proof covers every field.
+        val real = Arrival(theirs, "limen-read", address = "10.0.0.7").signed(secret)
+        assertFailsWith<LimenException> { runBlocking { hub.arrive(code, real.copy(address = "10.0.0.66"), "10.0.0.66", Answering()) } }
+        assertEquals(emptyList(), hub.config().nodes)
+        assertNotNull(hub.invitation(code))
+        runBlocking { hub.arrive(code, real, "10.0.0.7", Answering()) }
+        assertEquals("10.0.0.7", hub.config().node("nas")!!.host)
     }
 
     @Test
     fun invitationsExpireAndCodesAreChecked() {
         val hub = hub()
         hub.init(serve = false)
-        val code = hub.invite("router", ttl = (-1).seconds)
+        val (code) = hub.invite("router", ttl = (-1).seconds)
         assertNull(hub.invitation(code))
         assertNull(hub.invitation("../../etc/passwd"))
         assertFailsWith<LimenException> { hub.invite("Not A Name") }
@@ -98,12 +121,12 @@ class HubTest {
     fun aBadHostKeyNeverReachesTheFile() {
         val hub = hub()
         hub.init(serve = false)
-        val code = hub.invite("nas")
+        val (code, secret) = hub.invite("nas")
         assertFailsWith<LimenException> {
             runBlocking {
                 hub.arrive(
                     code,
-                    Arrival("ssh-ed25519 \"; rm", "limen-read"),
+                    Arrival("ssh-ed25519 \"; rm", "limen-read").signed(secret),
                     "10.0.0.7",
                     Answering(),
                 )
@@ -129,8 +152,11 @@ class HubTest {
                 Arrival(key, "limen-read", address = "10.0.0.7\"\nhost_key = \"$key\"\n[nodes.evil]\nhost = \"6.6.6.6"),
             )
         for (arrival in injections) {
-            val code = hub.invite("nas")
-            assertFailsWith<LimenException>(arrival.toString()) { runBlocking { hub.arrive(code, arrival, "10.0.0.7", Answering()) } }
+            // Signed: what is tested is the hub's check of the values, not the proof.
+            val (code, secret) = hub.invite("nas")
+            assertFailsWith<LimenException>(arrival.toString()) {
+                runBlocking { hub.arrive(code, arrival.signed(secret), "10.0.0.7", Answering()) }
+            }
             assertEquals(before, Fs.readText(hub.configPath), "limen.toml changed by $arrival")
         }
     }

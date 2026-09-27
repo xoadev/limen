@@ -130,6 +130,8 @@ suite_debian() {
 allow = ["/etc/hostname", "/etc/limen-e2e/**", "/var/log/e2e.log"]
 deny = ["**/*.env"]
 EOF
+  # limen.toml as a link to a file kept elsewhere, as some operators do: read through it, and kept a link.
+  docker exec "$node" sh -c 'mv /etc/limen/limen.toml /etc/limen/node.toml && ln -s node.toml /etc/limen/limen.toml'
   docker exec "$node" sh -c 'mkdir -p /etc/limen-e2e && printf "user=app\npassword=hunter2\n" > /etc/limen-e2e/app.conf \
     && echo "TOKEN=x" > /etc/limen-e2e/app.env && ln -s /etc/shadow /etc/limen-e2e/shadow-link \
     && { seq 1 50 | sed "s/^/line /"; echo "ERROR disk full"; seq 52 110 | sed "s/^/line /"; } > /var/log/e2e.log \
@@ -156,6 +158,13 @@ EOF
 #: description = "Group-writable: anyone in the group could change what root runs"
 echo ran
 EOF
+  for ext in sh py; do
+    docker exec -i "$node" sh -c "cat > /etc/limen/checks.d/twice.$ext && chmod 0755 /etc/limen/checks.d/twice.$ext" <<'EOF'
+#!/bin/sh
+#: description = "One name, two files"
+echo which
+EOF
+  done
   docker exec -i "$node" sh -c 'cat > /etc/limen/setup.d/10-marker.sh && chmod 0755 /etc/limen/setup.d/10-marker.sh' <<'EOF'
 #!/bin/sh
 #: description = "Leaves a marker"
@@ -204,6 +213,10 @@ EOF
   expect "history records the client" '"client": "' limen call debian history --arg lines=3
   expect "a check past its timeout is stopped" '"code": "timeout"' limen call debian check_slow
   expect "a group-writable script is not run" 'writable by group or others' limen call debian check_loose
+  expect "two files with one script name: neither runs" "are both 'twice'" limen call debian check_twice
+  expect "and lint says so" "are both 'twice'" docker exec "$node" limen lint
+  expect "limen check on the node exits 1 for warn" "exit 1" docker exec "$node" sh -c 'limen check disk --arg threshold=1 >/dev/null; echo "exit $?"'
+  expect "and 3, UNKNOWN, when the check gave no answer" "exit 3" docker exec "$node" sh -c 'limen check slow >/dev/null 2>&1; echo "exit $?"'
   docker exec "$node" sh -c 'cp /etc/limen/limen.toml /tmp/limen.toml && printf "[limits]\nmax_response = 300\n" >> /etc/limen/limen.toml'
   expect "an answer over limits.max_response is refused" 'over limits.max_response' limen call debian status
   docker exec "$node" cp /tmp/limen.toml /etc/limen/limen.toml
@@ -213,7 +226,11 @@ EOF
   expect "a command sent over ssh is ignored" 'no request on stdin' "${read_ssh[@]}" 'cat /etc/shadow' </dev/null
   expect "the read key can't apply" "not allowed for the read role" "${read_ssh[@]}" <<< '{"v":1,"request":"apply"}'
   expect "an unknown protocol version says so" '"versions":[1]' "${read_ssh[@]}" <<< '{"v":9,"request":"status"}'
+  expect "and is in the audit log too" '"result": "unsupported_version"' limen call debian history --arg lines=5
   expect "a field nobody reads is an error" 'bad_request' "${read_ssh[@]}" <<< '{"v":1,"request":"status","role":"deploy"}'
+  expect "a flood of arguments is refused" 'bad_request' \
+    "${read_ssh[@]}" <<< "{\"v\":1,\"request\":\"status\",\"args\":{\"x\":\"$(head -c 200000 /dev/zero | tr '\0' x)\"}}"
+  expect "and not copied into the audit log" '"omitted_bytes": ' limen call debian history --arg lines=3
   expect "no forwarding through the gate" 'stdio forwarding failed' "${read_ssh[0]}" -W 127.0.0.1:22 "${read_ssh[@]:1}" </dev/null
   read -ra crossed_ssh <<< "$(ssh_as read limen-deploy "$port")"
   expect "the read key doesn't open the deploy user" 'Permission denied' "${crossed_ssh[@]}" <<< '{"v":1,"request":"status"}'
@@ -241,6 +258,8 @@ echo "said $LIMEN_ARG_WORD"
 EOF
   expect "an action with its own argument" "said hello" \
     limen call debian action --arg name=say --arg word=hello --user limen-deploy --identity "$work/deploy"
+  expect "an argument is typed by the script's header" "said 20" \
+    limen call debian action --arg name=say --arg word=20 --user limen-deploy --identity "$work/deploy"
   expect "an action's argument is validated" "word does not match" \
     limen call debian action --arg name=say --arg "word=a b" --user limen-deploy --identity "$work/deploy"
   read -ra deploy_ssh <<< "$(ssh_as deploy limen-deploy "$port")"
@@ -253,21 +272,33 @@ EOF
     && printf "#!/bin/sh\n#: description = \"From the repository\"\necho repo check\n" > /tmp/w/nodes/e2e/checks/from-repo.sh \
     && printf "#!/bin/sh\n#: description = \"Repository setup\"\ntouch /var/tmp/repo-applied\n" > /tmp/w/nodes/e2e/setup/10-repo.sh \
     && chmod 0755 /tmp/w/nodes/e2e/checks/from-repo.sh /tmp/w/nodes/e2e/setup/10-repo.sh \
+    && printf "# What the setup scripts do\n" > /tmp/w/nodes/e2e/setup/README.md \
+    && printf "secret.env\n" > /tmp/w/nodes/e2e/.gitignore \
     && printf "[expect]\n" > /tmp/w/nodes/e2e/node.toml \
     && git -C /tmp/w add -A && git -C /tmp/w -c user.name=e2e -c user.email=e2e@e2e commit -qm first \
     && git -C /tmp/w push -q /srv/cloud.git main'
   expect "install --repo: readable without a token, checked out" "is readable without a token" \
     docker exec "$node" limen install --read-key "$(cat "$work/read.pub")" --deploy-key "$(cat "$work/deploy.pub")" \
     --repo file:///srv/cloud.git --path nodes/e2e
+  expect "install wrote limen.toml through its link" "link" docker exec "$node" sh -c 'test -L /etc/limen/limen.toml && echo link'
   expect "the node takes its checks from the repository" '"status": "ok"' limen call debian check_from-repo
-  expect "apply syncs and runs the repository's setup" "limen: apply finished: 1 script(s), 0 stack(s)" \
+  expect "apply syncs and runs the repository's setup, a README aside" "limen: apply finished: 1 script(s), 0 stack(s)" \
     limen call debian apply --user limen-deploy --identity "$work/deploy"
+  docker exec "$node" sh -c 'echo TOKEN=x > /opt/limen/repo/nodes/e2e/secret.env && touch /opt/limen/repo/nodes/e2e/stray' 
   expect "state: deployed and up to date" '"up_to_date": true' limen call debian state
   docker exec "$node" sh -c 'echo two > /tmp/w/f && git -C /tmp/w add -A \
     && git -C /tmp/w -c user.name=e2e -c user.email=e2e@e2e commit -qm second && git -C /tmp/w push -q /srv/cloud.git main'
   expect "state: behind after a push" 'the node is behind main' limen call debian state
   expect "sync catches up" " -> " limen call debian sync --user limen-deploy --identity "$work/deploy"
   expect "state: up to date again" '"up_to_date": true' limen call debian state
+  expect "sync keeps ignored files: a stack's .env" "kept" docker exec "$node" sh -c 'test -f /opt/limen/repo/nodes/e2e/secret.env && echo kept'
+  expect "and removes untracked ones" "gone" docker exec "$node" sh -c 'test -e /opt/limen/repo/nodes/e2e/stray || echo gone'
+  # The repository moves: limen.toml names another one, one commit ahead.
+  docker exec "$node" sh -c 'git clone -q --bare /srv/cloud.git /srv/moved.git && echo three > /tmp/w/f && git -C /tmp/w add -A \
+    && git -C /tmp/w -c user.name=e2e -c user.email=e2e@e2e commit -qm moved && git -C /tmp/w push -q /srv/moved.git main \
+    && sed -i "s|file:///srv/cloud.git|file:///srv/moved.git|" /etc/limen/limen.toml'
+  expect "a changed [repo].url is followed" " -> " limen call debian sync --user limen-deploy --identity "$work/deploy"
+  expect "state: at the new repository's head" '"subject": "moved"' limen call debian state
 
   echo "e2e/debian: hub"
   expect "mcp lists the node's check as a tool" '"name":"check_from-repo"' mcp_session debian check_from-repo
@@ -392,7 +423,7 @@ suite_join() {
   echo "e2e/join: a machine joins with the invitation"
   line=$(join_line nas)
   expect "invite prints a line with the key's fingerprint" "#SHA256:" echo "$line"
-  tampered="${line%#*}#SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+  tampered="${line%#*}#SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA.${line##*.}"
   expect "a line with another fingerprint is refused" "is not the one the join line names" \
     docker exec -e LIMEN_YES=1 -e LIMEN_BINARY=/tmp/limen -e LIMEN_JOIN="$tampered" "$nas" sh /tmp/install.sh
   expect "and nothing was installed" "no such user" docker exec "$nas" id limen-read
@@ -435,6 +466,7 @@ suite_join() {
   expect "another token, nothing" "401" status_of -H "Authorization: Bearer ${token}x"
   expect "the token, but not as a bearer, nothing" "401" status_of -H "Authorization: $token"
   expect "a web page on another origin, nothing" "403" status_of -H "Authorization: Bearer $token" -H "Origin: http://evil.example"
+  expect "a body without its length, nothing" "411" status_of -H "Authorization: Bearer $token" -H 'Transfer-Encoding: chunked'
   expect "a hub won't serve with a short LIMEN_TOKEN" "16 characters" \
     docker run --rm -e LIMEN_TOKEN=short limen-e2e-hub:local
   expect "forget takes a node off the hub" "removed" hub_exec forget spare

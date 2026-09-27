@@ -34,24 +34,30 @@ data class JoinUrl(
     val base: String,
     val code: String,
     val fingerprint: String,
+    /** Never sent: it signs the node's arrival, so whoever sees the code on the wire can't arrive in its place. */
+    val secret: String,
 ) {
     val host: String get() = base.removePrefix("http://").substringBeforeLast(':')
     val port: Int get() = base.removePrefix("http://").substringAfterLast(':').toInt()
 
-    override fun toString() = "$base/join/$code#$fingerprint"
+    override fun toString() = "$base/join/$code#$fingerprint.$secret"
 
     companion object {
         val CODE = Regex("^[a-z2-7]{26}$")
 
         // An address and not a name: the static binary resolves no names (tools/ld-static).
         private val URL =
-            Regex("^(http://(?:\\d{1,3}(?:\\.\\d{1,3}){3}|\\[[0-9a-fA-F:]+\\]):\\d{1,5})/join/([a-z2-7]{26})#(SHA256:[A-Za-z0-9+/]{43})$")
+            Regex(
+                "^(http://(?:\\d{1,3}(?:\\.\\d{1,3}){3}|\\[[0-9a-fA-F:]+\\]):\\d{1,5})/join/([a-z2-7]{26})#(SHA256:[A-Za-z0-9+/]{43})\\.([a-z2-7]{26})$",
+            )
 
         fun parse(text: String): JoinUrl {
             val m =
                 URL.matchEntire(text.trim())
-                    ?: badRequest("not a join line from `limen invite`: expected http://<address>:<port>/join/<code>#SHA256:<fingerprint>")
-            return JoinUrl(m.groupValues[1], m.groupValues[2], m.groupValues[3])
+                    ?: badRequest(
+                        "not a join line from `limen invite`: expected http://<address>:<port>/join/<code>#SHA256:<fingerprint>.<secret>",
+                    )
+            return JoinUrl(m.groupValues[1], m.groupValues[2], m.groupValues[3], m.groupValues[4])
         }
     }
 }
@@ -71,7 +77,16 @@ data class Arrival(
     val port: Int = 22,
     /** Where the hub reaches it; without it, the address the request came from. */
     val address: String? = null,
-)
+    /** HMAC-SHA256 of the fields above with the join line's secret, hex. */
+    val proof: String = "",
+) {
+    fun proofWith(secret: String): String =
+        Sha256.toHex(
+            Sha256.hmac(secret.encodeToByteArray(), listOf(hostKey, user, port, address.orEmpty()).joinToString("\n").encodeToByteArray()),
+        )
+
+    fun signed(secret: String) = copy(proof = proofWith(secret))
+}
 
 /** What the hub answers to an [Arrival]. */
 @Serializable
@@ -87,6 +102,7 @@ data class Welcome(
 data class PendingInvite(
     val name: String,
     @SerialName("expires_epoch") val expiresEpoch: Long,
+    val secret: String,
 )
 
 /**

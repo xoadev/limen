@@ -12,8 +12,8 @@ machine itself. This file is the working contract for any agent (Claude Code or 
 | Protocol, requests and their arguments | `kotlin/core/src/limen/core/Requests.kt`, `Protocol.kt` | The same values validate on the node and become MCP tool schemas on the hub. The spec's tables describe them |
 | What a user needs | `README.md` | Install, configure, use. Written from the spec, never the other way round |
 
-What an agent learns working here is written here, in the spec or in a skill — never in an agent's private
-memory, where the next session, another agent or a person can't read it.
+What an agent learns working here is written here or in the spec — never in an agent's private memory, where the
+next session, another agent or a person can't read it.
 
 ## Layout
 
@@ -105,11 +105,11 @@ the script in `tools/`.
 | Target | What it does |
 |---|---|
 | `make check` | `lint build test`. What CI runs |
-| `make lint` | ktlint over `kotlin/`, shellcheck over `tools/`, actionlint over the workflows. `FIX=1` fixes what can be fixed |
+| `make lint` | ktlint over `kotlin/`, shellcheck over `tools/` and `install.sh`, actionlint over the workflows. `FIX=1` fixes what can be fixed |
 | `make build` / `make test` | Every module, for this machine's Linux |
 | `make cli` | Only the binary. `VARIANT=release` for the optimised one; `ARCH="x86_64 aarch64"` for both architectures |
 | `make e2e` | Containers with a real SSH server —Debian with OpenSSH and a repository, OpenWrt's image with dropbear—, `limen install` inside, the hub against them with both keys. `SUITE=debian`, `openwrt` or `join` for one. Needs Docker. Not in `make check` |
-| `make docker` | The hub image, `limen:local` (or `IMAGE=…`, `TAGS=…`, `LABELS=…`), from the binaries of `make cli` (or `BINARY_AMD64=…`, `BINARY_ARM64=…`). `PLATFORMS=linux/amd64,linux/arm64 PUSH=1` pushes both under one tag; without `PUSH`, one platform, because Docker loads one per tag. The release goes through this same target |
+| `make docker` | The hub image, `limen:local` (or `IMAGE=…`, `TAGS=…`, `LABELS=…`), from the binaries of `make cli` (or `BINARY_AMD64=…`, `BINARY_ARM64=…`). `PLATFORMS=linux/amd64,linux/arm64 PUSH=1` pushes both under one tag (after `make cli ARCH="x86_64 aarch64"`); without `PUSH`, one platform, because Docker loads one per tag. The release goes through this same target |
 | `make stamp` | `BuildStamp.kt`: version, build date and number. Not committed; everything that compiles depends on it |
 | `make local-install` | The binary in `~/.local/bin` |
 | `make hooks` | The `pre-push` hook |
@@ -171,6 +171,9 @@ Mistakes made here, with what avoids them. `make check` does not see them.
   doesn't, so a test of this must convert real text. Ktor's server text APIs don't go through iconv and work
   (`make e2e` sends `ñandú` both ways). docs/openwrt.md has the whole list.
 - **`inet_pton` and `statvfs` are in `platform.linux`**, like `posix_spawn`.
+- **A join is input from both sides.** The hub's name for a node became the node's repository folder, pasted
+  into its `limen.toml`: a hostile hub could write `[scripts]` or `[repo].dir` there. Values from the other side
+  are checked against their pattern and written with `Toml.quote`; the same holds for what a node sends the hub.
 - **An e2e scene that only checked for an absence passed on a dead hub.** `limen forget` from another process made
   the running `serve` recurse until its stack overflowed; "and it is gone" found nothing, as it expected. `refuse`
   now takes a needle the answer must contain.

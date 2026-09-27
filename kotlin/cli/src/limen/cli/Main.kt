@@ -48,6 +48,7 @@ import limen.core.ErrorCode
 import limen.core.LIMEN_BUILD_DATE
 import limen.core.LIMEN_BUILD_NUMBER
 import limen.core.LIMEN_VERSION
+import limen.core.LenientJson
 import limen.core.LimenException
 import limen.core.NodeRequest
 import limen.core.NodeResponse
@@ -61,6 +62,7 @@ import limen.core.config.HubConfig
 import limen.core.config.NodeConfig
 import limen.core.join.JoinUrl
 import limen.core.join.Keys
+import limen.core.scripts.Catalog
 import limen.core.scripts.ScriptKind
 import kotlin.system.exitProcess
 import kotlin.time.Duration.Companion.hours
@@ -163,7 +165,7 @@ fun parseArgs(
 private class LimenCommand : CoreCliktCommand("limen") {
     override fun help(context: Context) =
         "Read-only access to Linux machines for MCP clients. The hub runs `mcp` or `serve`; each node runs " +
-            "`gate` as an SSH forced command, set up by `install`."
+            "`gate` as an SSH forced command, set up by `join` (or `install`)."
 
     init {
         versionOption(LIMEN_VERSION, message = { versionLine() })
@@ -251,12 +253,14 @@ private class InviteCommand : CoreCliktCommand("invite") {
             val key = Keys.withoutComment(hub.publicKey)
             Sys.out("On $name, as root:\n")
             Sys.out("  curl -fsSL $script | sudo sh -s -- --hub-key '$key' --name $name\n")
+            Sys.out("OpenWrt:\n")
+            Sys.out("  wget -qO- $script | sh -s -- --hub-key '$key' --name $name\n")
             Sys.out("It ends printing a `limen trust` line to run here.\n")
             return
         }
         val ttlValue = Durations.parse(ttl) ?: throw UsageError("--ttl takes a duration like 30m or 2h")
-        val code = hub.invite(name, ttlValue)
-        val join = JoinUrl(publicUrl, code, Keys.fingerprint(hub.publicKey))
+        val issued = hub.invite(name, ttlValue)
+        val join = JoinUrl(publicUrl, issued.code, Keys.fingerprint(hub.publicKey), issued.secret)
         Sys.out("On $name, as root:\n")
         Sys.out("  curl -fsSL $script | sudo sh -s -- --join '$join'\n")
         Sys.out("OpenWrt:\n")
@@ -359,19 +363,22 @@ private class CallCommand : CoreCliktCommand("call") {
         if (hub.config().node(node) == null) throw UsageError("no node named '$node'")
         val (name, body) =
             if (request.startsWith("check_")) {
+                val check = request.removePrefix("check_")
+                val spec = catalog(hub)?.checks?.firstOrNull { it.name == check }
                 "check" to
                     buildJsonObject {
-                        put("name", request.removePrefix("check_"))
-                        put("args", parseArgs(args, emptyList()))
+                        put("name", check)
+                        put("args", parseArgs(args, spec?.params.orEmpty()))
                     }
             } else if (request == "action") {
                 // `--arg name=<action>`; every other argument is the action's own.
-                val all = parseArgs(args, emptyList())
-                val name = (all["name"] as? JsonPrimitive)?.content ?: throw UsageError("action needs --arg name=<action>")
+                val action =
+                    args.firstOrNull { it.startsWith("name=") }?.substringAfter('=') ?: throw UsageError("action needs --arg name=<action>")
+                val spec = catalog(hub)?.actions?.firstOrNull { it.name == action }
                 "action" to
                     buildJsonObject {
-                        put("name", name)
-                        put("args", JsonObject(all - "name"))
+                        put("name", action)
+                        put("args", parseArgs(args.filterNot { it.startsWith("name=") }, spec?.params.orEmpty()))
                     }
             } else {
                 val def = Requests.find(request) ?: throw UsageError("unknown request '$request'")
@@ -390,6 +397,13 @@ private class CallCommand : CoreCliktCommand("call") {
         val response = runBlocking { hub.call(node, name, body) }
         Sys.out(PrettyJson.encodeToString(NodeResponse.serializer(), response) + "\n")
         if (!response.ok) throw ExitWith(1)
+    }
+
+    /** The node's scripts, so their arguments are typed as their headers say: `--arg tag=20` stays a string. */
+    private fun catalog(hub: LiveHub): Catalog? {
+        val hello = runBlocking { hub.call(node, "hello", JsonObject(emptyMap())) }
+        val catalog = (hello.data as? JsonObject)?.get("catalog") ?: return null
+        return runCatching { LenientJson.decodeFromJsonElement(Catalog.serializer(), catalog) }.getOrNull()
     }
 }
 
@@ -459,6 +473,7 @@ private class ApplyCommand : CoreCliktCommand("apply") {
     override fun run() {
         val start = from
         if (start != null && !Regex("^[0-9]{1,4}$").matches(start)) throw UsageError("--from takes the number prefix, e.g. 20")
+        Sys.chdirRoot()
         throw ExitWith(if (Deploy.apply(Node.load(config), start, dryRun, syncFirst = !noSync)) 0 else 1)
     }
 }
@@ -484,6 +499,7 @@ private class ActionCommand : CoreCliktCommand("action") {
     val config by option("--config").default(NodeConfig.PATH)
 
     override fun run() {
+        Sys.chdirRoot()
         val node = Node.load(config)
         val (_, spec) = Scripts.find(node, ScriptKind.ACTION, name)
         throw ExitWith(if (Deploy.action(node, name, parseArgs(args, spec.params))) 0 else 1)
@@ -498,13 +514,21 @@ private class CheckCommand : CoreCliktCommand("check") {
     val config by option("--config").default(NodeConfig.PATH)
 
     override fun run() {
+        Sys.chdirRoot()
         val node = Node.load(config)
-        val (_, spec) = Scripts.find(node, ScriptKind.CHECK, name)
-        val body = JsonObject(mapOf("name" to JsonPrimitive(name), "args" to parseArgs(args, spec.params)))
-        val answer = Read.check(node, Args.validate(Requests.CHECK.params, body))
+        val answer =
+            try {
+                val (_, spec) = Scripts.find(node, ScriptKind.CHECK, name)
+                val body = JsonObject(mapOf("name" to JsonPrimitive(name), "args" to parseArgs(args, spec.params)))
+                Read.check(node, Args.validate(Requests.CHECK.params, body))
+            } catch (e: LimenException) {
+                // Not found, a timeout, bad arguments: no answer from the check is Nagios' UNKNOWN, not a warning.
+                Sys.err("limen: check: ${e.code.wire}: ${e.message}\n")
+                throw ExitWith(3)
+            }
         Sys.out(PrettyJson.encodeToString(JsonElement.serializer(), answer.data) + "\n")
-        val code = (answer.data as JsonObject)["exit_code"]?.toString()?.toIntOrNull() ?: 3
-        throw ExitWith(code.coerceIn(0, 3))
+        val status = ((answer.data as JsonObject)["status"] as? JsonPrimitive)?.content
+        throw ExitWith(listOf("ok", "warn", "fail").indexOf(status).takeIf { it >= 0 } ?: 3)
     }
 }
 

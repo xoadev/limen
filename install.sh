@@ -21,6 +21,8 @@
 #   LIMEN_REPO_TOKEN   a token that reads it, when it is private (otherwise asked, with a link that creates it)
 #   LIMEN_DEPLOY_KEY   a public key for the deploy role (CI or a person), or its file
 #   LIMEN_FROM         addresses or CIDRs the keys may connect from (not OpenWrt)
+#   LIMEN_ADDRESS      where the hub reaches this machine, with LIMEN_JOIN (default: where it saw the request come from)
+#   LIMEN_SSH_PORT     this machine's SSH port, when it is not 22
 #   LIMEN_VERSION      the release to install, X.Y.Z (default: the latest)
 #   LIMEN_BINARY       a limen binary already on this machine, instead of downloading one
 #   LIMEN_YES=1        ask nothing
@@ -175,6 +177,8 @@ else
 fi
 [ -z "${LIMEN_DEPLOY_KEY:-}" ] || [ "$LIMEN_DEPLOY_KEY" = none ] || set -- "$@" --deploy-key "$(key "$LIMEN_DEPLOY_KEY")"
 [ -z "${LIMEN_FROM:-}" ] || set -- "$@" --from "$LIMEN_FROM"
+[ -z "${LIMEN_ADDRESS:-}" ] || set -- "$@" --address "$LIMEN_ADDRESS"
+[ -z "${LIMEN_SSH_PORT:-}" ] || set -- "$@" --ssh-port "$LIMEN_SSH_PORT"
 if [ "$LIMEN_REPO" != none ]; then
   set -- "$@" --repo "$LIMEN_REPO" --branch "${LIMEN_BRANCH:-main}"
   [ -z "${LIMEN_PATH:-}" ] || set -- "$@" --path "$LIMEN_PATH"

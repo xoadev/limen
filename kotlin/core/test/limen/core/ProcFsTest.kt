@@ -125,7 +125,7 @@ class ProcFsTest {
         val e = Expectations.parse("[expect]\ncompose = [\"immich\"]\nunits = [\"docker.service\"]\nprocd = [\"dnsmasq\"]")
         assertEquals(listOf("immich"), e.compose)
         assertEquals(listOf("docker.service"), e.units)
-        assertTrue(Expectations.parse("").isEmpty)
+        assertEquals(Expectations(), Expectations.parse(""))
         assertFailsWith<TomlException> { Expectations.parse("[expect]\ncompose = [\"../x\"]") }
         assertFailsWith<TomlException> { Expectations.parse("[expect]\nservices = []") }
     }

@@ -110,6 +110,16 @@ data class NodeConfig(
             return config
         }
 
+        /**
+         * The `[repo]` table `install` and `join` write. The values come from the command line and, for the folder,
+         * from the hub's name for the node: quoted, so none of them can write TOML of its own.
+         */
+        fun repoSection(
+            url: String,
+            branch: String,
+            path: String,
+        ) = "[repo]\nurl = ${Toml.quote(url)}\nbranch = ${Toml.quote(branch)}\npath = ${Toml.quote(path.trim('/'))}\n"
+
         private fun repo(t: TomlReader): RepoConfig {
             val d = RepoConfig("")
             val url = t.string("url") ?: t.fail("url", "missing")
@@ -157,8 +167,5 @@ data class NodeConfig(
         ) {
             if (!value.startsWith("/")) table.fail(key, "must be an absolute path")
         }
-
-        /** The error, prefixed with the file, for a gate that must answer JSON even when its configuration is broken. */
-        fun describe(e: TomlException) = "$PATH: ${e.message}"
     }
 }

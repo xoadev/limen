@@ -21,6 +21,7 @@ import limen.core.LIMEN_VERSION
 import limen.core.LenientJson
 import limen.core.LimenException
 import limen.core.PROTOCOL_VERSIONS
+import limen.core.Requests
 import limen.core.WireJson
 import limen.core.badRequest
 import limen.core.bool
@@ -264,7 +265,7 @@ object Read {
                     val argv = mutableListOf("journalctl", "-o", "json", "--no-pager", "-q", "-n", "$lines")
                     if (source == "unit") {
                         val unit = name ?: badRequest("source unit needs a name")
-                        if (!Regex("^[A-Za-z0-9@._:\\\\-]{1,256}$").matches(unit)) badRequest("'$unit' is not a unit name")
+                        if (!Regex(Requests.UNIT).matches(unit)) badRequest("'$unit' is not a unit name")
                         argv += listOf("-u", unit)
                     } else if (name != null) {
                         badRequest("source journal takes no name")
@@ -305,7 +306,7 @@ object Read {
         since: Instant?,
         until: Instant?,
     ): Answer {
-        if (!Regex("^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$").matches(name)) badRequest("'$name' is not a container name")
+        if (!Regex(Requests.CONTAINER).matches(name)) badRequest("'$name' is not a container name")
         val tail = if (grep == null) lines else node.config.scanLines
         val argv = mutableListOf("docker", "logs", "--timestamps", "--tail", "$tail")
         since?.let { argv += "--since=${dockerTime(it)}" }
@@ -343,13 +344,15 @@ object Read {
     ): Answer {
         val path = allowedFile(node, name)
         val scan = if (grep == null) lines else node.config.scanLines
-        val slice = Fs.tail(path, scan, maxBytes = scan.toLong() * 1024)
+        val slice = Fs.tail(path, scan, maxBytes = minOf(scan.toLong() * 1024, MAX_SCAN_BYTES), exact = true)
         if (slice.binary) badRequest("$path is binary")
-        val matched = slice.lines.filter { grep == null || it.contains(grep, ignoreCase = true) }.takeLast(lines)
+        // Redacted before it is cut into lines: a private key the window holds whole spans several of them.
+        val redacted = node.redactor.redact(slice.lines.joinToString("\n")).split('\n')
+        val matched = redacted.filter { grep == null || it.contains(grep, ignoreCase = true) }.takeLast(lines)
         return Answer(
             buildJsonObject {
                 put("path", path)
-                put("lines", JsonArray(matched.map { JsonPrimitive(node.redactor.redact(it)) }))
+                put("lines", JsonArray(matched.map(::JsonPrimitive)))
             },
         )
     }
@@ -362,7 +365,7 @@ object Read {
         val from = args.int("from") ?: 1
         val count = args.int("lines") ?: 500
         val info = Fs.stat(path)!!
-        val slice = Fs.readLines(path, from, count, node.config.maxFileBytes)
+        val slice = Fs.readLines(path, from, count, node.config.maxFileBytes, exact = true)
         if (slice.binary) {
             return Answer(
                 buildJsonObject {
@@ -519,9 +522,21 @@ object Read {
     ): String {
         if (!requested.startsWith("/")) badRequest("$requested is not an absolute path")
         Fs.realPath(requested)?.let { return it }
-        val normalised = PathPolicy.normalize(requested)
+        val normalised = resolveExisting(PathPolicy.normalize(requested))
         if (!visible(normalised)) throw LimenException(ErrorCode.DENIED, denial(node, normalised))
         throw LimenException(ErrorCode.NOT_FOUND, "$normalised does not exist")
+    }
+
+    /** [path] with its longest existing prefix resolved, so a link to a denied directory is judged where it leads. */
+    private fun resolveExisting(path: String): String {
+        var head = path
+        val missing = ArrayDeque<String>()
+        while (head != "/") {
+            Fs.realPath(head)?.let { real -> return PathPolicy.normalize("$real/${missing.joinToString("/")}") }
+            missing.addFirst(head.substringAfterLast('/'))
+            head = head.substringBeforeLast('/').ifEmpty { "/" }
+        }
+        return path
     }
 
     private fun denial(
@@ -530,6 +545,7 @@ object Read {
     ): String = (node.policy.check(path) as? PathPolicy.Decision.Denied)?.reason ?: "$path is not readable"
 
     private const val PRIVATE_KEY = "PRIVATE KEY-----"
+    private const val MAX_SCAN_BYTES = 16L * 1024 * 1024
     private const val KEY_FILE_MAX_BYTES = 1024L * 1024
 
     /** `30m` (that long ago) or `2026-09-26T08:00Z`. */

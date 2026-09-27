@@ -131,8 +131,7 @@ class Installer(
             fail("--repo: ${e.message}")
         }
 
-    private fun repoSection(options: RepoOptions) =
-        "[repo]\nurl = \"${options.url}\"\nbranch = \"${options.branch}\"\npath = \"${options.path.trim('/')}\"\n"
+    private fun repoSection(options: RepoOptions) = NodeConfig.repoSection(options.url, options.branch, options.path)
 
     /** The repository: a token when it needs one, and the first checkout. */
     private fun connectRepo(repo: RepoConfig) {
@@ -255,7 +254,7 @@ class Installer(
             Fs.mkdirs("$home/.ssh", 0b111_101_101)
             Fs.chown("$home/.ssh", 0, 0)
             Fs.chmod("$home/.ssh", 0b111_101_101)
-            Fs.writeAtomic(path, line.encodeToByteArray(), 0b110_100_100)
+            Fs.writeFollowing(path, line.encodeToByteArray(), 0b110_100_100)
             Fs.chown(path, 0, 0)
         }
     }
@@ -265,7 +264,7 @@ class Installer(
      * with its forced command) are replaced; every other key stays as it was.
      */
     private fun writeDropbearKeys(keys: List<Pair<Role, String>>) {
-        val current = Fs.readText(DROPBEAR_KEYS)
+        val current = Fs.readFollowing(DROPBEAR_KEYS)
         val others = current?.lines()?.filter { it.isNotBlank() && LIMEN_LINE !in it }.orEmpty()
         val ours =
             keys.map { (role, key) ->
@@ -275,17 +274,17 @@ class Installer(
         if (current == text) return
         act("write limen's keys in $DROPBEAR_KEYS (${keys.joinToString { it.first.wire }}, forced commands; other keys kept)") {
             Fs.mkdirs("/etc/dropbear", 0b111_000_000)
-            Fs.writeAtomic(DROPBEAR_KEYS, text.encodeToByteArray(), 0b110_000_000)
+            Fs.writeFollowing(DROPBEAR_KEYS, text.encodeToByteArray(), 0b110_000_000)
         }
     }
 
     private fun removeDropbearKeys() {
-        val lines = Fs.readText(DROPBEAR_KEYS)?.lines()?.filter { it.isNotBlank() } ?: return
+        val lines = Fs.readFollowing(DROPBEAR_KEYS)?.lines()?.filter { it.isNotBlank() } ?: return
         val kept = lines.filter { LIMEN_LINE !in it }
         if (kept.size == lines.size) return
         act("remove limen's keys from $DROPBEAR_KEYS (other keys kept)") {
             val text = if (kept.isEmpty()) "" else kept.joinToString("\n", postfix = "\n")
-            Fs.writeAtomic(DROPBEAR_KEYS, text.encodeToByteArray(), 0b110_000_000)
+            Fs.writeFollowing(DROPBEAR_KEYS, text.encodeToByteArray(), 0b110_000_000)
         }
     }
 
@@ -315,7 +314,7 @@ class Installer(
             val r = Proc.run(listOf(Proc.which("visudo") ?: fail("visudo is not installed"), "-cf", check))
             Fs.remove(check)
             if (r.exitCode != 0) fail("visudo rejected the sudoers file: ${r.err.trim()}${r.out.trim()}")
-            Fs.writeAtomic(SUDOERS, text.encodeToByteArray(), 0b100_100_000)
+            Fs.writeFollowing(SUDOERS, text.encodeToByteArray(), 0b100_100_000)
             Fs.chown(SUDOERS, 0, 0)
         }
     }
@@ -324,12 +323,12 @@ class Installer(
         for (dir in listOf("/etc/limen", "/etc/limen/checks.d", "/etc/limen/actions.d", "/etc/limen/setup.d")) {
             if (Fs.stat(dir)?.type != FileType.DIRECTORY) act("create $dir") { Fs.mkdirs(dir, 0b111_101_101) }
         }
-        val existing = Fs.readText(NodeConfig.PATH)
+        val existing = Fs.readFollowing(NodeConfig.PATH)
         when {
             existing == null -> {
                 act("write ${NodeConfig.PATH} (nothing readable until you list it)") {
                     val text = CONFIG_TEMPLATE + "\n" + (repo?.let(::repoSection) ?: REPO_TEMPLATE)
-                    Fs.writeAtomic(NodeConfig.PATH, text.encodeToByteArray(), 0b110_100_100)
+                    Fs.writeFollowing(NodeConfig.PATH, text.encodeToByteArray(), 0b110_100_100)
                 }
             }
 
@@ -343,7 +342,7 @@ class Installer(
                     current == null -> {
                         act("add [repo] to ${NodeConfig.PATH}") {
                             val text = existing.trimEnd() + "\n\n" + repoSection(repo)
-                            Fs.writeAtomic(NodeConfig.PATH, text.encodeToByteArray(), 0b110_100_100)
+                            Fs.writeFollowing(NodeConfig.PATH, text.encodeToByteArray(), 0b110_100_100)
                         }
                     }
 

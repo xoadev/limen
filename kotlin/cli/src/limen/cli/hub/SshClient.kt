@@ -27,10 +27,12 @@ import kotlin.time.Duration
 interface NodeClient {
     val nodes: List<String>
 
+    /** [timeout] overrides `[ssh].request_timeout`, for a check that declares a longer one. */
     suspend fun call(
         node: String,
         request: String,
         args: JsonObject,
+        timeout: Duration? = null,
     ): NodeResponse
 }
 
@@ -61,14 +63,16 @@ class SshClient(
         node: String,
         request: String,
         args: JsonObject,
+        timeout: Duration?,
     ): NodeResponse {
         val entry = config.node(node) ?: throw LimenException(ErrorCode.BAD_REQUEST, "no node named '$node'")
         val line = WireJson.encodeToString(NodeRequest.serializer(), NodeRequest(1, request, args)) + "\n"
+        val limit = timeout ?: config.requestTimeout
         val result =
             limits.getValue(node).withPermit {
-                withContext(Dispatchers.IO) { exchange(entry, entry.user, identity, line.encodeToByteArray(), config.requestTimeout) }
+                withContext(Dispatchers.IO) { exchange(entry, entry.user, identity, line.encodeToByteArray(), limit) }
             }
-        return response(node, result)
+        return response(node, result, limit)
     }
 
     /**
@@ -137,8 +141,9 @@ class SshClient(
     private fun response(
         node: String,
         r: ProcResult,
+        limit: Duration,
     ): NodeResponse {
-        if (r.timedOut) return failure(ErrorCode.TIMEOUT, "$node did not answer in ${config.requestTimeout}")
+        if (r.timedOut) return failure(ErrorCode.TIMEOUT, "$node did not answer in $limit")
         val out = r.out.trim()
         if (r.exitCode == 255 || (out.isEmpty() && r.exitCode != 0)) {
             val err = r.err.trim()

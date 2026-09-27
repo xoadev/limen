@@ -57,7 +57,7 @@ node:  sshd ──forced command──▶ sudo limen gate --role read ──▶ 
 
 - **Hub**: runs the MCP server, holds the read role's SSH key and the list of nodes. A container
   (`limen serve`, HTTP) or a laptop (`limen mcp`, stdio). It is a directory —`$LIMEN_HOME`, `/data` in the
-  image—, created on first start or by `limen init`.
+  image—, created by `limen init`, or by `limen serve` on its first start.
 - **Node**: a machine being inspected. Has the `limen` binary, its configuration in `/etc/limen/`,
   and the SSH and sudo wiring that `limen install` sets up.
 - A hub can be a node too: it reaches itself over SSH like any other.
@@ -97,10 +97,11 @@ is ignored.
 ```
 
 ```json
-{"ok": true, "data": {}, "truncated": false}
+{"ok": true, "data": {}, "truncated": true}
 {"ok": false, "error": {"code": "denied", "message": "/etc/shadow is not readable"}}
 ```
 
+- `truncated` is there only when the answer was cut.
 - Stdin, not the command line: no word splitting, typed arguments, and `sudo` passes stdin through
   while it drops the environment `SSH_ORIGINAL_COMMAND` lives in.
 - Arguments are validated against the request's schema before anything runs; unknown fields are
@@ -121,14 +122,14 @@ Each read request is an MCP tool with an extra `node` argument. Every tool is an
 | Tool | Returns |
 |---|---|
 | `nodes` | Configured nodes, reachability, limen version, OS, and each node's catalog (§6) |
-| `status` | Uptime, load, memory, disk usage per mount, failed units, containers not running or unhealthy, pending reboot |
-| `services` | systemd units, filtered by state and name pattern |
-| `service` | One unit: state, sub-state, result, since, restarts, main PID, memory, unit file, enablement, and its last journal lines |
+| `status` | Uptime, load, memory, disk usage per mount, failed services, containers not running or unhealthy, pending reboot |
+| `services` | systemd units, or procd services on OpenWrt, filtered by state and name pattern |
+| `service` | One unit: state, sub-state, result, since, restarts, main PID, memory, unit file, enablement, and its last journal lines. On OpenWrt, a procd service's instances and its last `logread` lines |
 | `containers` | Docker containers: name, image, state, health, restarts, start time, compose project |
 | `container` | One container: image and digest, state, health log, mounts, ports, networks, labels, restart policy. Environment variables by name only, never their values |
-| `logs` | The journal (by unit, priority), a container's logs, or an allowed file. `since`, `until`, `lines`, `grep` |
+| `logs` | The journal (by unit, priority) or `logread` on OpenWrt, a container's logs, or an allowed file. `since`, `until`, `lines`, `grep` |
 | `read_file` | An allowed file, by line range |
-| `list_dir` | An allowed directory: names, types, sizes, owners, modes, modification times |
+| `list_dir` | An allowed directory: names, types, sizes, owners, modes, modification times. Only entries that are readable or lead to something readable; at most 1000 |
 | `processes` | Top processes by CPU or memory |
 | `ports` | Listening sockets and their processes |
 | `history` | The node's audit log (§8) |
@@ -136,12 +137,13 @@ Each read request is an MCP tool with an extra `node` argument. Every tool is an
 | `check_<name>` | One per check script (§6), with its declared arguments |
 
 - Data comes from commands with machine-readable output (`systemctl show`, `journalctl -o json`,
-  `docker … --format '{{json .}}'`, `ss`), run without a shell.
+  `docker inspect`, `ubus call`), run without a shell, and from `/proc` and `statvfs` (§12).
 - `grep` is a fixed string, case-insensitive, and filters before `lines` applies: the answer is the
   last N matching lines in the window. The journal filters itself (`journalctl --grep`); containers and
-  files are scanned over their last `logs.scan_lines` lines.
+  files are scanned over their last `logs.scan_lines` lines, and a file over its last 16 MiB at most.
 - `lines` above `logs.max_lines` is cut to it, and the answer says it was truncated.
-- A `check_<name>` tool accepts only the nodes whose catalog has that check. The same check name on
+- A `check_<name>` tool accepts only the nodes whose catalog has that check; the hub refuses the others
+  itself. The same check name on
   several nodes must declare the same arguments; if it doesn't, the hub reports the conflict in
   `nodes` and exposes no tool for it until it's fixed.
 - Actions and setup scripts appear in `nodes`, so the agent knows they exist and can suggest them,
@@ -162,8 +164,9 @@ Three directories on the node, set in `/etc/limen/limen.toml`:
   `--from NN` resumes there.
 - **Checks must not change state.** limen can't verify that; what it guarantees is that the MCP only
   runs scripts already in the directory, with validated arguments — never code it sends.
-- A script's name is its file name without extension, `^[a-z0-9][a-z0-9_-]{0,47}$`. Other files are
-  ignored and reported by `limen lint`.
+- A script's name is its file name without extension, `^[a-z0-9][a-z0-9_-]{0,47}$`. Other files —a
+  README, a misspelt name— are ignored and reported by `limen lint`; dotfiles such as `.gitkeep` aren't
+  even listed. Two files with one name (`disk.sh`, `disk.py`) are refused, both, until one goes.
 - Each script declares itself in a header: the leading comment lines starting with `#:` form a TOML
   document. No header, no tool.
 
@@ -182,14 +185,18 @@ set -euo pipefail
 - Argument types: `int` (`range`), `bool`, `enum` (`values`), `string` (`pattern`, by default
   `^[A-Za-z0-9._-]{1,64}$`). An argument is required unless it has a `default` or says
   `required = false`. They reach the script as environment variables `LIMEN_ARG_<NAME>`, next to
-  `LIMEN_KIND`, `LIMEN_SCRIPT` and `LIMEN_NODE`.
+  `LIMEN_KIND`, `LIMEN_SCRIPT` and `LIMEN_NODE` (the machine's hostname).
+- `timeout` defaults to 60 s for checks and 1 h for actions and setup scripts. Through the MCP, the
+  hub waits for a check's own timeout and a margin, not `[ssh].request_timeout`.
 - The header is parsed, never executed: learning what an action does must not run it.
 - Checks follow the Nagios plugin convention, so existing monitoring plugins work unchanged: exit
   `0` ok, `1` warn, `2` fail, `3` unknown; the first line of stdout is the summary, the rest is detail.
-- Execution: no shell, a clean environment (`PATH`, `LANG=C.UTF-8`, `LIMEN_*`), cwd `/`, stdin
-  `/dev/null`, `SIGTERM` on timeout and `SIGKILL` after a grace period, output capped.
-- A script that isn't owned by root, or is writable by group or others, is refused, and so is one in
-  such a directory — the same rule as `sshd`'s `StrictModes`. Run as another user (developing limen),
+- Execution: no shell, a clean environment (a fixed `PATH`, `LANG` and `LC_ALL` `C.UTF-8`, `TZ=UTC`,
+  `HOME=/root`, no pagers or colours, `LIMEN_*`), cwd `/`, stdin `/dev/null`, `SIGTERM` on timeout and
+  `SIGKILL` after a grace period. A check's output is capped at 64 KiB; past it the check is stopped
+  and answers `unknown`.
+- A script that isn't owned by root, or is writable by group or others, is refused, and so is one
+  under such a directory, all the way up to `/` — the same rule as `sshd`'s `StrictModes`. Run as another user (developing limen),
   that user's files count as root's.
 - `apply` validates every setup script before running the first: a broken one halfway would leave
   the machine half done.
@@ -209,7 +216,7 @@ nodes/nas/
 [expect]
 compose = ["immich", "passbolt"]      # stacks/<name>/compose.yaml
 units = ["docker.service"]            # systemd units that must be active
-procd = ["dnsmasq", "firewall"]       # OpenWrt services that must have a running instance
+procd = ["dnsmasq", "firewall"]       # OpenWrt services that must exist and not have failed
 ```
 
 - **Optional.** A node managed by Ansible or the like leaves `[repo]` and the deploy role out, or has
@@ -217,10 +224,15 @@ procd = ["dnsmasq", "firewall"]       # OpenWrt services that must have a runnin
 - **Scripts say how to get there; `node.toml` says what must run.** limen installs nothing itself:
   packages, unit files and uci settings come from setup scripts. The one thing it runs on its own is
   `docker compose up -d --remove-orphans` for each declared stack, because it is the same everywhere.
-- `sync` leaves the checkout (`/opt/limen/repo` by default) exactly as the remote branch: fetch,
-  `reset --hard`, `clean`. The repository is the source of truth; local edits are discarded.
+  The project is named after the stack; its file is `compose.yaml` (or `compose.yml`, `docker-compose.*`). A stack runs when every service has a container and each is
+  running and not unhealthy, or exited with 0: a one-shot job that finished is not a stack that is down.
+- `sync` leaves the checkout (`/opt/limen/repo` by default) as the remote branch: a shallow fetch from
+  the URL in `limen.toml` (changing it moves the node), `reset --hard`, and `clean` of untracked files.
+  The repository is the source of truth; local edits are discarded. **Ignored files stay**: a stack's
+  `.env` with its secrets lives next to its `compose.yaml`, listed in `.gitignore`.
 - `apply` is sync, the setup scripts in order, the stacks, and then `state`: it fails when an
-  expected service is not running, so CI sees it.
+  expected service is not running, so CI sees it. Each setup script's output is also kept in
+  `/var/log/limen/runs/`.
 - `state` (read role, an MCP tool) compares the deployed commit with the remote (`git ls-remote`:
   nothing on the node changes) and every expected service with what runs.
 - With `[repo]`, the script directories default to the node's folder; `[scripts]` still overrides.
@@ -268,8 +280,12 @@ dir = "/opt/limen/repo"
 token_file = "/etc/limen/repo-token"
 ```
 
-- Every key has the default shown. An unknown key is an error, so a typo fails instead of being
-  ignored; a broken file makes every request answer `internal` with the reason.
+- The limits, directories and paths show their defaults. `files`, `redact` and `repo.path` are
+  examples: they default to empty, and `[repo]` needs its `url`. `deny = ["**/*.env"]` is what
+  `limen install` writes, not a default. With `[repo]`, `scripts.*` default to the node's folder (§6.1).
+- An unknown key is an error, so a typo fails instead of being ignored; a broken file makes every
+  request answer `internal` with the reason.
+- `limen.toml` may be a link to a file kept elsewhere; limen reads and rewrites the file it leads to.
 - An answer bigger than `limits.max_response` is replaced by a `bad_request` asking to narrow it.
 
 - **Nothing is readable by default.** `files.allow` starts empty; `limen install` writes it with
@@ -282,10 +298,12 @@ token_file = "/etc/limen/repo-token"
 - Only regular files are read; a binary file (a NUL in its first 8 KiB) answers its size and no
   content.
 - Paths are resolved (symlinks, `..`) before matching, and the resolved path is the one opened: a
-  link from an allowed place to a denied one stays denied. A denied path answers `denied` whether it
-  exists or not, and before anything about its type.
+  link from an allowed place to a denied one stays denied, and a directory swapped for a link between
+  the check and the open is caught. A denied path answers `denied` whether it exists or not, and
+  before anything about its type; for one that doesn't exist, the part that does is resolved.
 - A file of up to 1 MiB that holds a PEM private key is not read at all: a range of lines can fall
-  between the key's markers, where redaction can't recognise it.
+  between the key's markers, where redaction can't recognise it. In larger files, logs, a window is
+  redacted as a whole, so a key it holds entire is masked.
 - Redaction applies to files, logs, check output, process and container command lines, and
   `history`. The built-in patterns catch `key=value` for the usual names of secrets (a quoted value
   up to its closing quote), `Authorization` headers, credentials in URLs and PEM private keys;
@@ -318,7 +336,8 @@ host_key = "ssh-ed25519 AAAA…"
 
 - The directory holds `id_ed25519` (the hub's key, made with `ssh-keygen` by `init`), `limen.toml`, `token`
   (for HTTP clients, unless `LIMEN_TOKEN` is set) and `invites/`. `limen.toml` is read again whenever it changes: a
-  node that joins is there for the next request.
+  node that joins is there for the next request. `[http]` is read once, when `serve` starts. A broken
+  `limen.toml` makes the MCP answer errors, not stop.
 - `[http] public_url` (or `LIMEN_PUBLIC_URL`) is where nodes reach the hub to join: an address, not a name,
   because the static binary resolves no names.
 - `host_key` is required: limen writes its own `known_hosts`, filing each key under the node's name
@@ -332,9 +351,13 @@ host_key = "ssh-ed25519 AAAA…"
 ## 8. Audit
 
 - Every request `gate` receives is appended to `/var/log/limen/audit.jsonl` (root, `0600`): time,
-  role, request, arguments, client address (`SSH_CONNECTION`), result code and duration. Past
-  `audit.max_bytes` it becomes `audit.jsonl.1`: no logrotate, which OpenWrt doesn't have.
-- `apply` and actions also keep their full output in `/var/log/limen/runs/<time>-<name>.log`.
+  role, request, arguments, client address (`SSH_CONNECTION`), sudo's user, result code and duration.
+  That includes malformed ones, those of an unknown version, and those that come while the
+  configuration is broken (to the default path then). Arguments over 4 KiB are replaced by their size.
+  Past `audit.max_bytes` it becomes `audit.jsonl.1`: no logrotate, which OpenWrt doesn't have.
+- `history` shows it redacted, like everything that leaves the node. Action arguments are recorded:
+  don't pass secrets as arguments.
+- Each setup script and action also keeps its full output in `/var/log/limen/runs/<time>-<name>.log`.
 - The hub logs each tool call to stderr (node, tool, result, duration): over stdio, stdout is the
   protocol; in the image, stderr is the container's log.
 
@@ -344,16 +367,16 @@ host_key = "ssh-ed25519 AAAA…"
   operator's own machine.
 - **HTTP** — `limen serve`: MCP Streamable HTTP on `POST /mcp`, JSON responses, no SSE (every call
   is a request and a response).
-  - Requires a bearer token (`LIMEN_TOKEN`, 16 characters or more) and refuses to start without one
-    or with a shorter one.
-    It is compared in constant time.
+  - Requires a bearer token, compared in constant time. `serve` creates one on its first start, or takes
+    `LIMEN_TOKEN`, which must have 16 characters or more.
+  - A body is read only with its `Content-Length`, up to a limit: `Transfer-Encoding` gets `411`.
   - Validates `Origin`, against DNS rebinding.
   - Listens on `127.0.0.1:7341` unless told otherwise. The image listens on every interface;
     whoever publishes the port decides who gets in.
 - `GET /join/<code>` and `POST /join/<code>` (§10.1) need no token: the one-time code is the authorisation.
-- Catalogs are fetched when a session starts, when `nodes` is called and when the set of nodes changes. A change is announced with
-  `notifications/tools/list_changed` over stdio; over HTTP without SSE it shows up in the next
-  session.
+- Catalogs are fetched when a session starts (`initialize`), when `nodes` is called and when the set
+  of nodes changes. A change is announced with `notifications/tools/list_changed` over stdio; over HTTP
+  without SSE it shows up in the next session.
 
 ## 10. CLI
 
@@ -362,12 +385,12 @@ host_key = "ssh-ed25519 AAAA…"
 | `limen init [--serve]` | hub | The hub's directory: key, `limen.toml`, and with `--serve` the token. Keeps what exists |
 | `limen mcp` | hub | MCP over stdio |
 | `limen serve` | hub | MCP over HTTP and the join endpoints; `init --serve` first if needed |
-| `limen connect` | hub | The `claude mcp add` line: HTTP with the token when there is one, stdio otherwise |
+| `limen connect [--url]` | hub | The `claude mcp add` line: HTTP when there is a public URL and a token, stdio otherwise |
 | `limen invite <name> [--ttl 1h]` | hub | The line that joins a machine (§10.1) |
 | `limen trust <name> <address> <host-key> [--user] [--port]` | hub | A node added by hand |
 | `limen forget <name>` | hub | A node taken off the hub |
-| `limen join <line> \| --hub-key <key> --name <name> [--repo …] [--deploy-key …] [--from …] [--address …]` | node, root | Joins the hub (§10.1): install with the hub's key, then report |
-| `limen call <node> <request> [--arg k=v]…` | hub | One request over SSH; prints the JSON. Checks as `check_<name>`. For `apply` and `action`, with the deploy role's `--user` and `--identity`, it streams their output: what CI runs |
+| `limen join <line> \| --hub-key <key> --name <name> [--repo …] [--deploy-key …] [--from …] [--address …] [--ssh-port …]` | node, root | Joins the hub (§10.1): install with the hub's key, then report. `--path` defaults to `nodes/<its name on the hub>` |
+| `limen call <node> <request> [--arg k=v]…` | hub | One request over SSH; prints the JSON. Checks as `check_<name>`; a script's arguments are typed by its header, from the node's catalog. For `apply` and `action`, with the deploy role's `--user` and `--identity`, it streams their output: what CI runs |
 | `limen gate --role <role>` | node | The forced command. Not for people |
 | `limen install --read-key <key> [--deploy-key <key>] [--from <cidr>] [--repo <url> [--branch b] [--path p]] [--dry-run]` | node, root | Debian: binary in `/usr/local/bin`, users, `authorized_keys`, `sudoers` (validated with `visudo -c` first). OpenWrt: binary in `/usr/bin`, root's dropbear keys, sysupgrade keep list. Both: `/etc/limen/`; with `--repo`, the repository (below). Idempotent |
 | `limen uninstall [--purge]` | node, root | Undoes `install`; keeps `/etc/limen/`, the logs and the checkout unless `--purge` |
@@ -375,8 +398,8 @@ host_key = "ssh-ed25519 AAAA…"
 | `limen sync` | node | The checkout to the remote branch |
 | `limen apply [--from NN] [--no-sync] [--dry-run]` | node | Sync, setup scripts in order, stacks, `state` |
 | `limen action <name> [--arg k=v]…` | node | One action |
-| `limen check <name> [--arg k=v]…` | node | One check; exits with its code |
-| `limen lint` | node | Script names, headers and permissions, without running anything |
+| `limen check <name> [--arg k=v]…` | node | One check; exits 0, 1 or 2 by its status, and 3 when it gave none (killed, timed out, not found) |
+| `limen lint` | node | Script names, headers and permissions, without running anything; files that aren't scripts are listed as skipped |
 | `limen version` | both | The version |
 
 `install` also reads `sshd -T` and warns when `AllowUsers` or `AllowGroups` would keep the new
@@ -391,26 +414,33 @@ checks it against `SHA256SUMS`, then:
 - `--hub-key <key> --name <name>`: the same, for a hub with no HTTP; it ends with the `limen trust` line.
 - `--hub`: the binary in `~/.local/bin` (or `/usr/local/bin` as root) and `limen init`, for a laptop hub.
 
-Every answer can come from a `LIMEN_*` variable instead, for unattended installs.
+Every answer can come from a `LIMEN_*` variable instead, for unattended installs; the list is at the top of
+`install.sh`.
 
 ### 10.1 Joining a node
 
 ```
-hub:   limen invite nas  →  …/install.sh | sudo sh -s -- --join 'http://<hub>:7341/join/<code>#SHA256:<hub key>'
+hub:   limen invite nas  →  …/install.sh | sudo sh -s -- --join 'http://<hub>:7341/join/<code>#SHA256:<hub key>.<secret>'
 node:  GET  /join/<code>  →  {"name": "nas", "hub_key": "ssh-ed25519 …"}   checked against the fingerprint
        limen install with that key
-       POST /join/<code>  ←  {"host_key": "ssh-ed25519 …", "user": "limen-read", "port": 22}
+       POST /join/<code>  ←  {"host_key": "ssh-ed25519 …", "user": "limen-read", "port": 22, "proof": "<HMAC>"}
 hub:   [nodes.nas] with the request's source address, then `hello`  →  {"reachable": true, "detail": "…"}
 ```
 
-- The code is 26 characters of base32 (130 bits), kept in `invites/<code>.json` with the node's name; it lasts one
-  hour by default and one successful `POST`.
+- The code is 26 characters of base32 (130 bits), kept in `invites/<code>.json` with the node's name and a secret
+  of the same size; it lasts one hour by default and one successful `POST`.
+- The secret travels only in the line's fragment, never on the wire: the node signs its arrival with it
+  (HMAC-SHA256 over host key, user, port and address). Whoever sees the code in transit can't arrive in the node's
+  place or change what it sends; a forged arrival is refused without spending the invitation. Joins are handled
+  one at a time.
 - The fingerprint in the line is `SHA256:<base64>` of the key, as `ssh-keygen -lf` prints it. The key itself is not
   secret; what matters is that it arrives unchanged, and a mismatch stops the node before anything is installed.
 - The hub trusts the host key that arrives with a valid code: trust on first use, bound to an invitation a person
   gave out.
 - The node's address is where the `POST` comes from, unless it sends `--address`. The hub edits only that node's
   table in `limen.toml`, and parses the result before writing it.
+- The node doesn't trust the hub more than the hub trusts it: the name it is given must be a node name, and every
+  value it writes to its own `limen.toml` is quoted.
 - `limen join` talks HTTP through its own client over a socket (`HttpLite`), to addresses only.
 - Without an HTTP hub, `invite` prints the hub's key in the line (`--hub-key`) and the node prints
   `limen trust <name> <address> '<host key>'` for the hub.
@@ -420,7 +450,7 @@ template link for a fine-grained token —name, owner, no expiry and read-only c
 filled in; the repository has to be chosen in the form— asks for the token without echoing it, checks
 it with `git ls-remote`, saves it, and syncs. Only a refusal of credentials asks for a token; any other failure
 (network, TLS, a wrong URL) is reported as it is. The repository is checked before anything on the machine
-changes. `--path` defaults to `nodes/<hostname>`.
+changes. `install --path` defaults to `nodes/<hostname>`.
 
 The deploy role over SSH (`sync`, `apply`, `action` through `limen call`) never uses the multiplexed
 connection: on OpenWrt both roles log in as root, and a deploy request would ride the socket the read
@@ -479,7 +509,9 @@ key opened.
 | Symlink from an allowed path to a secret | Resolved before matching (§7.1) |
 | Expensive requests | Timeouts, output caps and per-node concurrency |
 | An invitation leaks | Whoever uses it first adds *one* machine, with that name, to the hub —a machine the agent will then read—; one hour, one use |
-| Someone between a joining node and the hub | Can't swap the hub's key: the fingerprint in the line stops the node |
+| Someone between a joining node and the hub | Can't swap the hub's key —the fingerprint in the line stops the node— nor put their machine in the node's place: the arrival is signed with a secret that never travels |
+| A malicious hub at join time | Installs its key for the read role, as the node's owner asked. Can't write the node's configuration beyond its own values |
+| A hub that floods a node with requests | Can rotate old entries out of the node's audit log, which is bounded. Ship it elsewhere if it must outlive that |
 | A malicious or buggy check script | **Not covered.** Scripts belong to root; limen trusts them |
 | Secrets inside allowed files | Partly: redaction is best-effort |
 | Data leaving the machine | **By design**: whatever is readable reaches the model provider |
@@ -515,8 +547,6 @@ key opened.
   so it is only tested to start.
 - `state` of a stack compares services and running containers, not images.
 - Signed commits required for `[repo]`.
-- Two scripts with the same name and different extensions: today both are listed and `find` takes
-  the first.
 - Following logs (`follow`): v1 only answers bounded windows.
 - Podman besides Docker.
 - A `.deb` package besides `limen install`.

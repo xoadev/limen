@@ -58,9 +58,13 @@ object State {
                             }
                         } ?: JsonNull,
                     )
-                    remote.onSuccess { put("remote", it) }.onFailure { put("remote_error", it.message) }
+                    remote.onSuccess { put("remote", it) }.onFailure { put("remote_error", it.message?.let(node.redactor::redact)) }
                     remote.getOrNull()?.let { put("up_to_date", deployed?.hash == it) }
-                    put("last_sync", Repo.lastSync(repo) ?: JsonNull)
+                    // git's own words, which can hold a URL with its credentials.
+                    put(
+                        "last_sync",
+                        Repo.lastSync(repo)?.let { LenientJson.parseToJsonElement(node.redactor.redact(it.toString())) } ?: JsonNull,
+                    )
                 }.also {
                     if (deployed == null) problems += "the repository is not checked out: run sync or apply"
                     if (remote.isSuccess && deployed != null &&
@@ -166,7 +170,8 @@ object State {
         ) = (o[key] as? JsonPrimitive)?.contentOrNull
         val byService = containers.groupBy { field(it, "Service") }
         val missingServices = declared.filter { byService[it].isNullOrEmpty() }
-        val notRunning = containers.filter { field(it, "State") != "running" || field(it, "Health") == "unhealthy" }
+        val finished = { c: JsonObject -> field(c, "State") == "exited" && field(c, "ExitCode") == "0" }
+        val notRunning = containers.filter { (field(it, "State") != "running" && !finished(it)) || field(it, "Health") == "unhealthy" }
         return ServiceState(
             "compose",
             name,

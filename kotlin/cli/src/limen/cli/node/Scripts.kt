@@ -19,13 +19,17 @@ import limen.core.scripts.ScriptSpec
 import limen.core.scripts.Trust
 import kotlin.time.Duration.Companion.seconds
 
-/** A file in a script directory: its spec when it is usable, or what is wrong with it. */
+/**
+ * A file in a script directory: its spec when it is usable, or what is wrong with it. A file whose name is not a
+ * script's ([ignored]: a README, a mistyped name) is only reported by `limen lint`.
+ */
 class ScriptEntry(
     val kind: ScriptKind,
     val file: String,
     val path: String,
     val spec: ScriptSpec?,
     val problem: String?,
+    val ignored: Boolean = false,
 )
 
 /** Finds, validates and runs the operator's scripts (spec §6). */
@@ -39,7 +43,7 @@ object Scripts {
         val dir = node.config.directory(kind)
         val info = Fs.stat(dir) ?: return emptyList()
         if (info.type != FileType.DIRECTORY) return listOf(ScriptEntry(kind, dir, dir, null, "$dir is not a directory"))
-        return Fs.list(dir).map { file -> entry(node, kind, dir, file) }
+        return Fs.list(dir).filterNot { it.startsWith(".") }.map { file -> entry(node, kind, dir, file) }
     }
 
     private fun entry(
@@ -56,7 +60,8 @@ object Scripts {
                     file,
                     path,
                     null,
-                    "$path: not a valid script name (${if (kind == ScriptKind.SETUP) "NN-name" else "a-z, 0-9, - and _"})",
+                    "$path: not a script name (${if (kind == ScriptKind.SETUP) "NN-name" else "a-z, 0-9, - and _"}); ignored",
+                    ignored = true,
                 )
         val resolved = Fs.realPath(path) ?: return ScriptEntry(kind, file, path, null, "$path: cannot resolve")
         Trust.problem(Fs.chain(resolved), node.trustedOwner)?.let { return ScriptEntry(kind, file, path, null, "$path: $it") }
@@ -76,7 +81,11 @@ object Scripts {
             checks = specs(ScriptKind.CHECK),
             actions = specs(ScriptKind.ACTION),
             setup = specs(ScriptKind.SETUP),
-            problems = all.values.flatten().mapNotNull { it.problem },
+            problems =
+                all.values
+                    .flatten()
+                    .filterNot { it.ignored }
+                    .mapNotNull { it.problem },
         )
     }
 
@@ -86,9 +95,13 @@ object Scripts {
         kind: ScriptKind,
         name: String,
     ): Pair<ScriptEntry, ScriptSpec> {
+        val same = discover(node, kind).filter { ScriptHeaders.nameOf(it.file, kind) == name }
         val entry =
-            discover(node, kind).firstOrNull { ScriptHeaders.nameOf(it.file, kind) == name }
+            same.firstOrNull()
                 ?: throw LimenException(ErrorCode.NOT_FOUND, "no ${kind.name.lowercase()} named '$name' in ${node.config.directory(kind)}")
+        if (same.size > 1) {
+            throw LimenException(ErrorCode.UNAVAILABLE, "${same.joinToString(" and ") { it.file }} are both '$name'; keep one")
+        }
         val spec = entry.spec ?: throw LimenException(ErrorCode.UNAVAILABLE, entry.problem ?: "unusable script")
         return entry to spec
     }
@@ -100,7 +113,7 @@ object Scripts {
         args: JsonObject,
     ): List<String> {
         val values = Args.validate(spec.params, args)
-        return Proc.SYSTEM_ENV + "HOME=/root" + "LIMEN_KIND=${spec.kind.name.lowercase()}" + "LIMEN_SCRIPT=${spec.name}" +
+        return Proc.ROOT_ENV + "LIMEN_KIND=${spec.kind.name.lowercase()}" + "LIMEN_SCRIPT=${spec.name}" +
             "LIMEN_NODE=${limen.cli.os.Sys.hostname()}" +
             values.map { (k, v) -> "${ScriptHeaders.envName(k)}=${text(v)}" }
     }

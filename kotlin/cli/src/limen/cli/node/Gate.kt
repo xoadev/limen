@@ -36,10 +36,12 @@ object Gate {
         val started = TimeSource.Monotonic.markNow()
         var request: NodeRequest? = null
         var node: Node? = null
+        // Where the record goes: the configured log, or the default one when the configuration can't be read.
+        var auditTo = Node(NodeConfig())
         var code = "ok"
         try {
+            node = Node.load(configPath).also { auditTo = it }
             request = parse(Sys.readStdin(MAX_REQUEST))
-            node = Node.load(configPath)
             val def = Requests.find(request.request) ?: badRequest("unknown request '${request.request}'")
             if (def.role != role) throw LimenException(ErrorCode.DENIED, "'${def.name}' is not allowed for the ${role.wire} role")
             val args = Args.validate(def.params, request.args)
@@ -58,7 +60,7 @@ object Gate {
             code = ErrorCode.INTERNAL.wire
             return fail(role, node, LimenException(ErrorCode.INTERNAL, e.message ?: e::class.simpleName ?: "error"))
         } finally {
-            node?.let { Audit.record(it, role, request, code, started.elapsedNow().inWholeMilliseconds) }
+            Audit.record(auditTo, role, request, code, started.elapsedNow().inWholeMilliseconds)
         }
     }
 
@@ -145,6 +147,8 @@ object Gate {
 
 /** The node's audit log (spec §8): one JSON line per request, whatever its outcome. */
 object Audit {
+    private const val MAX_AUDIT_ARGS = 4096
+
     fun record(
         node: Node,
         role: Role,
@@ -161,7 +165,10 @@ object Audit {
                 )
                 put("role", role.wire)
                 put("request", request?.request)
-                put("args", request?.args ?: JsonObject(emptyMap()))
+                // A request's arguments, up to a size: a megabyte of them per request would rotate the log out.
+                val args = request?.args ?: JsonObject(emptyMap())
+                val size = args.toString().length
+                put("args", if (size <= MAX_AUDIT_ARGS) args else buildJsonObject { put("omitted_bytes", size) })
                 put("client", Sys.env("SSH_CONNECTION")?.substringBefore(' '))
                 put("user", Sys.env("SUDO_USER"))
                 put("result", code)

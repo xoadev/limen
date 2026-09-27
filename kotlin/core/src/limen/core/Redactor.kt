@@ -44,6 +44,8 @@ class Redactor(
                 "$SECRET_NAME[\"']?\\s*[:=]\\s*\"(?<secret>[^\"\\n]*)",
                 "$SECRET_NAME[\"']?\\s*[:=]\\s*'(?<secret>[^'\\n]*)",
                 "$SECRET_NAME[\"']?\\s*[:=]\\s*(?<secret>[^\\s\"',;&]+)",
+                // --password value: a flag and its value, apart.
+                "(?i)(?<![\\w-])--?${SECRET_NAME.removePrefix("(?i)")}\\s+(?<secret>[^\\s\"'-][^\\s\"']*)",
                 """(?i)authorization:\s*(?:bearer|basic|token)\s+(?<secret>\S+)""",
                 // Credentials inside a URL: scheme://user:password@host.
                 """[a-zA-Z][a-zA-Z0-9+.-]*://[^/\s:@]+:(?<secret>[^@\s/]+)@""",

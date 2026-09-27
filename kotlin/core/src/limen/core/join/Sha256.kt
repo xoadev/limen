@@ -125,5 +125,18 @@ object Sha256 {
         return ByteArray(32) { i -> (h[i / 4] ushr (24 - 8 * (i % 4))).toByte() }
     }
 
-    fun hex(input: ByteArray): String = digest(input).joinToString("") { (it.toInt() and 0xff).toString(16).padStart(2, '0') }
+    fun hex(input: ByteArray): String = toHex(digest(input))
+
+    /** HMAC-SHA256 (RFC 2104): what signs a node's arrival with the invitation's secret. */
+    fun hmac(
+        key: ByteArray,
+        message: ByteArray,
+    ): ByteArray {
+        val block = (if (key.size > 64) digest(key) else key).copyOf(64)
+        val inner = ByteArray(64) { (block[it].toInt() xor 0x36).toByte() }
+        val outer = ByteArray(64) { (block[it].toInt() xor 0x5c).toByte() }
+        return digest(outer + digest(inner + message))
+    }
+
+    fun toHex(bytes: ByteArray): String = bytes.joinToString("") { (it.toInt() and 0xff).toString(16).padStart(2, '0') }
 }

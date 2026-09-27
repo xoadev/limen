@@ -12,7 +12,9 @@ import kotlinx.serialization.json.put
 import limen.cli.hub.Http
 import limen.cli.hub.McpServer
 import limen.cli.hub.NodeClient
+import limen.core.ErrorCode
 import limen.core.LenientJson
+import limen.core.LimenException
 import limen.core.NodeError
 import limen.core.NodeResponse
 import limen.core.Param
@@ -27,6 +29,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.time.Duration
 
 class McpServerTest {
     private val threshold = Param("threshold", ParamType.INT, default = JsonPrimitive(90), min = 1, max = 100)
@@ -42,6 +45,7 @@ class McpServerTest {
             node: String,
             request: String,
             args: JsonObject,
+            timeout: Duration?,
         ): NodeResponse {
             calls += Triple(node, request, args)
             return when (request) {
@@ -271,6 +275,53 @@ class McpServerTest {
             )["result"]!!.jsonObject["tools"]!!.jsonArray.map { it.jsonObject["name"]!!.jsonPrimitive.content }
         assertFalse("check_certs" in after, after.toString())
         assertEquals(2, sent.size)
+    }
+
+    @Test
+    fun aCheckGoesOnlyToTheNodesThatHaveIt() {
+        val client = client()
+        val server = McpServer(client)
+        val answer = callTool(server, "check_disk", buildJsonObject { put("node", "router") })
+        assertFalse(answer.isError())
+        client.catalogs["router"] = Catalog(checks = listOf(check("backups", threshold)))
+        client.catalogs["nas"] = Catalog(checks = listOf(check("disk", threshold)))
+        rpc(server, "initialize")
+        val refused = callTool(server, "check_disk", buildJsonObject { put("node", "router") })
+        assertTrue(refused.isError())
+        assertTrue("router has no check disk" in refused.text(), refused.text())
+        assertEquals(1, client.calls.count { it.first == "router" && it.second == "check" }, "the refused call reached the node")
+    }
+
+    @Test
+    fun aNewSessionSeesNewChecks() {
+        val client = client()
+        val server = McpServer(client)
+        rpc(server, "tools/list")
+        client.catalogs["nas"] = Catalog(checks = listOf(check("disk", threshold), check("certs")))
+        rpc(server, "initialize")
+        val names =
+            rpc(
+                server,
+                "tools/list",
+            )["result"]!!.jsonObject["tools"]!!.jsonArray.map { it.jsonObject["name"]!!.jsonPrimitive.content }
+        assertTrue("check_certs" in names, names.toString())
+    }
+
+    @Test
+    fun aBrokenHubIsAnErrorNotACrash() {
+        val broken =
+            object : NodeClient {
+                override val nodes: List<String> get() = throw LimenException(ErrorCode.INTERNAL, "limen.toml: line 3: bad")
+
+                override suspend fun call(
+                    node: String,
+                    request: String,
+                    args: JsonObject,
+                    timeout: Duration?,
+                ) = throw LimenException(ErrorCode.INTERNAL, "unreachable")
+            }
+        val answer = rpc(McpServer(broken), "tools/list")
+        assertTrue("limen.toml: line 3" in answer["error"].toString(), answer.toString())
     }
 
     @Test

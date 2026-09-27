@@ -20,6 +20,7 @@ import platform.posix.EEXIST
 import platform.posix.O_APPEND
 import platform.posix.O_CLOEXEC
 import platform.posix.O_CREAT
+import platform.posix.O_EXCL
 import platform.posix.O_NOFOLLOW
 import platform.posix.O_RDONLY
 import platform.posix.O_TRUNC
@@ -38,6 +39,7 @@ import platform.posix.closedir
 import platform.posix.errno
 import platform.posix.fstat
 import platform.posix.fsync
+import platform.posix.getpid
 import platform.posix.lseek
 import platform.posix.lstat
 import platform.posix.mkdir
@@ -90,6 +92,7 @@ class LineSlice(
 object Fs {
     private const val PATH_MAX = 4096
     private const val CHUNK = 64 * 1024
+    private var temporaries = 0
 
     fun realPath(path: String): String? =
         memScoped {
@@ -174,6 +177,20 @@ object Fs {
 
     fun readText(path: String): String? = read(path)?.decodeToString()
 
+    /**
+     * A configuration file, following links: an operator's `limen.toml` or `authorized_keys` that links to a file
+     * kept elsewhere is that file. Only for files whose directory belongs to root or to the hub's user; what the
+     * read role opens goes through the policy and [read] instead.
+     */
+    fun readFollowing(path: String): String? = realPath(path)?.let(::readText)
+
+    /** Replaces the file [path] leads to, so a link the operator made stays a link. */
+    fun writeFollowing(
+        path: String,
+        bytes: ByteArray,
+        mode: Int,
+    ) = writeAtomic(realPath(path) ?: path, bytes, mode)
+
     /** Whether [path] contains [needle], reading it in chunks, up to [limit] bytes. */
     fun contains(
         path: String,
@@ -215,9 +232,9 @@ object Fs {
         from: Int,
         count: Int,
         maxBytes: Int,
+        exact: Boolean = false,
     ): LineSlice {
-        val fd = open(path, O_RDONLY or O_CLOEXEC or O_NOFOLLOW)
-        if (fd < 0) throw FsException("cannot open $path: ${lastError()}")
+        val fd = openForReading(path, exact)
         try {
             val lines = mutableListOf<String>()
             var lineNo = 1
@@ -266,10 +283,10 @@ object Fs {
         path: String,
         count: Int,
         maxBytes: Long,
+        exact: Boolean = false,
     ): LineSlice {
         val info = stat(path) ?: throw FsException("cannot read $path")
-        val fd = open(path, O_RDONLY or O_CLOEXEC or O_NOFOLLOW)
-        if (fd < 0) throw FsException("cannot open $path: ${lastError()}")
+        val fd = openForReading(path, exact)
         try {
             val start = maxOf(0L, info.size - maxBytes)
             lseek(fd, start, SEEK_SET)
@@ -291,6 +308,27 @@ object Fs {
         } finally {
             close(fd)
         }
+    }
+
+    /**
+     * Opens [path] to read it. `O_NOFOLLOW` covers only its last component; with [exact], a directory on the way
+     * swapped for a link since the caller resolved and checked the path is caught too: the file opened must be the
+     * one named, as `/proc/self/fd` says.
+     */
+    private fun openForReading(
+        path: String,
+        exact: Boolean,
+    ): Int {
+        val fd = open(path, O_RDONLY or O_CLOEXEC or O_NOFOLLOW)
+        if (fd < 0) throw FsException("cannot open $path: ${lastError()}")
+        if (exact) {
+            val opened = readLink("/proc/self/fd/$fd")
+            if (opened != null && opened != path) {
+                close(fd)
+                throw FsException("$path changed while it was opened")
+            }
+        }
+        return fd
     }
 
     fun appendLine(
@@ -319,8 +357,9 @@ object Fs {
         bytes: ByteArray,
         mode: Int,
     ) {
-        val tmp = "$path.limen-tmp"
-        val fd = open(tmp, O_WRONLY or O_CREAT or O_TRUNC or O_CLOEXEC, mode.convert<UInt>())
+        // Its own name and O_EXCL: two writers at once each rename a whole file, and none writes into a link.
+        val tmp = "$path.limen-${getpid()}-${temporaries++}"
+        val fd = open(tmp, O_WRONLY or O_CREAT or O_EXCL or O_NOFOLLOW or O_CLOEXEC, mode.convert<UInt>())
         if (fd < 0) throw FsException("cannot write $tmp: ${lastError()}")
         try {
             writeAll(fd, bytes, tmp)

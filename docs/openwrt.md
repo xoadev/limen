@@ -53,9 +53,9 @@ HTTP goes through Ktor: the hub's server is Ktor (CIO), with its ordinary text A
   Ktor's client and delete `HttpLite`.
 - **Upstream**, Ktor made ISO-8859-1 and UTF-16 lazy for devices without them
   ([KTOR-7016](https://youtrack.jetbrains.com/issue/KTOR-7016)), but `Charsets.UTF_8` still converts through iconv
-  on Linux ([`CharsetLinux.kt`](https://github.com/ktorio/ktor/blob/main/ktor-io/linux/src/CharsetLinux.kt)). The
-  static-binary case is not reported yet. Others who built static Kotlin/Native images hit it and carried glibc and
-  gconv in the image instead ([youndie/katcher#56](https://github.com/youndie/katcher/pull/56)).
+  on Linux ([`CharsetLinux.kt`](https://github.com/ktorio/ktor/blob/main/ktor-io/linux/src/CharsetLinux.kt)).
+  Others who built static Kotlin/Native images hit it and carried glibc and gconv in the image instead
+  ([youndie/katcher#56](https://github.com/youndie/katcher/pull/56)).
 
 ## OpenWrt as a node
 

@@ -75,7 +75,7 @@ class ParsersTest {
                         "Health":{"Status":"healthy","FailingStreak":0,"Log":[{"Start":"t","ExitCode":0,"Output":"ok\n"}]}},
                       "RestartCount":1,"HostConfig":{"RestartPolicy":{"Name":"unless-stopped"}},
                       "Config":{"Image":"ghcr.io/immich:v1","Env":["DB_PASSWORD=secret","TZ=UTC"],
-                        "Labels":{"com.docker.compose.project":"photos"}},
+                        "Labels":{"com.docker.compose.project":"photos","auth":"password=hunter2","db.password":"s3cr3t"}},
                       "Mounts":[{"Type":"bind","Source":"/srv","Destination":"/data","RW":true}],
                       "NetworkSettings":{"Ports":{"80/tcp":null},"Networks":{"photos_default":{"IPAddress":"172.18.0.2"}}}}]
                     """.trimIndent(),
@@ -84,6 +84,8 @@ class ParsersTest {
         val detail = Parsers.containerDetail(inspect, listOf("ghcr.io/immich@sha256:bb"), redactor)
         assertEquals("""["DB_PASSWORD","TZ"]""", detail["env"].toString())
         assertFalse("secret" in detail.toString())
+        assertFalse("hunter2" in detail.toString(), "a label's value is redacted like everything else")
+        assertFalse("s3cr3t" in detail.toString(), "and the key of a label says when its value is a secret")
         assertEquals(JsonPrimitive("start.sh --token=[redacted]"), detail["command"])
         assertEquals(JsonPrimitive("healthy"), detail["state"]!!.jsonObject["health"]!!.jsonObject["status"])
         assertEquals("0123456789ab", detail["id"]!!.jsonPrimitive.content)

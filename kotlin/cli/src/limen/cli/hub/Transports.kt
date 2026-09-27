@@ -67,11 +67,7 @@ object Http {
             routing {
                 post("/mcp") {
                     if (!allowed(call, config, token)) return@post
-                    val length = call.request.headers["Content-Length"]?.toLongOrNull()
-                    if (length == null || length > MAX_BODY) {
-                        call.respond(HttpStatusCode.PayloadTooLarge)
-                        return@post
-                    }
+                    if (!bounded(call, MAX_BODY.toLong())) return@post
                     val answer = server.handle(call.receiveText())
                     if (answer == null) {
                         call.respond(HttpStatusCode.Accepted)
@@ -96,11 +92,7 @@ object Http {
                     }
                 }
                 post("/join/{code}") {
-                    val length = call.request.headers["Content-Length"]?.toLongOrNull()
-                    if (length == null || length > 16 * 1024) {
-                        call.respond(HttpStatusCode.PayloadTooLarge)
-                        return@post
-                    }
+                    if (!bounded(call, 16 * 1024)) return@post
                     val code = call.parameters["code"].orEmpty()
                     try {
                         val arrival = LenientJson.decodeFromString(Arrival.serializer(), call.receiveText())
@@ -116,6 +108,32 @@ object Http {
                 }
             }
         }.start(wait = true)
+    }
+
+    /**
+     * A body of at most [max] bytes, said by `Content-Length` and only by it: with `Transfer-Encoding` the length
+     * header is not what is read, and a chunked body could grow without end.
+     */
+    private suspend fun bounded(
+        call: ApplicationCall,
+        max: Long,
+    ): Boolean {
+        val length = call.request.headers["Content-Length"]?.toLongOrNull()
+        return when {
+            call.request.headers["Transfer-Encoding"] != null || length == null -> {
+                call.respond(HttpStatusCode.LengthRequired)
+                false
+            }
+
+            length > max -> {
+                call.respond(HttpStatusCode.PayloadTooLarge)
+                false
+            }
+
+            else -> {
+                true
+            }
+        }
     }
 
     private fun joinError(message: String) = WireJson.encodeToString(JsonObject.serializer(), buildJsonObject { put("error", message) })

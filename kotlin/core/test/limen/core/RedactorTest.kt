@@ -32,6 +32,15 @@ class RedactorTest {
     }
 
     @Test
+    fun aFlagAndItsValueApart() {
+        // As /proc/<pid>/cmdline reads, arguments joined by spaces.
+        assertEquals("app --password [redacted] --user ana", redactor.redact("app --password hunter2 --user ana"))
+        assertEquals("app -token [redacted]", redactor.redact("app -token abc"))
+        assertEquals("app --token-file /etc/app/token", redactor.redact("app --token-file /etc/app/token"))
+        assertEquals("the token was refreshed", redactor.redact("the token was refreshed"))
+    }
+
+    @Test
     fun leavesOrdinaryTextAlone() {
         val text = "Started nginx.service - A high performance web server."
         assertEquals(text, redactor.redact(text))

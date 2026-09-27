@@ -109,9 +109,10 @@ machine then joins it with one line the hub gives you.
 
 You need:
 
-- For the hub: Docker on an always-on machine (or nothing but the binary, for a hub on your laptop).
+- For the hub: Docker on an always-on machine; or, for a hub on your laptop, OpenSSH's `ssh` and `ssh-keygen`.
 - For each machine: Debian, Ubuntu or OpenWrt, x86-64 or arm64, running an SSH server the hub can reach —over a VPN
-  such as Tailscale or Headscale, or your LAN—, and root to install. Git only if it follows a repository.
+  such as Tailscale or Headscale, or your LAN—, and root to install. `curl` and `sudo` on Debian and Ubuntu (OpenWrt
+  has `wget` and needs no sudo). Git only if it follows a repository.
 
 ### 1. Start the hub
 
@@ -125,10 +126,13 @@ services:
     environment:
       LIMEN_PUBLIC_URL: http://100.64.0.2:7341   # where machines reach the hub: an address, not a name
     volumes:
-      - ./limen:/data
+      - limen:/data                              # the whole hub: its key, limen.toml, the token
     ports:
       - "100.64.0.2:7341:7341"                   # only on the VPN address
     restart: unless-stopped
+
+volumes:
+  limen:
 ```
 
 ```sh
@@ -137,7 +141,8 @@ docker compose exec limen limen connect
 # claude mcp add --transport http limen http://100.64.0.2:7341/mcp --header "Authorization: Bearer …"
 ```
 
-On its first start the hub creates, in `./limen`, its SSH key, its `limen.toml` and the token of MCP clients.
+On its first start the hub creates, in the `limen` volume, its SSH key, its `limen.toml` and the token of MCP
+clients. (The image runs as uid 7341: a bind mount instead of the volume needs a directory that user owns.)
 `limen connect` prints the line that connects Claude Code (or any MCP client) to it.
 
 ### 2. Add a machine
@@ -148,10 +153,12 @@ Ask the hub for an invitation:
 docker compose exec limen limen invite nas
 # On nas, as root:
 #   curl -fsSL https://raw.githubusercontent.com/xoadev/limen/main/install.sh | sudo sh -s -- --join 'http://100.64.0.2:7341/join/…#SHA256:…'
+# OpenWrt:
+#   wget -qO- https://raw.githubusercontent.com/xoadev/limen/main/install.sh | sh -s -- --join 'http://100.64.0.2:7341/join/…#SHA256:…'
 # Valid once, for 1h.
 ```
 
-Paste that line on the machine —Debian, Ubuntu or OpenWrt (with `wget -qO-` and `sh` there)— and it:
+Paste the line for the machine's system on it, and it:
 
 1. Downloads the binary for the machine from the latest release and checks it against `SHA256SUMS`.
 2. Fetches the hub's key and checks it against the fingerprint in the line: nobody in between can slip in theirs.
@@ -165,11 +172,17 @@ Paste that line on the machine —Debian, Ubuntu or OpenWrt (with `wget -qO-` an
    - **OpenWrt**: the hub's key in root's dropbear `authorized_keys`, held to `limen gate`, next to the keys already
      there; limen survives `sysupgrade`. **Turn off dropbear's password logins**: a forced command only holds a login
      by key, and the installer warns when root has no password.
-5. Tells the hub its host key. The hub adds it to `limen.toml`, tries it, and the installer says
+5. Tells the hub its host key, signed with a secret the line carries and the network never sees: whoever spots
+   the invitation on the wire can't join in the machine's place. The hub adds it to `limen.toml`, tries it, and
+   the installer says
    `nas is on the hub, at 100.64.0.5: Debian GNU/Linux 13, limen 0.1.0`.
 
-That is all: the agent sees the machine in `nodes`, with no restart. The invitation is spent; the next machine gets
-its own.
+That is all: the hub needs no restart. The agent sees the machine in `nodes` at once; an HTTP client sees it in its
+tools' node list when it reconnects. The invitation is spent; the next machine gets its own.
+
+**Before the first release** there is nothing to download: build from source (see [Develop](#develop)), then
+`make docker` for the hub —`image: limen:local` in the compose file— and, on each machine, copy the binary of
+`make cli` and `install.sh` and run `sudo env LIMEN_BINARY=./limen sh install.sh --join '<line>'`.
 
 ### What the agent may read
 
@@ -193,8 +206,9 @@ safety net.
   `claude mcp add` line. Without an HTTP hub to call back, `limen invite nas` prints a line with the hub's key in it
   (`--hub-key`), and the machine ends printing the `limen trust nas <address> '<host key>'` to run on the laptop.
 - **Unattended**, every answer comes from the environment:
-  `LIMEN_YES=1 LIMEN_JOIN='…' LIMEN_REPO=https://github.com/you/infra.git LIMEN_REPO_TOKEN=github_pat_… sh install.sh`.
-  `LIMEN_DEPLOY_KEY` adds the deploy role; `LIMEN_FROM` limits where keys may connect from (not on OpenWrt).
+  `sudo env LIMEN_YES=1 LIMEN_JOIN='…' LIMEN_REPO=https://github.com/you/infra.git LIMEN_REPO_TOKEN=github_pat_… sh install.sh`.
+  `LIMEN_DEPLOY_KEY` adds the deploy role; `LIMEN_FROM` limits where keys may connect from (not on OpenWrt). The
+  whole list is at the top of [`install.sh`](install.sh).
 - **By hand**: download `limen-<version>-linux-$(uname -m)` from the [releases](https://github.com/xoadev/limen/releases)
   and run `sudo ./limen-… join '<line>'`.
 - `limen forget nas` takes a machine off the hub; `limen uninstall --purge` on the machine removes limen from it.
@@ -209,7 +223,9 @@ Ask the agent as you would ask a colleague with read access:
 - *"Is every machine on the latest commit?"* — `state` on each node.
 
 When the answer is a change, the agent says what to run, and you or CI run it with the deploy key (given at install
-with `LIMEN_DEPLOY_KEY`; the user is `root` on OpenWrt), from anywhere with the hub's `limen.toml`:
+with `LIMEN_DEPLOY_KEY`, or added later on the machine with `sudo limen install --read-key '<the hub's key>'
+--deploy-key '<key>'`, the hub's key being `id_ed25519.pub` in its directory; the user is `root` on OpenWrt), from
+anywhere with the hub's `limen.toml`:
 
 ```sh
 limen call nas apply --user limen-deploy --identity ~/.ssh/deploy      # sync, setup scripts, stacks, state

@@ -203,7 +203,15 @@ object Platform {
         node: Node,
         name: String? = null,
     ): Map<String, ProcdService> {
-        val args = if (name == null) "{}" else "{\"name\":\"$name\",\"verbose\":true}"
+        val args =
+            if (name == null) {
+                "{}"
+            } else {
+                buildJsonObject {
+                    put("name", name)
+                    put("verbose", true)
+                }.toString()
+            }
         val out = node.execOk("ubus", "call", "service", "list", args)
         val all = runCatching { LenientJson.parseToJsonElement(out.ifBlank { "{}" }).jsonObject }.getOrElse { JsonObject(emptyMap()) }
         return all.mapValues { (_, v) ->
@@ -221,7 +229,7 @@ object Platform {
 
     /** Whether `/etc/rc.d` starts [name] at boot, as `service <name> enabled` says on OpenWrt. */
     fun procdEnabled(name: String): Boolean =
-        runCatching { Fs.list("/etc/rc.d") }.getOrDefault(emptyList()).any { it.matches(Regex("^S\\d+$name$")) }
+        runCatching { Fs.list("/etc/rc.d") }.getOrDefault(emptyList()).any { it.matches(Regex("^S\\d+${Regex.escape(name)}$")) }
 
     fun procdUnits(
         node: Node,

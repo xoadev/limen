@@ -41,13 +41,13 @@ class ArgsTest {
             },
         )
         assertEquals(
-            "lines must be at most 10000",
+            "lines must be at most 20000",
             bad {
                 Args.validate(
-                    Requests.LOGS.params,
+                    Requests.READ_FILE.params,
                     buildJsonObject {
-                        put("source", "unit")
-                        put("lines", 10001)
+                        put("path", "/etc/hostname")
+                        put("lines", 20001)
                     },
                 )
             },
@@ -76,6 +76,13 @@ class ArgsTest {
                 put("since", "2026-09-26T08:00:00Z")
             },
         )
+    }
+
+    @Test
+    fun anIntegerThatDoesNotFitIsRefusedNotWrapped() {
+        val args = mapOf("lines" to JsonPrimitive(4_294_967_297L))
+        assertEquals(ErrorCode.BAD_REQUEST, assertFailsWith<LimenException> { args.int("lines") }.code)
+        assertEquals(20, mapOf("lines" to JsonPrimitive(20)).int("lines"))
     }
 
     @Test
