@@ -493,8 +493,9 @@ key opened.
 
 - **One static binary per architecture**, `amd64` and `arm64`, for any Linux: linked against musl, it
   needs nothing of the machine but the kernel, and runs the same on Debian, Alpine or OpenWrt. About 3 MB.
-- Hub image `ghcr.io/xoadev/limen`, one tag for `amd64` and `arm64`: Alpine with OpenSSH's client and the
-  binary. Volume `/data` holds `limen.toml` and the SSH key.
+- Hub image `ghcr.io/xoadev/limen`, one tag for `amd64` and `arm64`: distroless —no shell, no package manager—
+  with the binary and OpenSSH's `ssh` and `ssh-keygen`, taken from Alpine with the libraries they load. It runs as
+  uid 7341. Volume `/data` holds `limen.toml` and the SSH key.
 - **Releases** follow the conventional commits: every push to `main` rewrites a draft release with the next
   `X.Y.Z` and its changes; publishing it creates the `vX.Y.Z` tag, which builds the binaries (release variant,
   checked static) and the image, starts the image on both architectures, and publishes them with

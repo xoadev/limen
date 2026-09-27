@@ -405,8 +405,13 @@ suite_join() {
   for _ in $(seq 1 50); do docker logs "$hub" 2>&1 | grep -q "serving MCP" && break; sleep 0.2; done
   docker logs "$hub" 2>&1 | grep -q "serving MCP" || { docker logs "$hub" >&2; echo "e2e/join: the hub did not start" >&2; exit 1; }
   hub_exec() { docker exec -e LIMEN_PUBLIC_URL="$url" "$hub" limen "$@"; }
+  # The image is distroless: no shell and no cat in it, so its files come out through docker cp.
+  hub_file() { docker cp "$hub:/data/$1" - | tar -xO; }
 
   expect "the hub creates itself on first start" "created /data/id_ed25519" docker logs "$hub"
+  expect "the image is distroless: no shell in it" "no shell" \
+    sh -c "docker exec '$hub' /bin/sh -c true 2>/dev/null || echo no shell"
+  expect "and it runs as limen, not root" "7341" docker inspect -f '{{.Config.User}}' "$hub"
   expect "connect: the line for an MCP client, with the token" "Authorization: Bearer" hub_exec connect
   token=$(hub_exec connect | sed -n 's/.*Bearer \([a-z2-7]*\)".*/\1/p')
 
@@ -435,17 +440,17 @@ suite_join() {
   expect "an invitation works once" "was used, or expired" \
     docker exec -e LIMEN_YES=1 -e LIMEN_BINARY=/tmp/limen -e LIMEN_JOIN="$line" "$nas" sh /tmp/install.sh
   expect "the hub reaches it, no restart" '"ok": true' hub_exec call nas status
-  expect "the hub wrote it into limen.toml" "[nodes.nas]" docker exec "$hub" cat /data/limen.toml
+  expect "the hub wrote it into limen.toml" "[nodes.nas]" hub_file limen.toml
 
   echo "e2e/join: OpenWrt joins the same way"
   line=$(join_line router)
   expect "install.sh --join under ash" "router is on the hub" \
     docker exec -e LIMEN_YES=1 -e LIMEN_BINARY=/tmp/limen -e LIMEN_JOIN="$line" "$router" sh /tmp/install.sh
-  expect "the hub logs into it as root" 'user = "root"' docker exec "$hub" cat /data/limen.toml
+  expect "the hub logs into it as root" 'user = "root"' hub_file limen.toml
   expect "and sees procd" '"init": "procd"' hub_exec call router hello
 
   echo "e2e/join: without a hub on HTTP, --hub-key and limen trust"
-  key=$(docker exec "$hub" cat /data/id_ed25519.pub)
+  key=$(hub_file id_ed25519.pub)
   trust=$(docker exec -e LIMEN_YES=1 -e LIMEN_BINARY=/tmp/limen -e LIMEN_HUB_KEY="$key" -e LIMEN_NAME=spare "$spare" sh /tmp/install.sh | grep 'limen trust')
   expect "the machine prints the line for the hub" "limen trust spare <address>" echo "$trust"
   spare_ip=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$spare")
