@@ -411,7 +411,7 @@ suite_join() {
   expect "the hub creates itself on first start" "created /data/id_ed25519" docker logs "$hub"
   expect "the image is distroless: no shell in it" "no shell" \
     sh -c "docker exec '$hub' /bin/sh -c true 2>/dev/null || echo no shell"
-  expect "and it runs as limen, not root" "7341" docker inspect -f '{{.Config.User}}' "$hub"
+  expect "and it runs as distroless's nonroot" "65532" docker inspect -f '{{.Config.User}}' "$hub"
   expect "connect: the line for an MCP client, with the token" "Authorization: Bearer" hub_exec connect
   token=$(hub_exec connect | sed -n 's/.*Bearer \([a-z2-7]*\)".*/\1/p')
 

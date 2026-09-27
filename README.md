@@ -142,7 +142,8 @@ docker compose exec limen limen connect
 ```
 
 On its first start the hub creates, in the `limen` volume, its SSH key, its `limen.toml` and the token of MCP
-clients. (The image runs as uid 7341: a bind mount instead of the volume needs a directory that user owns.)
+clients. (The image runs as distroless's `nonroot`, uid 65532: a bind mount instead of the volume needs a directory that
+user owns.)
 `limen connect` prints the line that connects Claude Code (or any MCP client) to it.
 
 ### 2. Add a machine
