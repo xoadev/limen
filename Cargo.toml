@@ -1,0 +1,18 @@
+[workspace]
+resolver = "3"
+members = ["crates/limen-core", "crates/limen"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+license = "Apache-2.0"
+repository = "https://github.com/xoadev/limen"
+rust-version = "1.85"
+
+# One small static binary per architecture (spec §11): what a router's flash has room for.
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

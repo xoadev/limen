@@ -1,0 +1,249 @@
+//! The operator's scripts (spec §6): what a file's name and `#:` header say about it. The header is parsed, never
+//! run: learning what an action does must not run it.
+
+use crate::durations;
+use crate::params::{self, DEFAULT_STRING_PATTERN, PARAM_NAME, Param, ParamType};
+use crate::requests::SCRIPT_NAME;
+use crate::toml_reader::{self, Reader};
+use regex::Regex;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::time::Duration;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ScriptKind {
+    Check,
+    Action,
+    Setup,
+}
+
+impl ScriptKind {
+    pub const ALL: [ScriptKind; 3] = [ScriptKind::Check, ScriptKind::Action, ScriptKind::Setup];
+
+    pub fn default_timeout(self) -> Duration {
+        match self {
+            ScriptKind::Check => Duration::from_secs(60),
+            ScriptKind::Action | ScriptKind::Setup => Duration::from_secs(3600),
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            ScriptKind::Check => "check",
+            ScriptKind::Action => "action",
+            ScriptKind::Setup => "setup",
+        }
+    }
+}
+
+/// What a script says about itself in its header.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ScriptSpec {
+    pub name: String,
+    pub kind: ScriptKind,
+    pub description: String,
+    pub timeout_seconds: u64,
+    #[serde(default)]
+    pub params: Vec<Param>,
+}
+
+/// The scripts of a node, and what is wrong with the ones that could not be read. Part of `hello`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Catalog {
+    #[serde(default)]
+    pub checks: Vec<ScriptSpec>,
+    #[serde(default)]
+    pub actions: Vec<ScriptSpec>,
+    #[serde(default)]
+    pub setup: Vec<ScriptSpec>,
+    #[serde(default)]
+    pub problems: Vec<String>,
+}
+
+/// The script name of a file: its name without the extension, or None when that is not a script's name.
+pub fn name_of(file: &str, kind: ScriptKind) -> Option<String> {
+    if file.starts_with('.') {
+        return None;
+    }
+    let base = file.rsplit_once('.').map_or(file, |(b, _)| b);
+    if !Regex::new(SCRIPT_NAME).unwrap().is_match(base) {
+        return None;
+    }
+    if kind == ScriptKind::Setup && !Regex::new("^[0-9]{1,4}-.+$").unwrap().is_match(base) {
+        return None;
+    }
+    Some(base.into())
+}
+
+/// The `#:` lines of the leading comment block, without the marker: a TOML document.
+pub fn extract(text: &str) -> Option<String> {
+    let mut out = String::new();
+    let mut found = false;
+    for (i, line) in text.lines().enumerate() {
+        if i == 0 && line.starts_with("#!") {
+            continue;
+        }
+        if !line.starts_with('#') {
+            break;
+        }
+        if let Some(rest) = line.strip_prefix("#:") {
+            found = true;
+            out.push_str(rest.strip_prefix(' ').unwrap_or(rest));
+            out.push('\n');
+        }
+    }
+    found.then_some(out)
+}
+
+pub fn parse(name: &str, kind: ScriptKind, text: &str) -> Result<ScriptSpec, String> {
+    let header = extract(text).ok_or_else(|| format!("{name}: no `#:` header"))?;
+    let table = toml_reader::parse(&header).map_err(|e| format!("{name}: header: {e}"))?;
+    let root = Reader::new(&table);
+    let header_error = |e: toml_reader::TomlError| format!("{name}: header: {e}");
+    let description =
+        root.string("description").map_err(header_error)?.ok_or(format!("{name}: the header has no description"))?;
+    let timeout = match root.string("timeout").map_err(header_error)? {
+        Some(t) => durations::parse(&t).ok_or(format!("{name}: timeout '{t}' is not a duration like 30s or 5m"))?,
+        None => kind.default_timeout(),
+    };
+    let mut params = Vec::new();
+    if let Some(args) = root.table("args").map_err(header_error)? {
+        for (arg_name, arg) in args.tables().map_err(header_error)? {
+            params.push(param(name, &arg_name, &arg)?);
+        }
+    }
+    root.reject_unknown().map_err(header_error)?;
+    Ok(ScriptSpec { name: name.into(), kind, description, timeout_seconds: timeout.as_secs().max(1), params })
+}
+
+fn param(script: &str, name: &str, arg: &Reader) -> Result<Param, String> {
+    let e = |e: toml_reader::TomlError| format!("{script}: header: {e}");
+    if !Regex::new(PARAM_NAME).unwrap().is_match(name) {
+        return Err(format!("{script}: argument name '{name}' must match {PARAM_NAME}"));
+    }
+    let kind = match arg.string("type").map_err(e)?.as_deref() {
+        Some("int") => ParamType::Int,
+        Some("bool") => ParamType::Bool,
+        Some("enum") => ParamType::Enum,
+        Some("string") => ParamType::String,
+        None => return Err(format!("{script}: argument '{name}' has no type")),
+        Some(t) => return Err(format!("{script}: argument '{name}' has type '{t}'; it is int, bool, enum or string")),
+    };
+    let description = arg.string("description").map_err(e)?.unwrap_or_default();
+    let range = if kind == ParamType::Int { arg.longs("range").map_err(e)? } else { None };
+    if let Some(r) = &range {
+        if r.len() != 2 || r[0] > r[1] {
+            return Err(format!("{script}: argument '{name}': range is [min, max]"));
+        }
+    }
+    let values = if kind == ParamType::Enum { arg.strings("values").map_err(e)? } else { None };
+    if kind == ParamType::Enum && values.as_ref().is_none_or(Vec::is_empty) {
+        return Err(format!("{script}: argument '{name}' is an enum without values"));
+    }
+    let pattern = if kind == ParamType::String {
+        let p = arg.string("pattern").map_err(e)?.unwrap_or_else(|| DEFAULT_STRING_PATTERN.into());
+        params::full_match(&p).map_err(|_| format!("{script}: argument '{name}': bad pattern"))?;
+        Some(p)
+    } else {
+        None
+    };
+    let default = match arg.raw("default") {
+        None => None,
+        Some(toml::Value::String(s)) => Some(Value::from(s.as_str())),
+        Some(toml::Value::Integer(n)) => Some(Value::from(*n)),
+        Some(toml::Value::Boolean(b)) => Some(Value::from(*b)),
+        Some(_) => return Err(format!("{script}: argument '{name}': default must be a string, integer or boolean")),
+    };
+    let required = arg.bool("required").map_err(e)?.unwrap_or(default.is_none());
+    arg.reject_unknown().map_err(e)?;
+    let param = Param {
+        name: name.into(),
+        kind,
+        description,
+        required,
+        default: default.clone(),
+        min: range.as_ref().map(|r| r[0]),
+        max: range.as_ref().map(|r| r[1]),
+        values,
+        pattern,
+    };
+    if let Some(d) = &default {
+        param.check(d).map_err(|err| format!("{script}: argument '{name}': the default does not fit ({err})"))?;
+    }
+    Ok(param)
+}
+
+/// `threshold` → `LIMEN_ARG_THRESHOLD`: how an argument reaches the script.
+pub fn env_name(param: &str) -> String {
+    format!("LIMEN_ARG_{}", param.to_uppercase())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    const SCRIPT: &str = r#"#!/usr/bin/env bash
+#: description = "Free space on the backup volume"
+#: timeout = "30s"
+#: [args.threshold]
+#: type = "int"
+#: default = 90
+#: range = [1, 100]
+#: [args.mount]
+#: type = "string"
+#: pattern = "^[A-Za-z0-9._-]{1,64}$"
+set -euo pipefail
+#: description = "not part of the header"
+"#;
+
+    #[test]
+    fn parses_the_header() {
+        let spec = parse("backup-space", ScriptKind::Check, SCRIPT).unwrap();
+        assert_eq!(spec.description, "Free space on the backup volume");
+        assert_eq!(spec.timeout_seconds, 30);
+        let threshold = spec.params.iter().find(|p| p.name == "threshold").unwrap();
+        assert_eq!(threshold.default, Some(json!(90)));
+        assert_eq!(threshold.min, Some(1));
+        assert!(!threshold.required);
+        let mount = spec.params.iter().find(|p| p.name == "mount").unwrap();
+        assert!(mount.required);
+    }
+
+    #[test]
+    fn default_timeout_by_kind() {
+        let text = "#!/bin/sh\n#: description = \"x\"\n";
+        assert_eq!(parse("a", ScriptKind::Check, text).unwrap().timeout_seconds, 60);
+        assert_eq!(parse("a", ScriptKind::Action, text).unwrap().timeout_seconds, 3600);
+    }
+
+    #[test]
+    fn rejects_broken_headers() {
+        for (text, expected) in [
+            ("#!/bin/sh\necho hi", "no `#:` header"),
+            ("#: timeout = \"1s\"", "no description"),
+            ("#: description = \"x\"\n#: colour = 1", "unknown key"),
+            ("#: description = \"x\"\n#: timeout = \"soon\"", "not a duration"),
+            ("#: description = \"x\"\n#: [args.n]\n#: type = \"float\"", "has type 'float'"),
+            ("#: description = \"x\"\n#: [args.n]\n#: type = \"int\"\n#: range = [5, 1]", "range is [min, max]"),
+            ("#: description = \"x\"\n#: [args.n]\n#: type = \"enum\"", "enum without values"),
+            ("#: description = \"x\"\n#: [args.n]\n#: type = \"int\"\n#: default = \"x\"", "the default does not fit"),
+            ("#: description = \"x\"\n#: [args.Bad]\n#: type = \"int\"", "argument name 'Bad'"),
+        ] {
+            let e = parse("s", ScriptKind::Check, text).unwrap_err();
+            assert!(e.contains(expected), "{e} should contain {expected}");
+        }
+    }
+
+    #[test]
+    fn names() {
+        assert_eq!(name_of("disk.sh", ScriptKind::Check).as_deref(), Some("disk"));
+        assert_eq!(name_of("backup-space", ScriptKind::Check).as_deref(), Some("backup-space"));
+        assert_eq!(name_of("10-base.sh", ScriptKind::Setup).as_deref(), Some("10-base"));
+        assert_eq!(name_of("Disk.sh", ScriptKind::Check), None);
+        assert_eq!(name_of(".hidden", ScriptKind::Check), None);
+        assert_eq!(name_of("base.sh", ScriptKind::Setup), None);
+        assert_eq!(env_name("threshold"), "LIMEN_ARG_THRESHOLD");
+    }
+}

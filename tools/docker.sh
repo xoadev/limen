@@ -25,17 +25,17 @@ if [[ "${PUSH:-0}" != 1 && "$PLATFORMS" == *,* ]]; then
   echo "docker: Docker loads one platform per tag; build one, or PUSH=1" >&2
   exit 64
 fi
-context="$ROOT/kotlin/build/docker"
+context="$ROOT/target/docker"
 rm -rf "$context" && mkdir -p "$context"
 IFS=, read -ra platforms <<< "$PLATFORMS"
 for platform in "${platforms[@]}"; do
   arch=${platform#linux/}
   case "$arch" in
-    amd64) binary=${BINARY_AMD64:-} kt_arch=x86_64 ;;
-    arm64) binary=${BINARY_ARM64:-} kt_arch=aarch64 ;;
+    amd64) binary=${BINARY_AMD64:-} rust_arch=x86_64 ;;
+    arm64) binary=${BINARY_ARM64:-} rust_arch=aarch64 ;;
     *) echo "docker: no binary for $platform; the platforms are linux/amd64 and linux/arm64" >&2; exit 64 ;;
   esac
-  [[ -n "$binary" ]] || binary=$("$ROOT/tools/kt" artifact "$kt_arch")
+  [[ -n "$binary" ]] || binary=$("$ROOT/tools/cargo.sh" artifact "$rust_arch")
   [[ -x "$binary" ]] || { echo "docker: no binary at $binary; run make cli first" >&2; exit 1; }
   cp "$binary" "$context/limen-$arch"
 done

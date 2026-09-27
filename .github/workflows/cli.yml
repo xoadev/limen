@@ -27,27 +27,22 @@ jobs:
       contents: read
       pull-requests: write
     env:
-      KOTLIN_CLI_JAVA_OPTIONS: -Xmx3g
       LIMEN_BUILD_NUMBER: ${{ github.run_number }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Toolchain and dependencies cache
+      - name: Toolchain, dependencies and build cache
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
-            ~/.konan
-            ~/.cache/JetBrains/Kotlin
-          key: kotlin-${{ runner.os }}-${{ hashFiles('kotlin/kotlin', 'kotlin/gradle/libs.versions.toml', 'kotlin/**/module.yaml') }}
-          restore-keys: kotlin-${{ runner.os }}-
-
-      - name: Compiled output cache
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: kotlin/build
-          key: build-${{ runner.os }}-${{ github.sha }}
-          restore-keys: build-${{ runner.os }}-
+            ~/.rustup/toolchains
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: rust-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
+          restore-keys: rust-${{ runner.os }}-
 
       - name: make cli, both architectures
         id: build
@@ -57,7 +52,7 @@ jobs:
           export LIMEN_BUILD_DATE
           make cli ARCH="x86_64 aarch64"
           mkdir -p out
-          for arch in x86_64 aarch64; do cp "$(tools/kt artifact "$arch")" "out/limen-linux-$arch"; done
+          for arch in x86_64 aarch64; do cp "$(tools/cargo.sh artifact "$arch")" "out/limen-linux-$arch"; done
           version=$(out/limen-linux-x86_64 --version)
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "$version"

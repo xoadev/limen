@@ -19,14 +19,16 @@ compromised or deceived, the worst outcome is reading what the node already allo
 limen/
   README.md             # what limen is, install and use
   docs/spec.md          # this spec: the design and the reference, the single source of truth
-  docs/openwrt.md       # the static binary: why, how, what it costs
+  docs/openwrt.md       # OpenWrt as a node, and one binary for every Linux
   AGENTS.md             # the working contract (CLAUDE.md points there); CONTRIBUTING.md is its short version
   SECURITY.md           # reporting vulnerabilities, and what counts as one
   install.sh            # the installer piped into `sh` on a new machine or a laptop hub
-  kotlin/               # Kotlin Toolchain project: core/ (pure rules), cli/ (the binary)
+  Cargo.toml            # the Rust workspace; rust-toolchain.toml pins the compiler and its targets
+  crates/limen-core/    # pure rules: protocol, schemas, configuration, policy, redaction, parsers
+  crates/limen/         # the binary: node side, hub, SSH, MCP, HTTP
   etc/Dockerfile        # the hub image
   etc/e2e/              # the Debian node image of `make e2e`
-  tools/                # scripts called by the Makefile, and ld-static, the static linker
+  tools/                # scripts called by the Makefile
   .github/              # CI, releases, issue and pull request templates
   Makefile              # `make check` is what CI runs
   LICENSE               # Apache-2.0
@@ -43,7 +45,7 @@ limen/
    no new code to learn a new check.
 5. **Bounded output.** Every response has a size limit and says when it was truncated: an agent's
    context is finite, and an unbounded log fills it.
-6. **One binary, no runtime.** Kotlin/Native; the same file is the hub and the node side.
+6. **One binary, no runtime.** Rust, linked statically; the same file is the hub and the node side.
 
 ## 2. Components
 
@@ -441,7 +443,7 @@ hub:   [nodes.nas] with the request's source address, then `hello`  →  {"reach
   table in `limen.toml`, and parses the result before writing it.
 - The node doesn't trust the hub more than the hub trusts it: the name it is given must be a node name, and every
   value it writes to its own `limen.toml` is quoted.
-- `limen join` talks HTTP through its own client over a socket (`HttpLite`), to addresses only.
+- `limen join` talks HTTP to an address, never a name, so a join line means the same wherever it is pasted.
 - Without an HTTP hub, `invite` prints the hub's key in the line (`--hub-key`) and the node prints
   `limen trust <name> <address> '<host key>'` for the hub.
 
@@ -458,16 +460,15 @@ key opened.
 
 ## 11. Distribution and platforms
 
-- **One static binary per architecture**, `amd64` and `arm64`, for any Linux: it carries its own glibc,
-  so it runs the same on Debian, Alpine or OpenWrt (musl), whatever their libc version. Why, how, and what it costs:
-  [`openwrt.md`](openwrt.md).
-- Hub image `ghcr.io/xoadev/limen`, one tag for `amd64` and `arm64`: `debian:trixie-slim` with
-  `openssh-client` and the binary. Volume `/data` holds `limen.toml` and the SSH key.
+- **One static binary per architecture**, `amd64` and `arm64`, for any Linux: linked against musl, it
+  needs nothing of the machine but the kernel, and runs the same on Debian, Alpine or OpenWrt. About 3 MB.
+- Hub image `ghcr.io/xoadev/limen`, one tag for `amd64` and `arm64`: Alpine with OpenSSH's client and the
+  binary. Volume `/data` holds `limen.toml` and the SSH key.
 - **Releases** follow the conventional commits: every push to `main` rewrites a draft release with the next
   `X.Y.Z` and its changes; publishing it creates the `vX.Y.Z` tag, which builds the binaries (release variant,
   checked static) and the image, starts the image on both architectures, and publishes them with
   `SHA256SUMS`, once `make check` is green on that commit. The version exists only from the tag:
-  `limen --version` says `X.Y.Z · build <run> · <date>`, or `dev · <day>` for a local build.
+  `limen --version` says `X.Y.Z · build <run> · <date>`, or `dev` for a local build.
 - Nodes:
   - Debian and Ubuntu with systemd and OpenSSH.
   - OpenWrt with procd, dropbear and `logread`. `git` (the `git-http` package) only for `[repo]`.
@@ -479,25 +480,24 @@ key opened.
 
 ## 12. Implementation
 
-- Kotlin/Native (`linuxX64`, `linuxArm64`) built with the Kotlin Toolchain.
-- Modules:
-  - `core`: protocol types, request schemas, configuration, script headers, path policy and
-    redaction. Pure, tested without a machine.
-  - `cli`: the binary — processes, SSH, MCP and HTTP.
-- MCP: own JSON-RPC 2.0 implementation, no SDK. HTTP: Ktor server (CIO). JSON: kotlinx.serialization.
-- **Static link.** Kotlin/Native only targets glibc, and links against it dynamically. `tools/ld-static`
-  turns that link into a static one (`-static`, `crtbeginT.o`, `libgcc_eh`, `libpthread` whole); the
-  compiler takes it as its linker because `tools/kt` registers it among the compiler's own dependencies.
-- **No NSS.** Static glibc can't load the plugins behind `getpwnam`, `getpwuid`, `getgrgid` or name
-  resolution: limen reads `/etc/passwd` and `/etc/group` itself and resolves no names on the nodes
-  (`git` and `ssh` do).
-- Processes: `posix_spawn` with an argument array, never `popen` or a shell; own process group, a
-  clean environment, stdout and stderr on separate pipes read with a cap; timeouts send `SIGTERM` to
-  the group, then `SIGKILL`.
+- Rust, for `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl`, linked statically by the
+  toolchain's own `rust-lld`: no C compiler, and no cross compiler for arm64.
+- Crates:
+  - `limen-core`: protocol types, request schemas, configuration, script headers, path policy,
+    redaction, the join's formats and the parsers of what system programs print. Pure, tested without a
+    machine.
+  - `limen`: the binary — processes, files, SSH, MCP and HTTP.
+- MCP: own JSON-RPC 2.0 implementation, no SDK. HTTP: `tiny_http` for the hub, `ureq` for `join`, both
+  without TLS. JSON: `serde_json`. CLI: `clap`.
+- Users and groups come from `/etc/passwd` and `/etc/group`, read by limen itself; nodes resolve no host
+  names (`git` and `ssh` do).
+- Processes: `std::process::Command` with an argument array, never a shell; own process group, a clean
+  environment, stdout and stderr on separate pipes read with a cap; timeouts send `SIGTERM` to the group,
+  then `SIGKILL`.
 - SSH: the system `ssh` binary with `BatchMode=yes`, `IdentitiesOnly=yes` and connection
   multiplexing (`ControlMaster`, sockets in `$XDG_RUNTIME_DIR/limen-<uid>` or `/tmp/limen-<uid>`).
-- TOML: own parser of the subset limen uses (tables, dotted and quoted keys, strings, integers,
-  booleans, arrays), so every error names its key and line.
+- TOML: the `toml` crate, read through a reader that names the key in every error and fails on keys
+  nobody reads.
 
 ## 13. Threat model
 
@@ -523,28 +523,27 @@ key opened.
 | Limits on the node | Policy in the MCP server | Existing SSH MCP servers filter commands on the client side: a compromised or deceived client then has a shell |
 | SSH with a forced command | An agent daemon per node | `sshd` already authenticates and encrypts; a daemon adds a port, its own auth and its own updates |
 | Request on stdin | Arguments in `SSH_ORIGINAL_COMMAND` | No word splitting, and `sudo` keeps stdin but drops that variable |
-| The system `ssh` | An SSH library | None exists for Kotlin/Native; the system client brings agent support, multiplexing and configuration |
+| The system `ssh` | An SSH library | The system client brings agent support, multiplexing and the operator's configuration, and is already on every hub |
 | The MCP holds no key that changes anything | Actions as tools behind approval | An instruction injected in a log can't become a change if no key allows one |
 | The agent proposes changes; people, CI or Ansible make them | Letting the agent run Ansible | Ansible's key is root on every machine: whoever runs a playbook runs anything |
 | An optional, minimal deploy role | A full configuration manager, or none | Rebuilding a machine from a repository matters where nothing else does it; where Ansible does, limen stays out of the way |
 | Nagios exit codes for checks | An own format | Existing monitoring plugins work as they are |
 | Empty allowlist by default | A broad default such as `/etc/**` | `/etc` holds Wi-Fi passwords, VPN keys and TLS keys |
-| Kotlin/Native | JVM, Go | One binary without a runtime |
-| `posix_spawn` | `fork` + `execve` | After a fork only async-signal-safe calls are allowed until `exec`, and the Kotlin/Native runtime is not one of them |
-| Own TOML parser | ktoml | Tables named by the operator (`[nodes.<name>]`, `[args.<name>]`) map badly onto a deserializer, and errors must name the key |
-| A static binary | A glibc bundle (loader and libraries next to the binary) | Both run on musl; the static one is one file, and the node needs no directory of libraries |
+| Rust | Kotlin/Native (the first implementation), Go | Static musl binaries of about 3 MB built by the toolchain itself, arm64 without a cross compiler, and memory safety without a garbage collector in what runs as root. Kotlin/Native had no musl target: a static glibc needed its own linker script, no NSS, and an own HTTP client where glibc's iconv was missing |
+| A static binary | A package per distribution | One file runs on any Linux, and OpenWrt has no package for it |
+| A TOML reader over a table | Deserializing into structs | Tables named by the operator (`[nodes.<name>]`, `[args.<name>]`) map badly onto a deserializer, and errors must name the key |
 | `/proc` and `statvfs` | `ps`, `ss`, `df` | busybox's versions lack the options, and the formats differ between distributions |
 | Scripts converge, `node.toml` declares | limen installing packages and services | limen would become a configuration manager for every distribution; scripts already know how |
 | Joining with a one-time invitation | Copying keys by hand, or the hub logging into nodes with an administrator's SSH | Nothing to carry but one line; the hub never holds more than its read key |
-| Ktor first; own HTTP client only for `join` | Ktor's client there too | Ktor's client encodes text through glibc's iconv, whose modules the static binary can't load. `KtorCharsetTest` fails the day that changes (docs/openwrt.md) |
 | A fine-grained token for private repositories | A deploy key per node | One link fills in the token; a deploy key needs an SSH client for git on OpenWrt and a manual step in GitHub per node |
 
 ## 15. Open questions
 
 - Authentication of the HTTP hub beyond one shared token: named tokens per client, with the nodes each
   may see; OAuth 2.1 only if the hub is ever reachable from outside the VPN.
-- The static `arm64` binary on hardware: under qemu-user, glibc's `posix_spawn` fails (qemu's `clone`),
-  so it is only tested to start.
+- The `arm64` binary runs under qemu-user, children included, but has not run on hardware yet.
+- 32-bit routers: an ARMv7 build (`armv7-unknown-linux-musleabihf`, 2.4 MB) links and runs under qemu; MIPS
+  needs Rust's nightly. Neither is released.
 - `state` of a stack compares services and running containers, not images.
 - Signed commits required for `[repo]`.
 - Following logs (`follow`): v1 only answers bounded windows.

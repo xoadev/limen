@@ -302,8 +302,8 @@ What is readable reaches the model provider, by design. The full threat model is
 ## Platforms
 
 - Machines: Debian and Ubuntu (systemd, OpenSSH, sudo) and OpenWrt (procd, dropbear, `logread`). Docker optional.
-- Binaries: Linux x86-64 and arm64, static; the same file runs on glibc and musl. How and why:
-  [`docs/openwrt.md`](docs/openwrt.md).
+- Binaries: Linux x86-64 and arm64, static (musl), about 3 MB; the same file runs on any distribution. OpenWrt
+  in detail: [`docs/openwrt.md`](docs/openwrt.md).
 - Hub: anything that runs the binary and OpenSSH's `ssh`; the image is `ghcr.io/xoadev/limen`, amd64 and arm64.
 
 ## Documentation
@@ -311,7 +311,7 @@ What is readable reaches the model provider, by design. The full threat model is
 | | |
 |---|---|
 | [`docs/spec.md`](docs/spec.md) | The design and the reference: roles, protocol, tools, scripts, configuration, CLI, joining, threat model, decisions |
-| [`docs/openwrt.md`](docs/openwrt.md) | Why the binary is static, what that costs, and OpenWrt as a node |
+| [`docs/openwrt.md`](docs/openwrt.md) | OpenWrt as a node, and one binary for every Linux |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | How to build, test and send a change |
 | [`AGENTS.md`](AGENTS.md) | The full working contract, for people and coding agents |
 | [`SECURITY.md`](SECURITY.md) | How to report a vulnerability, and what counts as one |
@@ -322,19 +322,17 @@ Releases and their notes are on [GitHub](https://github.com/xoadev/limen/release
 
 ```sh
 make check   # lint, build and every test: what CI runs
-make cli     # the binary, in kotlin/build/tasks/_cli_linkLinuxX64Debug/cli.kexe
+make cli     # the static binary, in target/<arch>-unknown-linux-musl/debug/limen
 make e2e     # Debian and OpenWrt containers with a real SSH server, the installer and the hub (SUITE=debian|openwrt|join)
 make help    # the rest
 ```
 
-Needs Linux x86-64, a JDK for the linter and Docker for `make e2e`; the Kotlin toolchain downloads itself.
+Needs Linux, [rustup](https://rustup.rs) and Docker for `make e2e`; the pinned Rust version installs itself.
 Contributions are welcome: [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ## License
 
 limen is licensed under the [Apache License 2.0](LICENSE).
 
-The release binaries are static, so they contain third-party code under its own licences: the GNU C Library
-(LGPL-2.1-or-later), and the GCC runtime and C++ library (GPL-3.0 with the GCC Runtime Library Exception), besides
-Kotlin/Native's runtime and the Kotlin libraries limen uses (Apache-2.0). This repository is limen's complete source
-and build, so anyone can relink it with another build of the C library, as the LGPL provides.
+The release binaries are static, so they contain third-party code under its own permissive licences: musl (MIT),
+Rust's standard library and the crates listed in `Cargo.lock` (MIT or Apache-2.0).

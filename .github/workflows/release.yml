@@ -45,8 +45,8 @@ jobs:
         id: version
         uses: xoadev/convco-version@d00ff5e010d01a62143731de34ab6a4a8c17ce16 # v1.0.0
         with:
-          # What ends up in the binary or the image: the code, the toolchain and dependencies, the static linker.
-          paths: kotlin/cli,kotlin/core,kotlin/kotlin,kotlin/gradle,tools/ld-static,etc/Dockerfile
+          # What ends up in the binary or the image: the code, the toolchain and dependencies, the image.
+          paths: crates,Cargo.toml,Cargo.lock,rust-toolchain.toml,.cargo,etc/Dockerfile
           tag-prefix: v
 
       # One draft, always the one of the next version: a `feat` after a `fix` turns 0.1.1 into 0.2.0, and the draft
@@ -81,8 +81,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     env:
-      # The toolchain CLI compiles Kotlin/Native and asks for the most; capped, it fits the runner.
-      KOTLIN_CLI_JAVA_OPTIONS: -Xmx3g
       # Both binaries, linked one after the other by `make cli`; `make docker` goes through it and finds them done.
       ARCH: x86_64 aarch64
     permissions:
@@ -97,16 +95,18 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
-            ~/.konan
-            ~/.cache/JetBrains/Kotlin
-          key: kotlin-${{ runner.os }}-${{ hashFiles('kotlin/kotlin', 'kotlin/gradle/libs.versions.toml', 'kotlin/**/module.yaml') }}
-          restore-keys: kotlin-${{ runner.os }}-
+            ~/.rustup/toolchains
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: rust-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
+          restore-keys: rust-${{ runner.os }}-
 
       # No cache of compiled output, unlike `check.yml`: a release builds from scratch, because what is published
       # must not depend on what another run left on disk.
 
       # What is published and what number it says, settled before anything is built. The stamp goes to the
-      # environment of every later step: each `make` regenerates BuildStamp.kt, and one without it would relink the
+      # environment of every later step: cargo reads it at build time, and a step without it would rebuild the
       # binaries saying `dev`.
       - name: Version and stamp
         id: what
@@ -165,8 +165,8 @@ jobs:
           mkdir -p release
           # Named after what `uname -m` says, so `limen-<version>-linux-$(uname -m)` is the one to download.
           for arch in x86_64 aarch64; do
-            cp "$(VARIANT=release tools/kt artifact "$arch")" "release/limen-$VERSION-linux-$arch"
-            file "release/limen-$VERSION-linux-$arch" | grep -q "statically linked" || {
+            cp "$(VARIANT=release tools/cargo.sh artifact "$arch")" "release/limen-$VERSION-linux-$arch"
+            file "release/limen-$VERSION-linux-$arch" | grep -Eq "static(-pie)?(ally)? linked" || {
               echo "::error title=Not static::limen-$VERSION-linux-$arch is not statically linked" >&2
               exit 1
             }

@@ -11,7 +11,7 @@
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 command -v docker >/dev/null || { echo "e2e: needs Docker; skipped" >&2; exit 0; }
-binary=$("$ROOT/tools/kt" artifact)
+binary=$("$ROOT/tools/cargo.sh" artifact)
 SUITE=${SUITE:-all}
 
 # Short: ssh's control sockets live under it, and a socket path can't pass 108 bytes.

@@ -1,10 +1,5 @@
 # build
-kotlin/build/
-.kotlin/
-kotlin/.kotlin/
-*.kexe
-# the build stamp: tools/stamp.sh writes it before every build
-kotlin/core/src/limen/core/BuildStamp.kt
+/target/
 # ide
 .idea/
 *.iml

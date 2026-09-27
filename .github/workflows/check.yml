@@ -20,40 +20,35 @@ jobs:
   check:
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    env:
-      KOTLIN_CLI_JAVA_OPTIONS: -Xmx3g
     steps:
       # Every action pinned by commit SHA, with its version in a comment: a tag can move, a SHA cannot.
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # ktlint is a jar; the toolchain brings its own JRE, but the linter needs one on the machine.
-      - name: Java (ktlint)
-        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
-        with:
-          distribution: temurin
-          java-version: '21'
-
-      - name: Toolchain, dependencies and linters cache
+      - name: Toolchain, dependencies and build cache
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
-            ~/.konan
-            ~/.cache/JetBrains/Kotlin
+            ~/.rustup/toolchains
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
             ~/.cache/limen/lint
-          key: kotlin-${{ runner.os }}-${{ hashFiles('kotlin/kotlin', 'kotlin/gradle/libs.versions.toml', 'kotlin/**/module.yaml', 'tools/lint.sh') }}
-          restore-keys: kotlin-${{ runner.os }}-
+          key: rust-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'tools/lint.sh') }}
+          restore-keys: rust-${{ runner.os }}-
 
       # `-k`: every check runs even when one fails, so a red build says everything that is wrong at once.
       - name: make -k check
         run: make -k check
 
-      # `make check` builds and tests this runner's architecture only. The arm64 binary is cross-linked here too, so a
-      # change that breaks it is found on its pull request and not when a release is being published.
-      - name: arm64 links, statically
+      # `make check` builds and tests this runner's architecture only. Both static binaries are linked here too, so a
+      # change that breaks one is found on its pull request and not when a release is being published.
+      - name: Both binaries link, statically
         run: |
-          make cli ARCH=aarch64
-          file "$(tools/kt artifact aarch64)" | tee /dev/stderr | grep -q "ARM aarch64.*statically linked"
+          make cli ARCH="x86_64 aarch64"
+          file "$(tools/cargo.sh artifact x86_64)" | tee /dev/stderr | grep -Eq "x86-64.*static(-pie)?(ally)? linked"
+          file "$(tools/cargo.sh artifact aarch64)" | tee /dev/stderr | grep -Eq "ARM aarch64.*static(-pie)?(ally)? linked"
 
   # A red `main` must be impossible to miss: one open issue, reused, that says which commit broke it.
   alert:

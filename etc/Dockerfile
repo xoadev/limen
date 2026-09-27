@@ -1,14 +1,12 @@
-# The hub image (spec §11): the `limen` binary and the SSH client, nothing else. The build context holds the
+# The hub image (spec §11): the `limen` binary and OpenSSH's client, nothing else. The build context holds the static
 # binaries already built, `limen-amd64` and `limen-arm64` (what tools/docker.sh lays out); TARGETARCH picks one.
 #
-# Debian slim and not Alpine: the binary is Kotlin/Native against glibc.
-FROM debian:trixie-slim
+# Alpine: the binary needs no libc of its own, and the image stays small.
+FROM alpine:3.22
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends openssh-client \
-    && rm -rf /var/lib/apt/lists/* \
-    && useradd --system --uid 7341 --home-dir /data --shell /usr/sbin/nologin limen \
-    && mkdir -p /data && chown limen:limen /data
+RUN apk add --no-cache openssh-client-default openssh-keygen \
+    && adduser -S -D -H -u 7341 -h /data -s /sbin/nologin limen \
+    && mkdir -p /data && chown limen /data && chmod 0700 /data
 
 ARG TARGETARCH
 COPY --chmod=0755 limen-${TARGETARCH} /usr/local/bin/limen
