@@ -1,33 +1,23 @@
 //! Process-level facts and the standard streams.
 
-use std::io::{BufRead, Read, Write};
+use std::io::{BufRead, IsTerminal, Read, Write};
 
 pub fn env(name: &str) -> Option<String> {
     std::env::var(name).ok()
 }
 
 pub fn euid() -> u32 {
-    unsafe { libc::geteuid() }
+    rustix::process::geteuid().as_raw()
 }
 
 pub fn hostname() -> String {
-    let mut buf = [0u8; 256];
-    if unsafe { libc::gethostname(buf.as_mut_ptr().cast(), buf.len() - 1) } != 0 {
-        return "unknown".into();
-    }
-    let end = buf.iter().position(|b| *b == 0).unwrap_or(buf.len());
-    String::from_utf8_lossy(&buf[..end]).into_owned()
+    rustix::system::uname().nodename().to_string_lossy().into_owned()
 }
 
 /// Kernel release and machine, as `uname -r` and `uname -m` say.
 pub fn uname() -> (String, String) {
-    let mut u: libc::utsname = unsafe { std::mem::zeroed() };
-    unsafe { libc::uname(&mut u) };
-    let field = |f: &[libc::c_char]| {
-        let bytes: Vec<u8> = f.iter().take_while(|c| **c != 0).map(|c| *c as u8).collect();
-        String::from_utf8_lossy(&bytes).into_owned()
-    };
-    (field(&u.release), field(&u.machine))
+    let u = rustix::system::uname();
+    (u.release().to_string_lossy().into_owned(), u.machine().to_string_lossy().into_owned())
 }
 
 pub fn out(text: &str) {
@@ -72,33 +62,28 @@ pub fn read_stdin(max: usize) -> Option<Vec<u8>> {
 
 /// Clock ticks per second, the unit of `/proc/<pid>/stat` times.
 pub fn ticks_per_second() -> u64 {
-    let t = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
-    if t > 0 { t as u64 } else { 100 }
+    rustix::param::clock_ticks_per_second()
 }
 
-pub fn is_terminal(fd: i32) -> bool {
-    unsafe { libc::isatty(fd) == 1 }
+pub fn stdin_is_terminal() -> bool {
+    std::io::stdin().is_terminal()
 }
 
 /// One line from stdin, without echoing it when stdin is a terminal: for a token typed at a prompt.
 pub fn read_secret() -> Option<String> {
-    let mut saved: libc::termios = unsafe { std::mem::zeroed() };
-    let tty = unsafe { libc::tcgetattr(0, &mut saved) } == 0;
-    if tty {
-        let mut quiet = saved;
-        quiet.c_lflag &= !libc::ECHO;
-        unsafe { libc::tcsetattr(0, libc::TCSANOW, &quiet) };
+    use rustix::termios::{LocalModes, OptionalActions, tcgetattr, tcsetattr};
+    let stdin = std::io::stdin();
+    let saved = tcgetattr(&stdin).ok();
+    if let Some(mut quiet) = saved.clone() {
+        quiet.local_modes.remove(LocalModes::ECHO);
+        tcsetattr(&stdin, OptionalActions::Now, &quiet).ok();
     }
-    let mut line = String::new();
-    let read = std::io::stdin().lock().read_line(&mut line);
-    if tty {
-        unsafe { libc::tcsetattr(0, libc::TCSANOW, &saved) };
+    let line = read_line();
+    if let Some(saved) = saved {
+        tcsetattr(&stdin, OptionalActions::Now, &saved).ok();
         err("\n");
     }
-    match read {
-        Ok(0) | Err(_) => None,
-        Ok(_) => Some(line.trim_end_matches(['\n', '\r']).to_string()),
-    }
+    line
 }
 
 /// One line from stdin, as typed.

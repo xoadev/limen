@@ -2,13 +2,14 @@
 
 use limen_core::system::procfs::{self, Account};
 use limen_core::trust::FileStat;
-use std::ffi::CString;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::sync::atomic::{AtomicU32, Ordering};
 
 const CHUNK: usize = 64 * 1024;
+/// Not following a link at the end of the path; std adds `O_CLOEXEC` to every open itself.
+const NOFOLLOW: i32 = rustix::fs::OFlags::NOFOLLOW.bits() as i32;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FileType {
@@ -100,8 +101,8 @@ pub fn exists(path: &str) -> bool {
 }
 
 pub fn is_executable(path: &str) -> bool {
-    let Ok(c) = CString::new(path) else { return false };
-    stat(path).is_some_and(|i| i.kind == FileType::File) && unsafe { libc::access(c.as_ptr(), libc::X_OK) } == 0
+    stat(path).is_some_and(|i| i.kind == FileType::File)
+        && rustix::fs::access(path, rustix::fs::Access::EXEC_OK).is_ok()
 }
 
 pub fn list(dir: &str) -> Result<Vec<String>, String> {
@@ -119,7 +120,7 @@ pub fn list(dir: &str) -> Result<Vec<String>, String> {
 fn open_read(path: &str, exact: bool) -> Result<File, String> {
     let file = OpenOptions::new()
         .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .custom_flags(NOFOLLOW)
         .open(path)
         .map_err(|e| format!("cannot open {path}: {e}"))?;
     if exact {
@@ -265,7 +266,6 @@ pub fn append(path: &str, bytes: &[u8], mode: u32) -> Result<(), String> {
         .append(true)
         .create(true)
         .mode(mode)
-        .custom_flags(libc::O_CLOEXEC)
         .open(path)
         .map_err(|e| format!("cannot open {path}: {e}"))?;
     f.write_all(bytes).map_err(|e| format!("cannot write {path}: {e}"))
@@ -285,7 +285,7 @@ pub fn write_atomic(path: &str, bytes: &[u8], mode: u32) -> Result<(), String> {
             .write(true)
             .create_new(true)
             .mode(mode)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .custom_flags(NOFOLLOW)
             .open(&tmp)
             .map_err(|e| format!("cannot write {tmp}: {e}"))?;
         f.write_all(bytes).map_err(|e| format!("cannot write {tmp}: {e}"))?;
@@ -344,13 +344,8 @@ pub fn account(name: &str) -> Option<Account> {
 
 /// Free and total bytes of the filesystem holding [path].
 pub fn space(path: &str) -> Option<(u64, u64)> {
-    let c = CString::new(path).ok()?;
-    let mut st: libc::statvfs = unsafe { std::mem::zeroed() };
-    if unsafe { libc::statvfs(c.as_ptr(), &mut st) } != 0 {
-        return None;
-    }
-    let unit = st.f_frsize as u64;
-    Some((st.f_bavail as u64 * unit, st.f_blocks as u64 * unit))
+    let st = rustix::fs::statvfs(path).ok()?;
+    Some((st.f_bavail * st.f_frsize, st.f_blocks * st.f_frsize))
 }
 
 /// Where a symlink points, unresolved.

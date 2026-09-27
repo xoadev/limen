@@ -247,7 +247,11 @@ impl Hub {
 pub fn random(length: usize) -> Result<String> {
     const ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyz234567";
     let mut bytes = vec![0u8; length];
-    getrandom::fill(&mut bytes).map_err(|e| error(ErrorCode::Internal, format!("no randomness: {e}")))?;
+    let filled = rustix::rand::getrandom(&mut bytes, rustix::rand::GetRandomFlags::empty())
+        .map_err(|e| error(ErrorCode::Internal, format!("no randomness: {e}")))?;
+    if filled != length {
+        return Err(error(ErrorCode::Internal, "the kernel gave less randomness than asked"));
+    }
     Ok(bytes.iter().map(|b| ALPHABET[(*b % 32) as usize] as char).collect())
 }
 

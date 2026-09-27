@@ -253,7 +253,7 @@ impl Installer {
         }
         for _ in 0..3 {
             sys::err("Token: ");
-            let token = if sys::is_terminal(0) { sys::read_secret() } else { sys::read_line() };
+            let token = if sys::stdin_is_terminal() { sys::read_secret() } else { sys::read_line() };
             let token = token.map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).ok_or("no token given")?;
             match repo::access(repo, Some(&token)) {
                 repo::Access::Failed(m) => return Err(format!("cannot reach {}: {m}", repo.display_url())),

@@ -1,8 +1,10 @@
 //! Child processes without a shell (spec §12): an argument array, stdout and stderr on separate pipes read with a
 //! cap, a timeout that stops the whole process group, and an environment that is exactly the one given.
 
-use std::io::{ErrorKind, Write};
-use std::os::fd::AsRawFd;
+use rustix::event::{PollFd, PollFlags, Timespec, poll};
+use rustix::io::Errno;
+use rustix::process::{Pid, Signal, kill_process_group};
+use std::io::{ErrorKind, Read, Write};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
@@ -94,7 +96,7 @@ pub fn run(argv: &[String], mut opts: Run) -> Result<ProcResult, String> {
         .process_group(0);
     let mut child = command.spawn().map_err(|e| format!("cannot run {program}: {e}"))?;
     let mut running = Running {
-        pid: child.id() as i32,
+        pid: Pid::from_raw(child.id() as i32),
         out: Vec::new(),
         err: Vec::new(),
         truncated: false,
@@ -120,12 +122,20 @@ pub fn run(argv: &[String], mut opts: Run) -> Result<ProcResult, String> {
 }
 
 struct Running {
-    pid: i32,
+    pid: Option<Pid>,
     out: Vec<u8>,
     err: Vec<u8>,
     truncated: bool,
     timed_out: bool,
     max_output: usize,
+}
+
+/// The ends of the child's pipes this process holds.
+#[derive(Clone, Copy)]
+enum End {
+    Stdin,
+    Stdout,
+    Stderr,
 }
 
 impl Running {
@@ -137,86 +147,86 @@ impl Running {
         on_chunk: &mut Option<OnChunk>,
     ) -> Option<ExitStatus> {
         let start = Instant::now();
-        let mut stdout = child.stdout.take();
-        let mut stderr = child.stderr.take();
-        let mut stdin = child.stdin.take();
-        if let Some(fd) = stdin.as_ref().map(AsRawFd::as_raw_fd) {
-            unsafe { libc::fcntl(fd, libc::F_SETFL, libc::fcntl(fd, libc::F_GETFL) | libc::O_NONBLOCK) };
-        }
+        let (mut stdout, mut stderr) = (child.stdout.take(), child.stderr.take());
         let input = input.unwrap_or_default();
-        let mut offset = 0;
+        // Written as the child reads, never blocking: a child that doesn't read must not stop us reading its output.
+        let mut stdin = child.stdin.take().filter(|_| !input.is_empty());
+        if let Some(s) = &stdin {
+            rustix::io::ioctl_fionbio(s, true).ok();
+        }
+        let mut written = 0;
         let mut status = None;
         // After the child exits, what a grandchild keeps open must not hold the answer: drain what is there and stop.
         let mut exited_at: Option<Instant> = None;
         let mut buffer = vec![0u8; CHUNK];
+        let tick = Timespec { tv_sec: 0, tv_nsec: 50_000_000 };
         while stdout.is_some() || stderr.is_some() {
             if status.is_none() {
                 status = child.try_wait().ok().flatten();
             }
-            if status.is_some() && exited_at.is_none() {
-                exited_at = Some(Instant::now());
-            }
-            if exited_at.is_some_and(|t| t.elapsed() > Duration::from_millis(200)) {
-                break;
+            if status.is_some() {
+                let since = *exited_at.get_or_insert_with(Instant::now);
+                if since.elapsed() > Duration::from_millis(200) {
+                    break;
+                }
             }
             if start.elapsed() > timeout {
                 self.timed_out = true;
-                self.stop();
+                self.signal(Signal::TERM);
                 break;
             }
+            let mut ends = Vec::with_capacity(3);
             let mut fds = Vec::with_capacity(3);
-            for (pipe, fd) in
-                [(1, stdout.as_ref().map(AsRawFd::as_raw_fd)), (2, stderr.as_ref().map(AsRawFd::as_raw_fd))]
-            {
-                if let Some(fd) = fd {
-                    fds.push((pipe, libc::pollfd { fd, events: libc::POLLIN, revents: 0 }));
+            if let Some(o) = &stdout {
+                ends.push(End::Stdout);
+                fds.push(PollFd::new(o, PollFlags::IN));
+            }
+            if let Some(e) = &stderr {
+                ends.push(End::Stderr);
+                fds.push(PollFd::new(e, PollFlags::IN));
+            }
+            if let Some(i) = &stdin {
+                ends.push(End::Stdin);
+                fds.push(PollFd::new(i, PollFlags::OUT));
+            }
+            match poll(&mut fds, Some(&tick)) {
+                Ok(_) => {}
+                Err(Errno::INTR) => continue,
+                Err(_) => {
+                    self.signal(Signal::TERM);
+                    break;
                 }
             }
-            if let Some(fd) = stdin.as_ref().map(AsRawFd::as_raw_fd) {
-                fds.push((0, libc::pollfd { fd, events: libc::POLLOUT, revents: 0 }));
-            }
-            let mut raw: Vec<libc::pollfd> = fds.iter().map(|(_, p)| *p).collect();
-            let ready = unsafe { libc::poll(raw.as_mut_ptr(), raw.len() as libc::nfds_t, 50) };
-            if ready < 0 {
-                if std::io::Error::last_os_error().kind() == ErrorKind::Interrupted {
-                    continue;
-                }
-                self.stop();
-                break;
-            }
-            for (i, (pipe, _)) in fds.iter().enumerate() {
-                let revents = raw[i].revents;
-                if revents == 0 {
-                    continue;
-                }
-                if *pipe == 0 {
-                    // The child may close its stdin early: EPIPE is an answer, not a crash (SIGPIPE is ignored).
-                    let done = match stdin.as_mut().map(|s| s.write(&input[offset..])) {
-                        Some(Ok(n)) => {
-                            offset += n;
-                            offset >= input.len()
+            let ready: Vec<End> =
+                ends.into_iter().zip(&fds).filter(|(_, fd)| !fd.revents().is_empty()).map(|(e, _)| e).collect();
+            drop(fds);
+            for end in ready {
+                match end {
+                    End::Stdin => {
+                        // The child may close its stdin early: EPIPE is an answer, not a crash (SIGPIPE is ignored).
+                        match stdin.as_mut().map(|s| s.write(&input[written..])) {
+                            Some(Ok(n)) => written += n,
+                            Some(Err(e)) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::Interrupted) => {}
+                            _ => written = input.len(),
                         }
-                        Some(Err(e)) => e.kind() != ErrorKind::WouldBlock && e.kind() != ErrorKind::Interrupted,
-                        None => true,
-                    };
-                    if done || offset >= input.len() {
-                        stdin = None;
+                        if written >= input.len() {
+                            stdin = None;
+                        }
                     }
-                    continue;
+                    End::Stdout => {
+                        if let Some(n) = read_some(&mut stdout, &mut buffer) {
+                            self.accept(end, &buffer[..n], on_chunk);
+                        }
+                    }
+                    End::Stderr => {
+                        if let Some(n) = read_some(&mut stderr, &mut buffer) {
+                            self.accept(end, &buffer[..n], on_chunk);
+                        }
+                    }
                 }
-                let fd = raw[i].fd;
-                let n = unsafe { libc::read(fd, buffer.as_mut_ptr().cast(), CHUNK) };
-                if n > 0 {
-                    self.accept(*pipe, &buffer[..n as usize], on_chunk);
-                } else if n == 0 || std::io::Error::last_os_error().kind() != ErrorKind::Interrupted {
-                    if *pipe == 1 { stdout = None } else { stderr = None }
-                }
-            }
-            if input.is_empty() {
-                stdin = None;
             }
             if self.truncated {
-                self.stop();
+                self.signal(Signal::TERM);
                 break;
             }
         }
@@ -231,20 +241,21 @@ impl Running {
                 }
             }
             if status.is_none() {
-                unsafe { libc::kill(-self.pid, libc::SIGKILL) };
+                self.signal(Signal::KILL);
                 status = child.wait().ok();
             }
         }
         status
     }
 
-    fn accept(&mut self, pipe: i32, bytes: &[u8], on_chunk: &mut Option<OnChunk>) {
+    fn accept(&mut self, end: End, bytes: &[u8], on_chunk: &mut Option<OnChunk>) {
+        let fd = if matches!(end, End::Stdout) { 1 } else { 2 };
         if let Some(f) = on_chunk {
-            f(pipe, bytes);
+            f(fd, bytes);
             return;
         }
         let room = self.max_output.saturating_sub(self.out.len() + self.err.len());
-        let target = if pipe == 1 { &mut self.out } else { &mut self.err };
+        let target = if fd == 1 { &mut self.out } else { &mut self.err };
         if bytes.len() > room {
             target.extend_from_slice(&bytes[..room]);
             self.truncated = true;
@@ -253,8 +264,23 @@ impl Running {
         }
     }
 
-    fn stop(&self) {
-        unsafe { libc::kill(-self.pid, libc::SIGTERM) };
+    /// To the child's whole process group, which it leads.
+    fn signal(&self, signal: Signal) {
+        if let Some(pid) = self.pid {
+            kill_process_group(pid, signal).ok();
+        }
+    }
+}
+
+/// What a ready pipe has: the bytes read into [buffer], or None; at its end, or on an error, the pipe is dropped.
+fn read_some(pipe: &mut Option<impl Read>, buffer: &mut [u8]) -> Option<usize> {
+    match pipe.as_mut()?.read(buffer) {
+        Ok(n) if n > 0 => Some(n),
+        Err(e) if e.kind() == ErrorKind::Interrupted => None,
+        _ => {
+            *pipe = None;
+            None
+        }
     }
 }
 
