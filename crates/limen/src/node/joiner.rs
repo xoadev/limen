@@ -4,11 +4,10 @@
 //! is no hub to talk to: the node is installed and prints the `limen trust` line for the hub.
 
 use super::installer::{Installer, Outcome, RepoOptions};
-use crate::os::sys;
+use crate::os::{http, sys};
 use limen_core::config::hub::{self, is};
 use limen_core::join::{self, Arrival, Invitation, JoinUrl, Welcome};
 use serde_json::Value;
-use std::time::Duration;
 
 pub struct Joiner {
     pub installer: Installer,
@@ -112,20 +111,10 @@ fn arrive(url: &JoinUrl, arrival: &Arrival) -> Outcome<Welcome> {
 
 /// One request to `/join/<code>`: GET without a body, POST with one. The status and the body, whatever the status.
 fn http(url: &JoinUrl, body: Option<String>) -> Outcome<(u16, String)> {
-    let agent: ureq::Agent = ureq::Agent::config_builder()
-        .http_status_as_error(false)
-        .timeout_global(Some(Duration::from_secs(60)))
-        .build()
-        .into();
-    let target = format!("{}/join/{}", url.base, url.code);
-    let unreachable = |e: ureq::Error| format!("cannot reach the hub at {}: {e}", url.base);
-    let mut response = match body {
-        None => agent.get(&target).call().map_err(unreachable)?,
-        Some(b) => agent.post(&target).header("Content-Type", "application/json").send(b).map_err(unreachable)?,
-    };
-    let status = response.status().as_u16();
-    let text = response.body_mut().read_to_string().map_err(unreachable)?;
-    Ok((status, text))
+    let method = if body.is_some() { "POST" } else { "GET" };
+    let r = http::request(url.authority(), method, &format!("/join/{}", url.code), body.as_deref())
+        .map_err(|e| format!("cannot reach the hub at {}: {e}", url.base))?;
+    Ok((r.status, r.body))
 }
 
 fn error_of(body: &str) -> Option<String> {
