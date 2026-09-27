@@ -513,7 +513,7 @@ key opened.
 - `install.sh` downloads only over https, with a client that checks certificates (curl, OpenWrt's
   `uclient-fetch`, GNU wget; never busybox's wget), and runs only once it has been read whole.
 - Nodes:
-  - Debian and Ubuntu with systemd and OpenSSH.
+  - Debian and Ubuntu with systemd and OpenSSH. `git` only for `[repo]`; 2.32 or later with a token.
   - OpenWrt with procd, dropbear and `logread`. `git` (the `git-http` package) only for `[repo]`.
   - `hello` says which: `init` is `systemd`, `procd` or `none`. Docker is optional everywhere:
     without it, container requests answer `unavailable`.

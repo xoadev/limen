@@ -131,7 +131,8 @@ You need:
 - For the hub: Docker on an always-on machine; or, for a hub on your laptop, OpenSSH's `ssh` and `ssh-keygen`.
 - For each machine: Debian, Ubuntu or OpenWrt, x86-64 or arm64, running an SSH server the hub can reach —over a VPN
   such as Tailscale or Headscale, or your LAN—, and root to install. `curl` and `sudo` on Debian and Ubuntu (OpenWrt
-  has `wget` and needs no sudo). Git only if it follows a repository.
+  has `wget` and needs no sudo). Git only if it follows a repository —the installer offers to install it—; a
+  private one needs git 2.32 or later (Debian 12, not 11).
 
 ### 1. Start the hub
 
