@@ -228,7 +228,8 @@ safety net.
   `LIMEN_DEPLOY_KEY` adds the deploy role; `LIMEN_FROM` limits where keys may connect from (not on OpenWrt). The
   whole list is at the top of [`install.sh`](install.sh).
 - **By hand**: download `limen-<version>-linux-$(uname -m)` from the [releases](https://github.com/xoadev/limen/releases)
-  and run `sudo ./limen-… join '<line>'`.
+  and run `sudo ./limen-… join '<line>'`. Where there is `gh`, `gh attestation verify limen-… --repo xoadev/limen`
+  checks that the release workflow built it; the image, likewise with `oci://ghcr.io/xoadev/limen:<version>`.
 - `limen forget nas` takes a machine off the hub; `limen uninstall --purge` on the machine removes limen from it.
 
 ## Use it

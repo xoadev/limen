@@ -35,7 +35,8 @@ These are limits of the design, documented in the [threat model](docs/spec.md#13
 - A root login by password on OpenWrt's dropbear: `limen install` warns about it; turning it off is the operator's.
 - Whoever holds write access to this repository, or controls the maintainers' GitHub accounts: `SHA256SUMS` comes
   from the same release as the binaries, so it catches a broken download, not a replaced one, and `install.sh`
-  is served from `main`.
+  is served from `main`. Each binary and the image carry a build provenance attestation (`gh attestation verify`),
+  which a file replaced outside the release workflow fails.
 
 ## Supported versions
 

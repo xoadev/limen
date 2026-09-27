@@ -14,7 +14,9 @@
 #
 # No job that runs someone else's code holds a token that writes: convco, the compiler, the build scripts of the
 # crates, QEMU and BuildKit run with `contents: read` and no credentials left on disk. What writes —the draft, the
-# release's files, the image— runs only `gh` and `skopeo`, on what the read-only jobs handed over.
+# release's files, the image— runs only `gh`, `skopeo` and GitHub's own `attest`, on what the read-only jobs handed
+# over. Every binary and the image get a build provenance attestation: `gh attestation verify` tells anyone that
+# they came from this workflow, at this tag.
 name: release
 
 on:
@@ -237,8 +239,8 @@ jobs:
             release-image.tar
           retention-days: 14
 
-  # Only for a published release, and only `gh` and `skopeo` on what `build` made: nothing is compiled or started
-  # while this job's token can write.
+  # Only for a published release, and only `gh`, `skopeo` and `attest` on what `build` made: nothing is compiled or
+  # started while this job's token can write.
   publish:
     needs: build
     if: github.event_name == 'release'
@@ -247,13 +249,21 @@ jobs:
     permissions:
       contents: write # upload the release's files
       packages: write # publish the image to ghcr.io
+      id-token: write # sign the attestations, keyless (Sigstore)
+      attestations: write # store them
     steps:
       - name: What build made
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: limen-${{ needs.build.outputs.version }}-build${{ github.run_number }}
 
+      - name: Attest the binaries
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: release/limen-*
+
       - name: Publish the image
+        id: image
         env:
           VERSION: ${{ needs.build.outputs.version }}
           # Through the environment, never interpolated into the script: it stays out of the shell's argv and logs.
@@ -262,9 +272,18 @@ jobs:
           image="ghcr.io/${GITHUB_REPOSITORY,,}"
           skopeo login ghcr.io -u "$GITHUB_ACTOR" --password-stdin <<< "$REGISTRY_TOKEN"
           for tag in "$VERSION" "build$GITHUB_RUN_NUMBER" latest; do
-            skopeo copy --all --quiet oci-archive:release-image.tar "docker://$image:$tag"
+            skopeo copy --all --quiet --digestfile "$RUNNER_TEMP/digest" oci-archive:release-image.tar "docker://$image:$tag"
           done
           skopeo inspect --raw "docker://$image:$VERSION" | jq -r '.manifests[].platform | "\(.os)/\(.architecture)"'
+          # The digest of the index, both architectures: what `docker pull` of any of the tags resolves to.
+          echo "name=$image" >> "$GITHUB_OUTPUT"
+          echo "digest=$(cat "$RUNNER_TEMP/digest")" >> "$GITHUB_OUTPUT"
+
+      - name: Attest the image
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ steps.image.outputs.name }}
+          subject-digest: ${{ steps.image.outputs.digest }}
 
       # The release already exists —it was the draft— and says what went in; this adds what was built below it.
       # Files are added, never replaced: gh refuses one that is already there.
@@ -285,6 +304,8 @@ jobs:
             echo "- \`$image:$VERSION\`: the hub, for amd64 and arm64 under one tag. Start it and join machines as the [README](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}#install) says."
             echo "- \`limen-$VERSION-linux-x86_64\` and \`limen-$VERSION-linux-aarch64\`: one static binary per architecture, for any Linux (Debian, Ubuntu, OpenWrt…). \`install.sh\` picks the one \`uname -m\` names."
             echo "- \`SHA256SUMS\`: to check what you downloaded."
+            echo
+            echo "Each binary and the image carry a build provenance attestation: \`gh attestation verify limen-$VERSION-linux-x86_64 --repo $GITHUB_REPOSITORY\`, or \`gh attestation verify oci://$image:$VERSION --repo $GITHUB_REPOSITORY\`, says they were built by this repository's release workflow."
           } > "$notes"
           gh release upload "$GITHUB_REF_NAME" release/*
           gh release edit "$GITHUB_REF_NAME" --notes-file "$notes"

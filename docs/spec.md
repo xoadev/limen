@@ -503,8 +503,12 @@ key opened.
   `limen --version` says `X.Y.Z · build <run> · <date>`, or `dev` for a local build.
 - No job that runs someone else's code —convco, the compiler and the crates' build scripts, QEMU, BuildKit— holds
   a token that writes, nor keeps credentials on disk, and the release builds without caches. The jobs that write
-  run only `gh` and `skopeo` on what the others handed over; QEMU's and BuildKit's images are pinned by digest,
-  the linters by checksum.
+  run only `gh`, `skopeo` and GitHub's `attest` on what the others handed over; QEMU's and BuildKit's images are
+  pinned by digest, the linters by checksum.
+- Every binary and the image carry a build provenance attestation, signed keyless through Sigstore:
+  `gh attestation verify limen-<version>-linux-x86_64 --repo xoadev/limen` (or `oci://ghcr.io/xoadev/limen:<version>`)
+  says they were built by this repository's release workflow, from which commit and tag. `install.sh` can't check
+  it —nodes have no `gh`— and checks `SHA256SUMS`.
 - `install.sh` downloads only over https, with a client that checks certificates (curl, OpenWrt's
   `uclient-fetch`, GNU wget; never busybox's wget), and runs only once it has been read whole.
 - Nodes:
@@ -514,7 +518,8 @@ key opened.
     without it, container requests answer `unavailable`.
 - Processes, sockets and filesystems are read from `/proc` and `statvfs`, never through `ps`, `ss` or
   `df`, which differ between distributions and busybox.
-- Not supported: init systems other than systemd and procd, macOS, Windows.
+- Not supported: init systems other than systemd and procd, macOS, Windows; 32-bit ARM and MIPS (many routers),
+  which have no release binary.
 
 ## 12. Implementation
 
@@ -558,7 +563,7 @@ key opened.
 | A malicious or buggy check script | **Not covered.** Scripts belong to root; limen trusts them |
 | Secrets inside allowed files | Partly: redaction is best-effort |
 | Data leaving the machine | **By design**: whatever is readable reaches the model provider |
-| A compromised release, image or `install.sh` | **Not covered** beyond GitHub's own controls: `SHA256SUMS` comes from the same release as the binaries, so it catches a broken download, not a replaced one, and `install.sh` is served from `main`. Whoever can write to the repository can do this |
+| A compromised release, image or `install.sh` | Partly: a binary or image replaced by hand, or by a leaked token, fails `gh attestation verify`. `install.sh` checks only `SHA256SUMS`, from the same release, and is served from `main`: whoever can write to the repository, or run its release workflow, can still do this |
 
 ## 14. Decisions
 
