@@ -188,6 +188,8 @@ set -euo pipefail
   `^[A-Za-z0-9._-]{1,64}$`). An argument is required unless it has a `default` or says
   `required = false`. They reach the script as environment variables `LIMEN_ARG_<NAME>`, next to
   `LIMEN_KIND`, `LIMEN_SCRIPT` and `LIMEN_NODE` (the machine's hostname).
+- A `pattern`, like `redact.patterns` (§7.1), is a Rust `regex` that must match the whole value: `\w`, `\d`,
+  `\s` and `(?i)` are there, Unicode's `\p{…}` classes and look-around are not.
 - `timeout` defaults to 60 s for checks and 1 h for actions and setup scripts. Through the MCP, the
   hub waits for a check's own timeout and a margin, not `[ssh].request_timeout`.
 - The header is parsed, never executed: learning what an action does must not run it.

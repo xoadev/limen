@@ -330,12 +330,9 @@ pub fn accounts() -> Vec<Account> {
     read_text("/etc/passwd").map(|t| procfs::accounts(&t)).unwrap_or_default()
 }
 
-pub fn user_name(uid: u32) -> Option<String> {
-    accounts().into_iter().find(|a| a.uid == uid).map(|a| a.name)
-}
-
-pub fn group_name(gid: u32) -> Option<String> {
-    read_text("/etc/group").and_then(|t| procfs::groups(&t).remove(&gid))
+/// gid → name, from `/etc/group`.
+pub fn groups() -> std::collections::BTreeMap<u32, String> {
+    read_text("/etc/group").map(|t| procfs::groups(&t)).unwrap_or_default()
 }
 
 pub fn account(name: &str) -> Option<Account> {

@@ -14,6 +14,7 @@ use limen_core::system::parsers;
 use limen_core::time::{iso, parse_iso};
 use limen_core::version::VERSION;
 use serde_json::{Map, Value, json};
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 type Args = Map<String, Value>;
@@ -44,6 +45,23 @@ pub fn hello(node: &Node) -> Answer {
 }
 
 pub fn status(node: &Node) -> Answer {
+    // What asks other programs —systemd, Docker— runs at once; each takes tens of milliseconds.
+    let (failed, containers) = std::thread::scope(|s| {
+        let failed = s.spawn(|| system::failed_services(node).map(|f| json!(f)));
+        let containers = s.spawn(|| {
+            proc::which("docker").map(|_| {
+                inspect_all(node).map(|all| {
+                    let attention: Vec<Value> = all
+                        .iter()
+                        .map(parsers::container_summary)
+                        .filter(|c| c["state"] != "running" || c["health"] == "unhealthy")
+                        .collect();
+                    json!(attention)
+                })
+            })
+        });
+        (failed.join().expect("no panic"), containers.join().expect("no panic"))
+    });
     let mut errors = Map::new();
     let mut part = |name: &str, r: Result<Value>| match r {
         Ok(v) => v,
@@ -72,22 +90,8 @@ pub fn status(node: &Node) -> Answer {
             .ok_or_else(|| internal("cannot read /proc/meminfo")),
     );
     let disks = part("disks", system::disks());
-    let failed = part("failed_services", system::failed_services(node).map(|f| json!(f)));
-    let containers = if proc::which("docker").is_none() {
-        Value::Null
-    } else {
-        part(
-            "containers",
-            inspect_all(node).map(|all| {
-                let attention: Vec<Value> = all
-                    .iter()
-                    .map(parsers::container_summary)
-                    .filter(|c| c["state"] != "running" || c["health"] == "unhealthy")
-                    .collect();
-                json!(attention)
-            }),
-        )
-    };
+    let failed = part("failed_services", failed);
+    let containers = containers.map_or(Value::Null, |c| part("containers", c));
     let mut o = json!({
         "hostname": sys::hostname(),
         "uptime_seconds": uptime,
@@ -414,6 +418,10 @@ pub fn list_dir(node: &Node, args: &Args) -> Result<Answer> {
         return Err(bad_request(format!("{dir} is not a directory")));
     }
     const MAX: usize = 1000;
+    // Read once for the whole listing, not per entry.
+    let users: BTreeMap<u32, String> = fs::accounts().into_iter().map(|a| (a.uid, a.name)).collect();
+    let groups = fs::groups();
+    let name_of = |names: &BTreeMap<u32, String>, id: u32| names.get(&id).cloned().unwrap_or_else(|| id.to_string());
     let mut entries = Vec::new();
     for name in fs::list(&dir).map_err(internal)? {
         let full = if dir == "/" { format!("/{name}") } else { format!("{dir}/{name}") };
@@ -431,8 +439,8 @@ pub fn list_dir(node: &Node, args: &Args) -> Result<Answer> {
             "type": entry.kind.wire(),
             "size_bytes": entry.size,
             "mode": format!("{:04o}", entry.mode & 0o7777),
-            "owner": fs::user_name(entry.uid).unwrap_or_else(|| entry.uid.to_string()),
-            "group": fs::group_name(entry.gid).unwrap_or_else(|| entry.gid.to_string()),
+            "owner": name_of(&users, entry.uid),
+            "group": name_of(&groups, entry.gid),
             "modified": iso(entry.modified),
         });
         if entry.kind == fs::FileType::Link {

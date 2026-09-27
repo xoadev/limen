@@ -10,7 +10,7 @@ rust-version.workspace = true
 base64 = "0.23.1"
 hmac = "0.13.0"
 indexmap = { version = "2.14.2", features = ["serde"] }
-regex = "1.13.1"
+regex = { version = "1.13.1", default-features = false, features = ["std", "unicode-perl", "unicode-case", "perf-dfa"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.151", features = ["preserve_order"] }
 sha2 = "0.11.0"
