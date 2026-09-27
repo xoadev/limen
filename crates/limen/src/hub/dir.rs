@@ -173,7 +173,7 @@ impl Hub {
 
     pub fn invitation(&self, code: &str) -> Option<Invitation> {
         let invite = self.pending(code)?;
-        Some(Invitation { name: invite.name, hub_key: self.public_key().ok()? })
+        Some(Invitation::new(&invite.name, &self.public_key().ok()?).signed(&invite.secret))
     }
 
     /// A node that used [code] arrives: its entry goes into limen.toml, the invitation is spent, and the hub tries it

@@ -78,6 +78,7 @@ fn watchdog() {
 
 pub fn run(role: Role, config_path: &str) -> i32 {
     sys::chdir_root();
+    sys::umask_022();
     let started = Instant::now();
     let defaults = NodeConfig::default();
     *pending() = Some(Pending {

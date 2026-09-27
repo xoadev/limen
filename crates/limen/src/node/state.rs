@@ -73,7 +73,10 @@ pub fn answer(node: &Node) -> Answer {
 
 pub fn expectations(node: &Node) -> Result<Expectations> {
     let Some(path) = node.config.expectations() else { return Ok(Expectations::default()) };
-    let Some(text) = fs::read_text(&path) else { return Ok(Expectations::default()) };
+    if !fs::exists(&path) {
+        return Ok(Expectations::default());
+    }
+    let text = node.trusted_text(&path).map_err(|e| error(ErrorCode::Internal, format!("{path}: {}", e.message)))?;
     Expectations::parse(&text).map_err(|e| error(ErrorCode::Internal, format!("{path}: {e}")))
 }
 
@@ -93,6 +96,10 @@ pub fn compose_file(node: &Node, name: &str) -> Result<String> {
         .map(|f| format!("{dir}/{name}/{f}"))
         .find(|p| fs::exists(p))
         .ok_or_else(|| error(ErrorCode::NotFound, format!("no compose file in {dir}/{name}")))
+        .and_then(|file| {
+            node.trusted_text(&file).map_err(|e| error(ErrorCode::Internal, format!("{file}: {}", e.message)))?;
+            Ok(file)
+        })
 }
 
 fn missing(kind: &'static str, name: &str, reason: &str) -> ServiceState {

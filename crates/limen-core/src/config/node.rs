@@ -244,6 +244,12 @@ fn repo(r: Repo) -> ConfigResult<RepoConfig> {
     if !URL.is_match(&url) {
         return fail("repo.url", "expected an https://, ssh://, git@ or file:// URL");
     }
+    // A token in the URL would be in limen.toml, in git's arguments and in the checkout's configuration.
+    static CREDENTIALS: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"^(https://[^/]*@|\w+://[^/@]*:[^/@]*@)").unwrap());
+    if CREDENTIALS.is_match(&url) {
+        return fail("repo.url", "no credentials in the URL: `limen token` saves the token apart");
+    }
     let mut repo = RepoConfig::new(&url);
     if let Some(branch) = r.branch {
         if !BRANCH.is_match(&branch) || branch.starts_with('-') {
@@ -258,6 +264,9 @@ fn repo(r: Repo) -> ConfigResult<RepoConfig> {
     repo.path = path;
     if let Some(dir) = absolute("repo.dir", r.dir)? {
         let dir = dir.trim_end_matches('/').to_string();
+        if dir.split('/').skip(1).any(|s| s.is_empty() || s == "." || s == "..") {
+            return fail("repo.dir", "a plain path, without `.` or `..`");
+        }
         if dir.matches('/').count() < 2 {
             return fail("repo.dir", "too close to /; it is replaced on every sync");
         }
@@ -309,6 +318,10 @@ mod tests {
             ("[redact]\npatterns = [\"(\"]", "redact.patterns: bad regex"),
             ("[logs]\nmax_lines = 0", "logs.max_lines: must be positive"),
             ("[repo]\nbranch = \"main\"", "repo.url: missing"),
+            ("[repo]\nurl = \"https://x:tok@github.com/a/b\"", "repo.url: no credentials"),
+            ("[repo]\nurl = \"https://tok@github.com/a/b\"", "repo.url: no credentials"),
+            ("[repo]\nurl = \"https://github.com/a/b\"\ndir = \"/opt/..\"", "repo.dir: a plain path"),
+            ("[repo]\nurl = \"https://github.com/a/b\"\ndir = \"/opt/x/../..\"", "repo.dir: a plain path"),
         ] {
             let e = NodeConfig::parse(text).unwrap_err();
             assert!(e.0.starts_with(expected), "{e} should start with {expected}");

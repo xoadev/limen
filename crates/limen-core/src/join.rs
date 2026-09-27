@@ -35,6 +35,11 @@ pub fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// Whether [a] and [b] are equal, in a time that doesn't tell where they differ.
+pub fn constant_time_eq(a: &str, b: &str) -> bool {
+    a.len() == b.len() && a.bytes().zip(b.bytes()).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
 pub fn hmac_sha256(key: &[u8], message: &[u8]) -> Vec<u8> {
     let mut mac = <Hmac<Sha256> as KeyInit>::new_from_slice(key).expect("HMAC takes any key length");
     mac.update(message);
@@ -80,11 +85,35 @@ impl std::fmt::Display for JoinUrl {
     }
 }
 
-/// What `GET /join/<code>` answers.
+/// What `GET /join/<code>` answers. The fingerprint in the line vouches for the key; the proof, for the name too,
+/// which chooses the node's folder in the repository and so what it runs as root.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Invitation {
     pub name: String,
     pub hub_key: String,
+    /// HMAC-SHA256 of the fields above with the join line's secret, hex.
+    #[serde(default)]
+    pub proof: String,
+}
+
+impl Invitation {
+    pub fn new(name: &str, hub_key: &str) -> Self {
+        Self { name: name.into(), hub_key: hub_key.into(), proof: String::new() }
+    }
+
+    fn proof_with(&self, secret: &str) -> String {
+        // Its own first line, so no arrival's proof can pass for an invitation's.
+        hex(&hmac_sha256(secret.as_bytes(), format!("invitation\n{}\n{}", self.name, self.hub_key).as_bytes()))
+    }
+
+    pub fn signed(mut self, secret: &str) -> Self {
+        self.proof = self.proof_with(secret);
+        self
+    }
+
+    pub fn is_signed_with(&self, secret: &str) -> bool {
+        constant_time_eq(&self.proof, &self.proof_with(secret))
+    }
 }
 
 /// What a node sends with `POST /join/<code>` once installed.
@@ -244,6 +273,15 @@ mod tests {
         ] {
             assert!(JoinUrl::parse(bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn an_invitation_is_signed_over_name_and_key() {
+        let i = Invitation::new("nas", KEY).signed("s");
+        assert!(i.is_signed_with("s") && !i.is_signed_with("t"));
+        let renamed = Invitation { name: "backup".into(), ..i.clone() };
+        assert!(!renamed.is_signed_with("s"));
+        assert!(!Invitation::new("nas", KEY).is_signed_with("s"));
     }
 
     #[test]

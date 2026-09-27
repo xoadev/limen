@@ -30,9 +30,14 @@ pub fn sync(node: &Node, repo: &RepoConfig) -> Result<(Option<String>, String)> 
         if fs::stat(&format!("{}/.git", repo.dir)).map(|i| i.kind) != Some(fs::FileType::Directory) {
             let parent = repo.dir.rsplit_once('/').map_or("/", |(p, _)| p);
             fs::mkdirs(parent, 0o755).map_err(|e| error(ErrorCode::Internal, e))?;
+            // Only an empty directory makes way for the clone: anything else at repo.dir is not limen's to remove.
             if fs::exists(&repo.dir) {
-                std::fs::remove_dir_all(&repo.dir)
-                    .map_err(|e| error(ErrorCode::Internal, format!("cannot remove {}: {e}", repo.dir)))?;
+                std::fs::remove_dir(&repo.dir).map_err(|_| {
+                    error(
+                        ErrorCode::Internal,
+                        format!("{} is there and is not a checkout; move it away or set another repo.dir", repo.dir),
+                    )
+                })?;
             }
             git(
                 repo,
@@ -166,6 +171,9 @@ fn git(
     timeout: Duration,
 ) -> Result<proc::ProcResult> {
     let git = proc::which("git").ok_or_else(|| error(ErrorCode::Unavailable, "git is not installed on this node"))?;
+    if token.is_some() {
+        token_capable(&git)?;
+    }
     let mut argv = vec![git];
     if let Some(d) = dir {
         argv.extend(["-C".to_string(), d.to_string()]);
@@ -192,6 +200,20 @@ fn git(
         return Err(LimenError::new(ErrorCode::Unavailable, format!("git {}: {message}", args[0])));
     }
     Ok(r)
+}
+
+/// Whether this git sends the token the way limen gives it (`GIT_CONFIG_COUNT`, `GIT_CONFIG_GLOBAL`): 2.32 or later.
+/// An older one ignores it quietly, and a readable repository looks like a refused token.
+fn token_capable(git: &str) -> Result<()> {
+    let r = proc::run(&[git.to_string(), "--version".into()], proc::Run::default())
+        .map_err(|e| error(ErrorCode::Unavailable, e))?;
+    let version = r.out();
+    let numbers: Vec<u32> =
+        version.split_whitespace().nth(2).unwrap_or("").split('.').take(2).map(|n| n.parse().unwrap_or(0)).collect();
+    if numbers.len() == 2 && (numbers[0], numbers[1]) >= (2, 32) {
+        return Ok(());
+    }
+    Err(error(ErrorCode::Unavailable, format!("{} can't send a token: limen needs git 2.32 or later", version.trim())))
 }
 
 fn env(repo: &RepoConfig, token: Option<&str>) -> Vec<String> {

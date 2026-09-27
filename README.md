@@ -206,7 +206,8 @@ safety net.
   `claude mcp add` line. Without an HTTP hub to call back, `limen invite nas` prints a line with the hub's key in it
   (`--hub-key`), and the machine ends printing the `limen trust nas <address> '<host key>'` to run on the laptop.
 - **Unattended**, every answer comes from the environment:
-  `sudo env LIMEN_YES=1 LIMEN_JOIN='…' LIMEN_REPO=https://github.com/you/infra.git LIMEN_REPO_TOKEN=github_pat_… sh install.sh`.
+  `sudo env LIMEN_YES=1 LIMEN_JOIN='…' LIMEN_REPO=https://github.com/you/infra.git LIMEN_REPO_TOKEN_FILE=/root/token sh install.sh`
+  (`LIMEN_REPO_TOKEN` takes the token itself, but then it is on sudo's command line).
   `LIMEN_DEPLOY_KEY` adds the deploy role; `LIMEN_FROM` limits where keys may connect from (not on OpenWrt). The
   whole list is at the top of [`install.sh`](install.sh).
 - **By hand**: download `limen-<version>-linux-$(uname -m)` from the [releases](https://github.com/xoadev/limen/releases)

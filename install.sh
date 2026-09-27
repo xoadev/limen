@@ -19,6 +19,7 @@
 #   LIMEN_BRANCH       its branch (default main)
 #   LIMEN_PATH         its folder in the repository (default nodes/<name>)
 #   LIMEN_REPO_TOKEN   a token that reads it, when it is private (otherwise asked, with a link that creates it)
+#   LIMEN_REPO_TOKEN_FILE  a file holding that token: kept off sudo's command line and out of the environment
 #   LIMEN_DEPLOY_KEY   a public key for the deploy role (CI or a person), or its file
 #   LIMEN_FROM         addresses or CIDRs the keys may connect from (not OpenWrt)
 #   LIMEN_ADDRESS      where the hub reaches this machine, with LIMEN_JOIN (default: where it saw the request come from)
@@ -185,7 +186,10 @@ if [ "$LIMEN_REPO" != none ]; then
 fi
 say ""
 # `limen join` asks for the repository's token itself, hidden, when the repository needs one.
-if [ -n "${LIMEN_REPO_TOKEN:-}" ]; then
+if [ -n "${LIMEN_REPO_TOKEN_FILE:-}" ]; then
+  [ -r "$LIMEN_REPO_TOKEN_FILE" ] || die "cannot read LIMEN_REPO_TOKEN_FILE ($LIMEN_REPO_TOKEN_FILE)"
+  "$work/limen" "$@" < "$LIMEN_REPO_TOKEN_FILE"
+elif [ -n "${LIMEN_REPO_TOKEN:-}" ]; then
   printf '%s\n' "$LIMEN_REPO_TOKEN" | "$work/limen" "$@"
 elif [ "$interactive" = 1 ]; then
   "$work/limen" "$@" < /dev/tty

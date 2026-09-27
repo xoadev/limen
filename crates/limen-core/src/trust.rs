@@ -17,14 +17,20 @@ const OWNER_EXECUTE: u32 = 0o100;
 
 /// [chain] is the script first, then each parent up to `/`. None when trusted, otherwise the reason.
 pub fn problem(chain: &[FileStat], owner: u32) -> Option<String> {
+    if let Some(file) = chain.first().filter(|f| f.is_regular && f.mode & OWNER_EXECUTE == 0) {
+        return Some(format!("{} is not executable", file.path));
+    }
+    untrusted(chain, owner)
+}
+
+/// The same rule for a file root reads and acts on without running it: its configuration, `node.toml`, a compose
+/// file. Whoever can write one of those can make root run anything too.
+pub fn untrusted(chain: &[FileStat], owner: u32) -> Option<String> {
     let Some(file) = chain.first() else {
         return Some("not found".into());
     };
     if !file.is_regular {
         return Some(format!("{} is not a regular file", file.path));
-    }
-    if file.mode & OWNER_EXECUTE == 0 {
-        return Some(format!("{} is not executable", file.path));
     }
     for entry in chain {
         if entry.uid != 0 && entry.uid != owner {

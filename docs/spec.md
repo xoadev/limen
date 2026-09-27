@@ -206,7 +206,9 @@ set -euo pipefail
   and answers `unknown`.
 - A script that isn't owned by root, or is writable by group or others, is refused, and so is one
   under such a directory, all the way up to `/` — the same rule as `sshd`'s `StrictModes`. Run as another user (developing limen),
-  that user's files count as root's.
+  that user's files count as root's. The same rule holds for what root reads and acts on without running it:
+  `limen.toml` (where a link leads, if it is one), `node.toml` and each stack's compose file. The gate and
+  `install` run with umask `022`.
 - `apply` validates every setup script before running the first: a broken one halfway would leave
   the machine half done.
 
@@ -237,6 +239,9 @@ procd = ["dnsmasq", "firewall"]       # OpenWrt services that must exist and not
   running and not unhealthy, or exited with 0: a one-shot job that finished is not a stack that is down.
 - `sync` leaves the checkout (`/opt/limen/repo` by default) as the remote branch: a shallow fetch from
   the URL in `limen.toml` (changing it moves the node), `reset --hard`, and `clean` of untracked files.
+  The first clone takes `repo.dir` only if it doesn't exist or is empty: anything else there is not limen's to
+  remove, and `uninstall --purge` removes it only if it is a checkout. `repo.dir` is a plain path, without
+  `.` or `..`, and `repo.url` carries no credentials.
   The repository is the source of truth; local edits are discarded. **Ignored files stay**: a stack's
   `.env` with its secrets lives next to its `compose.yaml`, listed in `.gitignore`.
 - `apply` is sync, the setup scripts in order, the stacks, and then `state`: it fails when an
@@ -249,7 +254,8 @@ procd = ["dnsmasq", "firewall"]       # OpenWrt services that must exist and not
   The branch must be protected.
 - A private repository over `https://` needs a token (§10, `install`). It lives in
   `/etc/limen/repo-token` (root, `0600`, never readable through limen) and reaches git through its
-  environment as an HTTP header, never in a URL or an argument.
+  environment as an HTTP header, never in a URL or an argument. That needs git 2.32 or later; an older one is
+  refused rather than silently sending nothing.
 
 ## 7. Configuration
 
@@ -446,7 +452,7 @@ Every answer can come from a `LIMEN_*` variable instead, for unattended installs
 
 ```
 hub:   limen invite nas  →  …/install.sh | sudo sh -s -- --join 'http://<hub>:7341/join/<code>#SHA256:<hub key>.<secret>'
-node:  GET  /join/<code>  →  {"name": "nas", "hub_key": "ssh-ed25519 …"}   checked against the fingerprint
+node:  GET  /join/<code>  →  {"name": "nas", "hub_key": "ssh-ed25519 …", "proof": "<HMAC>"}   key against the fingerprint, both with the secret
        limen install with that key
        POST /join/<code>  ←  {"host_key": "ssh-ed25519 …", "user": "limen-read", "port": 22, "proof": "<HMAC>"}
 hub:   [nodes.nas] with the request's source address, then `hello`  →  {"reachable": true, "detail": "…"}
@@ -458,6 +464,8 @@ hub:   [nodes.nas] with the request's source address, then `hello`  →  {"reach
   (HMAC-SHA256 over host key, user, port and address). Whoever sees the code in transit can't arrive in the node's
   place or change what it sends; a forged arrival is refused without spending the invitation. Joins are handled
   one at a time.
+- The invitation is signed with the same secret (HMAC-SHA256 over name and key): the name picks the node's
+  folder in the repository, and so what it runs as root, so nobody between the two can change it either.
 - The fingerprint in the line is `SHA256:<base64>` of the key, as `ssh-keygen -lf` prints it. The key itself is not
   secret; what matters is that it arrives unchanged, and a mismatch stops the node before anything is installed.
 - The hub trusts the host key that arrives with a valid code: trust on first use, bound to an invitation a person
@@ -536,7 +544,8 @@ key opened.
 | An invitation leaks | Whoever uses it first adds *one* machine, with that name, to the hub —a machine the agent will then read—; one hour, one use |
 | Someone between a joining node and the hub | Can't swap the hub's key —the fingerprint in the line stops the node— nor put their machine in the node's place: the arrival is signed with a secret that never travels. The source address is not signed: replaying the arrival from elsewhere files a wrong address, which `StrictHostKeyChecking` then refuses. Denial of service; join again |
 | The token leaks | It is in `$LIMEN_HOME/token`, printed by `connect`, and in the container's environment if given as `LIMEN_TOKEN` (`docker inspect`). Reads what the nodes allow; rotate it by replacing the file or the variable |
-| A malicious hub at join time | Installs its key for the read role, as the node's owner asked. Can't write the node's configuration beyond its own values |
+| A malicious hub at join time | Installs its key for the read role, as the node's owner asked, and names the node, which picks its folder in the repository. Can't write the node's configuration beyond its own values; what it prints is stripped of control characters |
+| A key reused for more than limen | `install` refuses a read key equal to the deploy key, or one that already opens root's or dropbear's `authorized_keys` without limen's forced command |
 | A hub that floods a node with requests | Gets `unavailable` past `limits.concurrency`. Can rotate old entries out of the node's audit log, which is bounded. Ship it elsewhere if it must outlive that |
 | A local user racing the gate | Links swapped in, directories swapped for links, FIFOs and hard links put in allowed directories: the walk, the single open and the checks on the open file refuse them |
 | A malicious or buggy check script | **Not covered.** Scripts belong to root; limen trusts them |

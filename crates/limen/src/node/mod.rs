@@ -35,14 +35,17 @@ impl Node {
         Node { config, redactor, policy, trusted_owner: sys::euid() }
     }
 
-    /// The node's configuration; none means nothing is readable. A broken one is `internal`, with the reason.
+    /// The node's configuration; none means nothing is readable. A broken one, or one that someone other than root
+    /// could have written, is `internal`, with the reason.
     pub fn load(path: &str) -> Result<Node> {
-        match fs::read_following(path) {
-            None => Ok(Node::new(NodeConfig::default())),
-            Some(text) => {
-                NodeConfig::parse(&text).map(Node::new).map_err(|e| error(ErrorCode::Internal, format!("{path}: {e}")))
-            }
-        }
+        let Some(real) = fs::real_path(path) else { return Ok(Node::new(NodeConfig::default())) };
+        let text = trusted_text(&real, sys::euid()).map_err(|e| error(ErrorCode::Internal, format!("{path}: {e}")))?;
+        NodeConfig::parse(&text).map(Node::new).map_err(|e| error(ErrorCode::Internal, format!("{path}: {e}")))
+    }
+
+    /// [path], if only root —or the user limen runs as— could have written it (see [limen_core::trust]).
+    pub fn trusted_text(&self, path: &str) -> Result<String> {
+        trusted_text(path, self.trusted_owner).map_err(|e| error(ErrorCode::Internal, e))
     }
 
     pub fn now(&self) -> i64 {
@@ -77,6 +80,14 @@ impl Node {
         }
         Ok(r.out())
     }
+}
+
+fn trusted_text(path: &str, owner: u32) -> std::result::Result<String, String> {
+    let real = fs::real_path(path).ok_or_else(|| format!("{path} does not exist"))?;
+    if let Some(why) = limen_core::trust::untrusted(&fs::chain(&real), owner) {
+        return Err(format!("not trusted: {why}"));
+    }
+    fs::read_text(&real).ok_or_else(|| format!("cannot read {real}"))
 }
 
 /// What a request handler returns: the data, and whether a limit cut it.

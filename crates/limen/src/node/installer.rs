@@ -46,6 +46,7 @@ pub struct Installer {
 
 impl Installer {
     pub fn new(dry_run: bool) -> Self {
+        sys::umask_022();
         let openwrt = system::openwrt();
         Installer {
             dry_run,
@@ -82,8 +83,36 @@ impl Installer {
                 );
             }
         }
+        let blob = |key: &str| key.split_whitespace().nth(1).unwrap_or("").to_string();
+        if deploy_key.is_some_and(|k| blob(k) == blob(read_key)) {
+            return Err("--read-key and --deploy-key are the same key: the hub would hold the deploy role too".into());
+        }
         let repo_config = repo.map(repo_config).transpose()?;
         self.require_root()?;
+        for (role, key) in std::iter::once((Role::Read, read_key)).chain(deploy_key.map(|k| (Role::Deploy, k))) {
+            if let Some(place) = self.opened_elsewhere(role, &blob(key), deploy_key.is_some()) {
+                return Err(format!(
+                    "the {} key already opens {place} without limen's limits; remove it there, or give limen a key of \
+                     its own",
+                    role.wire()
+                ));
+            }
+        }
+        // Another repository than the one configured would be synced now and then left behind: the configuration
+        // wins, and changing it is the operator's call.
+        if let (Some(r), Some(current)) =
+            (&repo_config, fs::read_following(node_config::PATH).and_then(|t| NodeConfig::parse(&t).ok()?.repo))
+        {
+            if current.url != r.url || current.branch != r.branch || current.path != r.path {
+                return Err(format!(
+                    "{} already follows {} ({}, {}); change it there, or uninstall first",
+                    node_config::PATH,
+                    current.display_url(),
+                    current.branch,
+                    if current.path.is_empty() { "/" } else { &current.path }
+                ));
+            }
+        }
         if repo_config.is_some() && proc::which("git").is_none() {
             let how = if self.openwrt { "the git-http package" } else { "apt install git" };
             return Err(format!("--repo needs git on this node ({how})"));
@@ -162,8 +191,16 @@ impl Installer {
         } else {
             for role in [Role::Read, Role::Deploy] {
                 let user = user_of(role);
-                if fs::account(&user).is_some() {
-                    self.act(&format!("remove user {user} and its home"), || exec(&["userdel", "--remove", &user]))?;
+                if let Some(account) = fs::account(&user) {
+                    // Its home is root's (see ensure_user), which userdel won't remove: limen removes the one it made.
+                    let home = format!("/var/lib/{user}");
+                    self.act(&format!("remove user {user} and its home"), || {
+                        exec(&["userdel", &user])?;
+                        if account.home == home && fs::exists(&home) {
+                            exec(&["rm", "-rf", "--", &home])?;
+                        }
+                        Ok(())
+                    })?;
                 }
             }
             if fs::exists(SUDOERS) {
@@ -177,7 +214,13 @@ impl Installer {
             let repo = config.as_ref().and_then(|c| c.repo.clone());
             let mut paths = vec!["/etc/limen".to_string(), "/var/log/limen".to_string()];
             if let Some(r) = &repo {
-                paths.extend([r.dir.clone(), r.sync_record()]);
+                // repo.dir is removed only if it is what sync made of it: a checkout.
+                if fs::exists(&format!("{}/.git", r.dir)) {
+                    paths.push(r.dir.clone());
+                } else if fs::exists(&r.dir) {
+                    self.note(&format!("kept {}: it is not a git checkout", r.dir));
+                }
+                paths.push(r.sync_record());
             }
             for path in paths.iter().filter(|p| fs::exists(p)) {
                 self.act(&format!("remove {path}"), || exec(&["rm", "-rf", "--", path]))?;
@@ -284,6 +327,32 @@ impl Installer {
             fs::mkdirs(self.binary.rsplit_once('/').map_or("/", |(d, _)| d), 0o755)?;
             fs::write_atomic(self.binary, &bytes, 0o755)?;
             fs::chown(self.binary, 0, 0)
+        })?;
+        // sudo runs it as root for anyone holding a key: whoever can replace it, or its directory, is root.
+        if let Some(why) = limen_core::trust::problem(&fs::chain(self.binary), 0).filter(|_| !self.dry_run) {
+            self.warn(&format!("{why}: whoever can write there runs anything as root through limen's sudo rule"));
+        }
+        Ok(())
+    }
+
+    /// Where [blob] already opens this machine beyond limen's gate: root's own keys, dropbear's keys that aren't
+    /// limen's, or —when the deploy role isn't being installed now— the deploy user's, for the read key.
+    fn opened_elsewhere(&self, role: Role, blob: &str, deploy_written: bool) -> Option<String> {
+        let mut places: Vec<(String, bool)> =
+            ["/root/.ssh/authorized_keys", "/root/.ssh/authorized_keys2"].map(|p| (p.to_string(), false)).to_vec();
+        if self.openwrt {
+            places.push((DROPBEAR_KEYS.into(), true));
+        } else if role == Role::Read && !deploy_written {
+            if let Some(deploy) = fs::account(&user_of(Role::Deploy)) {
+                places.push((format!("{}/.ssh/authorized_keys", deploy.home), false));
+            }
+        }
+        places.into_iter().find_map(|(path, skip_limen)| {
+            let text = fs::read_following(&path)?;
+            text.lines()
+                .filter(|l| !(skip_limen && l.contains(LIMEN_LINE)))
+                .any(|l| l.split_whitespace().any(|w| w == blob))
+                .then_some(path)
         })
     }
 
@@ -303,6 +372,14 @@ impl Installer {
                     "--user-group",
                     user,
                 ])
+            })?;
+        }
+        // Its home is root's, as its .ssh is: the account can't swap what limen writes there for a link.
+        let home = fs::account(user).map(|a| a.home).unwrap_or(home);
+        if fs::lstat(&home).is_some_and(|i| i.uid != 0 || i.mode & 0o022 != 0) {
+            self.act(&format!("make {home} root's (mode 0755)"), || {
+                fs::chown(&home, 0, 0)?;
+                fs::chmod(&home, 0o755)
             })?;
         }
         // `/bin/sh` and not `nologin`: sshd runs the forced command through the login shell, and with `nologin`
@@ -455,13 +532,7 @@ impl Installer {
                             fs::write_following(node_config::PATH, with_repo(&existing, r)?.as_bytes(), 0o644)
                         })?;
                     }
-                    Some(c) if c.url != r.url || c.branch != r.branch || c.path != r.path.trim_matches('/') => {
-                        self.warn(&format!(
-                            "{} already has another [repo] ({}); left as it is",
-                            node_config::PATH,
-                            c.display_url()
-                        ));
-                    }
+                    // Another [repo] stopped the install before it changed anything.
                     Some(_) => {}
                 }
             }

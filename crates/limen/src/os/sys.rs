@@ -109,3 +109,8 @@ pub fn read_line() -> Option<String> {
 pub fn chdir_root() {
     std::env::set_current_dir("/").ok();
 }
+
+/// What root writes is readable by others and writable by nobody else, whatever umask it was started with.
+pub fn umask_022() {
+    rustix::process::umask(rustix::fs::Mode::from_raw_mode(0o022));
+}

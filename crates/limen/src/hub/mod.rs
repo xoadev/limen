@@ -19,15 +19,7 @@ pub trait NodeClient: Send + Sync {
     fn call(&self, node: &str, request: &str, args: &Map<String, Value>, timeout: Option<Duration>) -> NodeResponse;
 }
 
-/// Equal strings, compared in time that depends only on their length: for the HTTP token and the join proof.
-pub fn constant_time_eq(a: &str, b: &str) -> bool {
-    let (a, b) = (a.as_bytes(), b.as_bytes());
-    let mut diff = a.len() ^ b.len();
-    for i in 0..a.len().max(b.len()) {
-        diff |= usize::from(a.get(i).copied().unwrap_or(0) ^ b.get(i).copied().unwrap_or(0));
-    }
-    diff == 0
-}
+pub use limen_core::join::constant_time_eq;
 
 #[cfg(test)]
 mod tests {

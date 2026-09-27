@@ -32,6 +32,13 @@ impl Joiner {
                 url.fingerprint
             ));
         }
+        if !invitation.is_signed_with(&url.secret) {
+            return Err(
+                "the hub's invitation is not signed with the join line's secret: something between this machine \
+                        and the hub changed it. Nothing was installed."
+                    .into(),
+            );
+        }
         say(&format!("Joining the hub at {} as '{}' (hub key {fingerprint})", url.base, invitation.name));
         let repo = repo.map(|r| r(&invitation.name));
         self.installer.install(&invitation.hub_key, deploy_key, from, repo.as_ref(), false)?;
@@ -39,15 +46,14 @@ impl Joiner {
         let arrival = Arrival::new(&join::without_comment(&host_key), &self.installer.read_user(), ssh_port, address)
             .signed(&url.secret);
         let welcome = arrive(url, &arrival)?;
+        let (name, address, detail) =
+            (printable(&welcome.name), printable(&welcome.address), printable(&welcome.detail));
         say("");
         if welcome.reachable {
-            say(&format!("{} is on the hub, at {}: {}.", welcome.name, welcome.address, welcome.detail));
+            say(&format!("{name} is on the hub, at {address}: {detail}."));
             Ok(0)
         } else {
-            say(&format!(
-                "{} is on the hub at {}, but the hub can't reach it yet: {}",
-                welcome.name, welcome.address, welcome.detail
-            ));
+            say(&format!("{name} is on the hub at {address}, but the hub can't reach it yet: {detail}"));
             say(&format!(
                 "Check that the hub reaches this machine's SSH port ({ssh_port}) at that address, or join again with --address."
             ));
@@ -118,7 +124,12 @@ fn http(url: &JoinUrl, body: Option<String>) -> Outcome<(u16, String)> {
 }
 
 fn error_of(body: &str) -> Option<String> {
-    serde_json::from_str::<Value>(body).ok()?.get("error")?.as_str().map(String::from)
+    serde_json::from_str::<Value>(body).ok()?.get("error")?.as_str().map(printable)
+}
+
+/// What the hub says, without control characters: it goes to root's terminal, where they would be commands.
+fn printable(text: &str) -> String {
+    text.chars().filter(|c| !c.is_control()).collect()
 }
 
 fn say(text: &str) {
