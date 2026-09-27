@@ -1,5 +1,6 @@
-# `make check` on every push to main and every pull request: the one mandatory gate. `make e2e` is not here: it
-# needs Docker and pulls an image; it runs on demand (e2e.yml).
+# `make check` on every push to main and every pull request: the one mandatory gate, and what a release waits for.
+# The end-to-end scenes are e2e.yml: they need Docker and several minutes, and run on the pull requests that touch
+# what they cover.
 name: check
 
 on:
@@ -49,6 +50,13 @@ jobs:
       # `-k`: every check runs even when one fails, so a red build says everything that is wrong at once.
       - name: make -k check
         run: make -k check
+
+      # `make check` builds and tests this runner's architecture only. The arm64 binary is cross-linked here too, so a
+      # change that breaks it is found on its pull request and not when a release is being published.
+      - name: arm64 links, statically
+        run: |
+          make cli ARCH=aarch64
+          file "$(tools/kt artifact aarch64)" | tee /dev/stderr | grep -q "ARM aarch64.*statically linked"
 
   # A red `main` must be impossible to miss: one open issue, reused, that says which commit broke it.
   alert:

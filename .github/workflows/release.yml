@@ -152,6 +152,12 @@ jobs:
       - name: Build the binaries
         run: make cli VARIANT=release
 
+      # The binary that is published, not the debug one the pull requests were tested with: a release link optimises
+      # and drops sections, and the static link must survive that. Every scene, with the x86-64 release binary and
+      # the hub image built from it.
+      - name: The end-to-end scenes, with the release binary
+        run: make e2e VARIANT=release
+
       - name: Gather what is published
         env:
           VERSION: ${{ steps.what.outputs.version }}

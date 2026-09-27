@@ -1,0 +1,10 @@
+# Keeps the actions of the workflows up to date. They are pinned by commit SHA with the version in a comment, and
+# Dependabot updates both together, in a pull request that check.yml and e2e.yml then test.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: ci

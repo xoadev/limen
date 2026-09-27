@@ -1,18 +1,31 @@
-# `make e2e` on demand: containers with a real SSH server, Debian and OpenWrt, `limen install` inside, and the hub
-# against them. Label a PR `e2e` to run it there; it needs Docker and minutes, so it is not in `check.yml`.
+# `make e2e`: Debian and OpenWrt containers with a real SSH server, `limen install` and `limen join` inside, and the
+# hub's image against them. It is what proves the limits hold on a real machine —forced commands, sudo, dropbear,
+# the static binary on musl—, so it runs on every pull request that touches code, and once a week against the
+# latest upstream images (debian:trixie-slim and openwrt/rootfs move under us).
 name: e2e
 
 on:
   pull_request:
-    types: [labeled, synchronize]
+    paths:
+      - 'kotlin/**'
+      - 'tools/**'
+      - 'etc/**'
+      - 'install.sh'
+      - 'Makefile'
+      - '.github/workflows/e2e.yml'
+  schedule:
+    - cron: '17 5 * * 1'
   workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: e2e-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   e2e:
-    if: github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'e2e')
     runs-on: ubuntu-latest
     timeout-minutes: 40
     env:
