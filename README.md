@@ -1,5 +1,11 @@
 # limen
 
+```
+    ╭─────╮
+    │  ◉  │   limen
+  ══╧═════╧══  look, don't touch
+```
+
 [![check](https://github.com/xoadev/limen/actions/workflows/check.yml/badge.svg)](https://github.com/xoadev/limen/actions/workflows/check.yml)
 [![release](https://img.shields.io/github/v/release/xoadev/limen?include_prereleases&sort=semver)](https://github.com/xoadev/limen/releases)
 [![license](https://img.shields.io/github/license/xoadev/limen)](LICENSE)
