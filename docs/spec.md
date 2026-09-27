@@ -1,9 +1,13 @@
 # limen — specification v0.1 (draft)
 
 An MCP server for inspecting Linux machines: configuration files, logs, systemd services, Docker
-containers and the operator's own checks. It cannot change anything. The same binary also runs the
-operator's scripts that do change a machine — setting it up from scratch, restoring it, one-off
-actions — but under a role the MCP server never holds.
+containers and the operator's own checks. **It is for an agent to look, not to change**: it cannot
+change anything, and neither can anyone who gets hold of it. Changes are made by a person, CI or a
+configuration manager such as Ansible, never by the agent directly; it proposes them.
+
+For operators without a configuration manager, the same binary can also run the scripts that change
+a machine —setting it up from scratch, restoring it, one-off actions—, under a role the MCP server
+never holds (§3, §6.1). That part is optional.
 
 **The machine decides.** Every limit is enforced on the node, by `limen` running as an SSH forced
 command. The MCP server, its clients and the model behind them are untrusted: if any of them is
@@ -208,6 +212,8 @@ units = ["docker.service"]            # systemd units that must be active
 procd = ["dnsmasq", "firewall"]       # OpenWrt services that must have a running instance
 ```
 
+- **Optional.** A node managed by Ansible or the like leaves `[repo]` and the deploy role out, or has
+  a setup script run `ansible-pull`. `state` and the checks work either way.
 - **Scripts say how to get there; `node.toml` says what must run.** limen installs nothing itself:
   packages, unit files and uci settings come from setup scripts. The one thing it runs on its own is
   `docker compose up -d --remove-orphans` for each declared stack, because it is the same everywhere.
@@ -487,6 +493,8 @@ key opened.
 | Request on stdin | Arguments in `SSH_ORIGINAL_COMMAND` | No word splitting, and `sudo` keeps stdin but drops that variable |
 | The system `ssh` | An SSH library | None exists for Kotlin/Native; the system client brings agent support, multiplexing and configuration |
 | The MCP holds no key that changes anything | Actions as tools behind approval | An instruction injected in a log can't become a change if no key allows one |
+| The agent proposes changes; people, CI or Ansible make them | Letting the agent run Ansible | Ansible's key is root on every machine: whoever runs a playbook runs anything |
+| An optional, minimal deploy role | A full configuration manager, or none | Rebuilding a machine from a repository matters where nothing else does it; where Ansible does, limen stays out of the way |
 | Nagios exit codes for checks | An own format | Existing monitoring plugins work as they are |
 | Empty allowlist by default | A broad default such as `/etc/**` | `/etc` holds Wi-Fi passwords, VPN keys and TLS keys |
 | Kotlin/Native | JVM, Go | One binary without a runtime |

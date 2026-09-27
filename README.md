@@ -5,8 +5,8 @@
 [![license](https://img.shields.io/github/license/xoadev/limen)](LICENSE)
 
 Let an AI agent look inside your Linux machines —configuration, logs, services, containers, your own checks—
-**without giving it the power to change anything**, and describe each machine in a Git repository so it can be
-rebuilt from scratch.
+**without giving it the power to change anything.** The agent diagnoses and proposes; changes are made by you,
+your CI or your configuration management, through a door the agent has no key for.
 
 *Limen* is Latin for *threshold*: the agent stands at the door of each machine and sees what the machine lets it
 see, and nothing crosses the other way.
@@ -39,16 +39,33 @@ limen turns it around: **the machine decides.**
 - **An agent that can diagnose, and can't break.** Status, failed services, logs of a unit or a container, a
   configuration file, who listens on which port, your own checks — for every machine, from one MCP server. When it
   finds the fix, it says what should be run; a person or CI runs it.
-- **Machines described in a repository.** Each machine has a folder: setup scripts that take a bare machine to a
-  working one, the Docker Compose stacks it runs, and `node.toml` saying what must be running. `limen apply` syncs
-  the folder and converges; the `state` tool says what is deployed against what should be. Restoring a machine is
-  installing its OS, joining it to the hub and running `limen apply`.
+- **Optionally, machines described in a repository.** If nothing manages your machines yet, each one can have a
+  folder: setup scripts that take a bare machine to a working one, the Docker Compose stacks it runs, and
+  `node.toml` saying what must be running. `limen apply` syncs the folder and converges; the `state` tool says what
+  is deployed against what should be. Restoring a machine is installing its OS, joining it to the hub and running
+  `limen apply`.
 - **Every machine alike.** One static binary per architecture runs on Debian, Ubuntu and OpenWrt, x86-64 and arm64:
   the NAS, the always-on server and the router answer the same questions.
 - **Nothing extra to run on the machines.** No daemon, no open port: `sshd` is already there, and `limen` starts
   per request and exits.
 - **A record of everything asked.** Every request, with its role, arguments, client and result, in each machine's
   audit log, readable with the `history` tool.
+
+## Where it fits
+
+limen is how the agent looks, not how machines change. They change the way they already do:
+
+| You change machines with | Use from limen | The agent |
+|---|---|---|
+| Ansible, Salt, Puppet, NixOS… | The read role only; no `[repo]`, no deploy key | Finds the cause and proposes the fix as a pull request to your playbooks; you or CI apply it; `status`, `state` and the checks confirm it |
+| Nothing yet: shell scripts, Compose files, by hand | The read role, and the deploy role with a [repository per machine](#a-repository-per-machine), applied from CI | The same; the pull request goes to the machine's folder |
+
+- **Don't give the agent Ansible**, or a shell. Ansible's controller logs in with a key that is root on every
+  machine: an agent that can run a playbook can run anything, and so can an instruction hidden in a log line it
+  read. The line limen draws is exactly there: the agent's key opens `limen gate --role read` and nothing else.
+- **The deploy role is not a configuration manager.** It runs your scripts in order and brings up Compose stacks:
+  enough for a handful of machines, with no inventory, variables, templates or modules. When that falls short, a
+  setup script can run `ansible-pull`, or Ansible can take over entirely; the agent's side doesn't change.
 
 ## How it works
 
