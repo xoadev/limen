@@ -497,10 +497,11 @@ key opened.
   with the binary and OpenSSH's `ssh` and `ssh-keygen`, taken from Alpine with the libraries they load. It runs as
   distroless's `nonroot` (uid 65532). Volume `/data` holds `limen.toml` and the SSH key.
 - **Releases** follow the conventional commits: every push to `main` rewrites a draft release with the next
-  `X.Y.Z` and its changes; publishing it creates the `vX.Y.Z` tag, which builds the binaries (release variant,
-  checked static) and the image, starts the image on both architectures, and publishes them with
-  `SHA256SUMS`, once `make check` is green on that commit. The version exists only from the tag:
-  `limen --version` says `X.Y.Z · build <run> · <date>`, or `dev` for a local build.
+  `X.Y.Z` and its changes. Running the release workflow by hand publishes it: once `make check` is green on the
+  draft's commit, it builds the binaries (release variant, checked static) and the image, starts the image on both
+  architectures, attaches the binaries and `SHA256SUMS` to the draft and only then publishes it, which creates the
+  `vX.Y.Z` tag. A release is never public without its files, so releases can be immutable. The version exists
+  only from the tag: `limen --version` says `X.Y.Z · build <run> · <date>`, or `dev` for a local build.
 - No job that runs someone else's code —convco, the compiler and the crates' build scripts, QEMU, BuildKit— holds
   a token that writes, nor keeps credentials on disk, and the release builds without caches. The jobs that write
   run only `gh`, `skopeo` and GitHub's `attest` on what the others handed over; QEMU's and BuildKit's images are
