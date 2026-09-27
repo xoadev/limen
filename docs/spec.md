@@ -500,6 +500,12 @@ key opened.
   checked static) and the image, starts the image on both architectures, and publishes them with
   `SHA256SUMS`, once `make check` is green on that commit. The version exists only from the tag:
   `limen --version` says `X.Y.Z · build <run> · <date>`, or `dev` for a local build.
+- No job that runs someone else's code —convco, the compiler and the crates' build scripts, QEMU, BuildKit— holds
+  a token that writes, nor keeps credentials on disk, and the release builds without caches. The jobs that write
+  run only `gh` and `skopeo` on what the others handed over; QEMU's and BuildKit's images are pinned by digest,
+  the linters by checksum.
+- `install.sh` downloads only over https, with a client that checks certificates (curl, OpenWrt's
+  `uclient-fetch`, GNU wget; never busybox's wget), and runs only once it has been read whole.
 - Nodes:
   - Debian and Ubuntu with systemd and OpenSSH.
   - OpenWrt with procd, dropbear and `logread`. `git` (the `git-http` package) only for `[repo]`.
@@ -551,6 +557,7 @@ key opened.
 | A malicious or buggy check script | **Not covered.** Scripts belong to root; limen trusts them |
 | Secrets inside allowed files | Partly: redaction is best-effort |
 | Data leaving the machine | **By design**: whatever is readable reaches the model provider |
+| A compromised release, image or `install.sh` | **Not covered** beyond GitHub's own controls: `SHA256SUMS` comes from the same release as the binaries, so it catches a broken download, not a replaced one, and `install.sh` is served from `main`. Whoever can write to the repository can do this |
 
 ## 14. Decisions
 

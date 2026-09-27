@@ -1,5 +1,6 @@
-# Keeps the actions of the workflows up to date. They are pinned by commit SHA with the version in a comment, and
-# Dependabot updates both together, in a pull request that check.yml and e2e.yml then test.
+# Keeps what the build and the image take from others up to date, one pull request at a time that check.yml and
+# e2e.yml then test: the actions of the workflows (pinned by commit SHA with the version in a comment), the crates
+# of Cargo.lock, and the base images of etc/Dockerfile.
 version: 2
 updates:
   - package-ecosystem: github-actions
@@ -8,3 +9,20 @@ updates:
       interval: weekly
     commit-message:
       prefix: ci
+
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: build
+    groups:
+      crates:
+        patterns: ["*"]
+
+  - package-ecosystem: docker
+    directory: /etc
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: build

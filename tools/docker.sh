@@ -10,6 +10,7 @@
 #   LABELS="k=v k2=v2"                  OCI labels, space-separated
 #   PLATFORMS=linux/amd64,linux/arm64   what to build (default: this machine's)
 #   PUSH=1                              push instead of loading into Docker, which holds one platform per tag
+#   OCI=<file>                          write an OCI archive of every platform instead, for another job to push
 #   BINARY_AMD64=<path>                 the binary for amd64 (default: what `make cli` built, for VARIANT)
 #   BINARY_ARM64=<path>                 the binary for arm64 (idem)
 set -euo pipefail
@@ -21,8 +22,8 @@ case "$(uname -m)" in
   *) echo "docker: no image for a $(uname -m) host" >&2; exit 1 ;;
 esac
 PLATFORMS=${PLATFORMS:-linux/$host}
-if [[ "${PUSH:-0}" != 1 && "$PLATFORMS" == *,* ]]; then
-  echo "docker: Docker loads one platform per tag; build one, or PUSH=1" >&2
+if [[ "${PUSH:-0}" != 1 && -z "${OCI:-}" && "$PLATFORMS" == *,* ]]; then
+  echo "docker: Docker loads one platform per tag; build one, or PUSH=1, or OCI=<file>" >&2
   exit 64
 fi
 context="$ROOT/target/docker"
@@ -42,7 +43,12 @@ done
 args=(--file "$ROOT/etc/Dockerfile" --platform "$PLATFORMS" --tag "$IMAGE")
 for tag in ${TAGS:-}; do args+=(--tag "$tag"); done
 for label in ${LABELS:-}; do args+=(--label "$label"); done
-if [[ "${PUSH:-0}" == 1 ]]; then args+=(--push); else args+=(--load); fi
+if [[ "${PUSH:-0}" == 1 ]]; then
+  args+=(--push) where=", pushed"
+elif [[ -n "${OCI:-}" ]]; then
+  args+=(--output "type=oci,dest=$OCI") where=", in $OCI"
+else
+  args+=(--load) where=""
+fi
 docker buildx build "${args[@]}" "$context"
-[[ "${PUSH:-0}" == 1 ]] && pushed=", pushed" || pushed=""
-echo "docker: built $IMAGE${TAGS:+ (+ $TAGS)} for $PLATFORMS$pushed"
+echo "docker: built $IMAGE${TAGS:+ (+ $TAGS)} for $PLATFORMS$where"

@@ -9,7 +9,8 @@
 # (the tool names go second on purpose: a comment line that starts with a linter's name is read by that linter
 # as a directive)
 #
-# The shell and workflow linters are single-file binaries pinned by version, downloaded once into this machine's cache;
+# The shell and workflow linters are single-file binaries pinned by version and checksum, downloaded once into this
+# machine's cache;
 # the Rust ones come with the toolchain. None needs root or a package manager: a linter that is not there is a linter
 # nobody runs.
 set -euo pipefail
@@ -17,6 +18,13 @@ cd "$(dirname "$0")/.."
 
 SHELLCHECK_VERSION=0.11.0
 ACTIONLINT_VERSION=1.7.12
+# sha256 of each archive, per architecture: a changed download is refused, not run. Update them with the versions.
+declare -A SHA256=(
+  [shellcheck-x86_64]=8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
+  [shellcheck-aarch64]=12b331c1d2db6b9eb13cfca64306b1b157a86eb69db83023e261eaa7e7c14588
+  [actionlint-amd64]=8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+  [actionlint-arm64]=325e971b6ba9bfa504672e29be93c24981eeb1c07576d730e9f7c8805afff0c6
+)
 
 CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/limen/lint"
 mkdir -p "$CACHE"
@@ -28,11 +36,12 @@ case "$(uname -m)" in
 esac
 
 fetch_tar() {
-  local name=$1 url=$2 inner=$3 tmp
+  local name=$1 url=$2 inner=$3 sha256=$4 tmp
   [[ -x "$CACHE/$name" ]] && return 0
   echo "lint: downloading $name"
   tmp=$(mktemp -d)
-  curl -fsSL --retry 3 -o "$tmp/archive" "$url" || { echo "lint: cannot download $url" >&2; rm -rf "$tmp"; return 1; }
+  curl -fsSL --proto '=https' --retry 3 -o "$tmp/archive" "$url" || { echo "lint: cannot download $url" >&2; rm -rf "$tmp"; return 1; }
+  echo "$sha256  $tmp/archive" | sha256sum --check --quiet || { echo "lint: $url is not the archive pinned here" >&2; rm -rf "$tmp"; return 1; }
   tar -xf "$tmp/archive" -C "$tmp"
   mv "$tmp/$inner" "$CACHE/$name"
   chmod +x "$CACHE/$name"
@@ -53,13 +62,13 @@ run() {
 
 fetch_tar "shellcheck-$SHELLCHECK_VERSION" \
   "https://github.com/koalaman/shellcheck/releases/download/v$SHELLCHECK_VERSION/shellcheck-v$SHELLCHECK_VERSION.linux.$arch.tar.xz" \
-  "shellcheck-v$SHELLCHECK_VERSION/shellcheck"
+  "shellcheck-v$SHELLCHECK_VERSION/shellcheck" "${SHA256[shellcheck-$arch]}"
 # install.sh is POSIX sh (OpenWrt has no bash): its shebang tells shellcheck to hold it to that.
 run shellcheck "$CACHE/shellcheck-$SHELLCHECK_VERSION" tools/*.sh install.sh
 
 fetch_tar "actionlint-$ACTIONLINT_VERSION" \
   "https://github.com/rhysd/actionlint/releases/download/v$ACTIONLINT_VERSION/actionlint_${ACTIONLINT_VERSION}_linux_${al_arch}.tar.gz" \
-  actionlint
+  actionlint "${SHA256[actionlint-$al_arch]}"
 # With -shellcheck, so the `run:` blocks are checked here as strictly as on the CI runner, which has it installed.
 run actionlint "$CACHE/actionlint-$ACTIONLINT_VERSION" -shellcheck "$CACHE/shellcheck-$SHELLCHECK_VERSION"
 

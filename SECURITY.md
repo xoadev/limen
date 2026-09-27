@@ -21,6 +21,8 @@ this is a small project, so please allow a few days.
 - The MCP server over HTTP answering without the token.
 - A join invitation used more than once, after it expires, or to add a node other than the one it names.
 - A secret leaving a node through something limen masks (redaction) in a way the documentation says it doesn't.
+- Altering a release's files, the image or `install.sh` without write access to this repository, or a workflow
+  handing that access to code it runs.
 
 ## What doesn't
 
@@ -31,6 +33,9 @@ These are limits of the design, documented in the [threat model](docs/spec.md#13
 - Whatever the node allows to be read reaching the model provider the hub talks to.
 - Whoever can push to a node's repository branch running code on it as root.
 - A root login by password on OpenWrt's dropbear: `limen install` warns about it; turning it off is the operator's.
+- Whoever holds write access to this repository, or controls the maintainers' GitHub accounts: `SHA256SUMS` comes
+  from the same release as the binaries, so it catches a broken download, not a replaced one, and `install.sh`
+  is served from `main`.
 
 ## Supported versions
 
