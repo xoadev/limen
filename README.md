@@ -8,13 +8,24 @@ Let an AI agent look inside your Linux machines —configuration, logs, services
 **without giving it the power to change anything.** The agent diagnoses and proposes; changes are made by you,
 your CI or your configuration management, through a door the agent has no key for.
 
+limen is an [MCP](https://modelcontextprotocol.io) server —MCP is how Claude Code and other agents call tools—
+that gives the agent read-only tools for every machine you join to it, over SSH.
+
 *Limen* is Latin for *threshold*: the agent stands at the door of each machine and sees what the machine lets it
 see, and nothing crosses the other way.
 
+```
+You:    Immich is down. Why?
+Agent:  (status on nas, then container immich, then its logs)
+        immich-server restarts every minute: Postgres can't write, "No space left on device".
+        /srv is at 100% (931 of 931 GB); most of it is /srv/immich/upload/encoded-video.
+        Free space there or move the library; I changed nothing.
+```
+
 > **Status: early.** limen works end to end —its tests run it on Debian and on OpenWrt's own image, against real
 > SSH servers—, but it has not run for long on real machines, and until 1.0 its configuration and protocol may
-> change between minor versions. The first release is on its way; until it is out,
-> [build it from source](#develop).
+> change between minor versions. **There is no release yet**: the image and the binaries the install below
+> downloads don't exist until the first one. Until then, [build them from source](#before-the-first-release).
 
 ## Why
 
@@ -81,6 +92,8 @@ CI or a person ──ssh limen-deploy@node──▶ limen gate --role deploy ─
 a new machine ──GET/POST /join/<one-time code>──▶ hub   (its key, then the machine's host key)
 ```
 
+The hub talks to each machine (each *node*) with the system's `ssh`; nothing listens on the machines but `sshd`.
+
 | Role | Key held by | Can |
 |---|---|---|
 | `read` | the hub | Everything in the tools below; run check scripts |
@@ -104,8 +117,8 @@ a new machine ──GET/POST /join/<one-time code>──▶ hub   (its key, then
 
 ## Install
 
-Two pieces: the **hub**, where the MCP server runs, and every **machine** it inspects. You start the hub once; each
-machine then joins it with one line the hub gives you.
+Two pieces: the **hub**, where the MCP server runs, and every **machine** it inspects —a *node*, in the tools and the
+configuration—. You start the hub once; each machine then joins it with one line the hub gives you.
 
 You need:
 
@@ -159,31 +172,28 @@ docker compose exec limen limen invite nas
 # Valid once, for 1h.
 ```
 
-Paste the line for the machine's system on it, and it:
+Paste the line for the machine's system on it. It downloads limen and checks it, fetches the hub's key and checks
+it against the fingerprint in the line, and asks the only optional thing: **the repository the machine follows**
+(for a private one it opens GitHub's form for a read-only token, and checks the token before saving it). Then it
+sets up the read role and reports to the hub, which adds the machine and tries it:
 
-1. Downloads the binary for the machine from the latest release and checks it against `SHA256SUMS`.
-2. Fetches the hub's key and checks it against the fingerprint in the line: nobody in between can slip in theirs.
-3. Asks the only optional thing: **the repository the machine follows**, its branch and its folder
-   (`nodes/<name>` by default), or none. If git is missing it offers to install it. If the repository is private,
-   you get a link that opens GitHub's form for a new token with everything filled in —fine-grained, read-only
-   contents, no expiry—: choose the repository, paste the token (it is not shown), and limen checks it reads the
-   repository before saving it where only root can read it.
-4. Sets the machine up:
-   - **Debian, Ubuntu**: a `limen-read` user whose key only runs `limen gate`, and a sudo rule for exactly that.
-   - **OpenWrt**: the hub's key in root's dropbear `authorized_keys`, held to `limen gate`, next to the keys already
-     there; limen survives `sysupgrade`. **Turn off dropbear's password logins**: a forced command only holds a login
-     by key, and the installer warns when root has no password.
-5. Tells the hub its host key, signed with a secret the line carries and the network never sees: whoever spots
-   the invitation on the wire can't join in the machine's place. The hub adds it to `limen.toml`, tries it, and
-   the installer says
-   `nas is on the hub, at 100.64.0.5: Debian GNU/Linux 13, limen 0.1.0`.
+```
+nas is on the hub, at 100.64.0.5: Debian GNU/Linux 13, limen 0.1.0
+```
 
-That is all: the hub needs no restart. The agent sees the machine in `nodes` at once; an HTTP client sees it in its
-tools' node list when it reconnects. The invitation is spent; the next machine gets its own.
+- **Debian, Ubuntu**: a `limen-read` user whose key only runs `limen gate`, and a sudo rule for exactly that.
+- **OpenWrt**: the hub's key in root's dropbear `authorized_keys`, held to `limen gate`, next to the keys already
+  there; limen survives `sysupgrade`. **Turn off dropbear's password logins**: a forced command only holds a login
+  by key, and the installer warns when root has no password.
 
-**Before the first release** there is nothing to download: build from source (see [Develop](#develop)), then
-`make docker` for the hub —`image: limen:local` in the compose file— and, on each machine, copy the binary of
-`make cli` and `install.sh` and run `sudo env LIMEN_BINARY=./limen sh install.sh --join '<line>'`.
+The hub needs no restart, and the invitation is spent: the next machine gets its own. How the join is protected
+against someone in between: [`docs/spec.md`](docs/spec.md#101-joining-a-node).
+
+### Before the first release
+
+There is nothing to download yet. Build from source (see [Develop](#develop)), then `make docker` for the hub
+—`image: limen:local` in the compose file— and, on each machine, copy the binary of `make cli` and `install.sh`
+and run `sudo env LIMEN_BINARY=./limen sh install.sh --join '<line>'`.
 
 ### What the agent may read
 
@@ -224,15 +234,17 @@ Ask the agent as you would ask a colleague with read access:
 - *"Is the router's DHCP running, and what's in its config?"* — `service dnsmasq`, `read_file /etc/config/dhcp`.
 - *"Is every machine on the latest commit?"* — `state` on each node.
 
-When the answer is a change, the agent says what to run, and you or CI run it with the deploy key (given at install
-with `LIMEN_DEPLOY_KEY`, or added later on the machine with `sudo limen install --read-key '<the hub's key>'
---deploy-key '<key>'`, the hub's key being `id_ed25519.pub` in its directory; the user is `root` on OpenWrt), from
+When the answer is a change, the agent says what to run, and you or CI run it with the **deploy key**, from
 anywhere with the hub's `limen.toml`:
 
 ```sh
 limen call nas apply --user limen-deploy --identity ~/.ssh/deploy      # sync, setup scripts, stacks, state
 limen call nas action --arg name=restart-immich --user limen-deploy --identity ~/.ssh/deploy
 ```
+
+The deploy key is given at install (`LIMEN_DEPLOY_KEY`), or added later on the machine with
+`sudo limen install --read-key '<the hub's key>' --deploy-key '<key>'`; the hub's key is `id_ed25519.pub` in its
+directory. On OpenWrt the deploy user is `root`.
 
 Without the agent, `docker compose exec limen limen call nas status` asks a machine the same questions by hand.
 
