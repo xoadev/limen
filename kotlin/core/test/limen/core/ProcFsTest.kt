@@ -96,19 +96,19 @@ class ProcFsTest {
             NodeConfig.parse(
                 """
                 [repo]
-                url = "https://github.com/xoadev/cloud.git"
-                path = "nodes/hades"
+                url = "https://github.com/you/infra.git"
+                path = "nodes/nas"
                 [scripts]
                 checks = "/etc/limen/checks.d"
                 """.trimIndent(),
             )
         val repo = config.repo!!
         assertEquals("main", repo.branch)
-        assertEquals("/opt/limen/repo/nodes/hades/setup", config.setup)
+        assertEquals("/opt/limen/repo/nodes/nas/setup", config.setup)
         assertEquals("/etc/limen/checks.d", config.checks)
-        assertEquals("/opt/limen/repo/nodes/hades/stacks", config.stacks)
+        assertEquals("/opt/limen/repo/nodes/nas/stacks", config.stacks)
         assertEquals("/opt/limen/last-sync.json", repo.syncRecord)
-        assertEquals("xoadev" to "cloud", repo.github)
+        assertEquals("you" to "infra", repo.github)
         assertEquals("https://github.com/x/y", NodeConfig.parse("[repo]\nurl = \"https://u:p@github.com/x/y\"").repo!!.displayUrl)
         for (bad in listOf(
             "url = \"http://x\"",
@@ -133,9 +133,9 @@ class ProcFsTest {
     @Test
     fun tokenLink() {
         assertEquals(
-            "https://github.com/settings/personal-access-tokens/new?name=limen-hades" +
-                "&description=limen%20on%20hades%3A%20read%20xoadev%2Fcloud&target_name=xoadev&expires_in=none&contents=read",
-            GitHub.tokenUrl("xoadev", "cloud", "hades"),
+            "https://github.com/settings/personal-access-tokens/new?name=limen-nas" +
+                "&description=limen%20on%20nas%3A%20read%20you%2Finfra&target_name=you&expires_in=none&contents=read",
+            GitHub.tokenUrl("you", "infra", "nas"),
         )
     }
 }

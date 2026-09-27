@@ -72,12 +72,12 @@ class McpServerTest {
     private fun client() =
         FakeClient(
             linkedMapOf(
-                "hades" to
+                "nas" to
                     Catalog(
                         checks = listOf(check("disk", threshold), check("backups")),
                         actions = listOf(ScriptSpec("restart-immich", ScriptKind.ACTION, "Restarts Immich", 60)),
                     ),
-                "persephone" to Catalog(checks = listOf(check("disk", threshold), check("backups", threshold))),
+                "router" to Catalog(checks = listOf(check("disk", threshold), check("backups", threshold))),
             ),
         )
 
@@ -148,7 +148,7 @@ class McpServerTest {
         assertTrue(tools.all { it["annotations"]!!.jsonObject["readOnlyHint"]!!.jsonPrimitive.boolean })
         val disk = tools.first { it["name"]!!.jsonPrimitive.content == "check_disk" }
         val node = disk["inputSchema"]!!.jsonObject["properties"]!!.jsonObject["node"]!!.jsonObject
-        assertEquals("""["hades","persephone"]""", node["enum"].toString())
+        assertEquals("""["nas","router"]""", node["enum"].toString())
     }
 
     @Test
@@ -160,7 +160,7 @@ class McpServerTest {
                 server,
                 "logs",
                 buildJsonObject {
-                    put("node", "hades")
+                    put("node", "nas")
                     put("source", "unit")
                     put("name", "nginx")
                 },
@@ -168,7 +168,7 @@ class McpServerTest {
         assertFalse(result.isError())
         assertTrue("[truncated" in result.text())
         val (node, request, args) = client.calls.last()
-        assertEquals("hades" to "logs", node to request)
+        assertEquals("nas" to "logs", node to request)
         assertEquals(setOf("source", "name"), args.keys)
     }
 
@@ -181,7 +181,7 @@ class McpServerTest {
             server,
             "check_disk",
             buildJsonObject {
-                put("node", "persephone")
+                put("node", "router")
                 put("threshold", 80)
             },
         )
@@ -204,7 +204,7 @@ class McpServerTest {
                 server,
                 "service",
                 buildJsonObject {
-                    put("node", "hades")
+                    put("node", "nas")
                     put("name", "x; reboot")
                 },
             )
@@ -215,7 +215,7 @@ class McpServerTest {
                 server,
                 "read_file",
                 buildJsonObject {
-                    put("node", "hades")
+                    put("node", "nas")
                     put("path", "/etc/shadow")
                 },
             )
@@ -238,7 +238,7 @@ class McpServerTest {
         rpc(server, "tools/list")
         callTool(server, "nodes", JsonObject(emptyMap()))
         assertTrue(sent.isEmpty())
-        client.catalogs["hades"] = Catalog(checks = listOf(check("disk", threshold), check("certs")))
+        client.catalogs["nas"] = Catalog(checks = listOf(check("disk", threshold), check("certs")))
         callTool(server, "nodes", JsonObject(emptyMap()))
         assertEquals(1, sent.size)
         assertTrue("notifications/tools/list_changed" in sent[0])

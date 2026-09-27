@@ -1,5 +1,9 @@
 # limen
 
+[![check](https://github.com/xoadev/limen/actions/workflows/check.yml/badge.svg)](https://github.com/xoadev/limen/actions/workflows/check.yml)
+[![release](https://img.shields.io/github/v/release/xoadev/limen?include_prereleases&sort=semver)](https://github.com/xoadev/limen/releases)
+[![license](https://img.shields.io/github/license/xoadev/limen)](LICENSE)
+
 Let an AI agent look inside your Linux machines —configuration, logs, services, containers, your own checks—
 **without giving it the power to change anything**, and describe each machine in a Git repository so it can be
 rebuilt from scratch.
@@ -7,7 +11,12 @@ rebuilt from scratch.
 *Limen* is Latin for *threshold*: the agent stands at the door of each machine and sees what the machine lets it
 see, and nothing crosses the other way.
 
-## The idea
+> **Status: early.** limen works end to end —its tests run it on Debian and on OpenWrt's own image, against real
+> SSH servers—, but it has not run for long on real machines, and until 1.0 its configuration and protocol may
+> change between minor versions. The first release is on its way; until it is out,
+> [build it from source](#develop).
+
+## Why
 
 Asking an agent "why is Immich down?" or "is the backup disk filling up?" is useful only if it can look. The usual
 way to let it look is an MCP server with SSH access, and those give the agent a shell, perhaps with a list of
@@ -25,7 +34,7 @@ limen turns it around: **the machine decides.**
 - Changing a machine is a different door, with a different key the hub never has: the **deploy** role, used by CI
   or by a person, runs scripts that live in a Git repository.
 
-## What we get
+## What you get
 
 - **An agent that can diagnose, and can't break.** Status, failed services, logs of a unit or a container, a
   configuration file, who listens on which port, your own checks — for every machine, from one MCP server. When it
@@ -80,6 +89,12 @@ a new machine ──GET/POST /join/<one-time code>──▶ hub   (its key, then
 
 Two pieces: the **hub**, where the MCP server runs, and every **machine** it inspects. You start the hub once; each
 machine then joins it with one line the hub gives you.
+
+You need:
+
+- For the hub: Docker on an always-on machine (or nothing but the binary, for a hub on your laptop).
+- For each machine: Debian, Ubuntu or OpenWrt, x86-64 or arm64, running an SSH server the hub can reach —over a VPN
+  such as Tailscale or Headscale, or your LAN—, and root to install. Git only if it follows a repository.
 
 ### 1. Start the hub
 
@@ -176,12 +191,15 @@ Ask the agent as you would ask a colleague with read access:
 - *"Is the router's DHCP running, and what's in its config?"* — `service dnsmasq`, `read_file /etc/config/dhcp`.
 - *"Is every machine on the latest commit?"* — `state` on each node.
 
-When the answer is a change, the agent says what to run; you or CI run it with the deploy key:
+When the answer is a change, the agent says what to run, and you or CI run it with the deploy key (given at install
+with `LIMEN_DEPLOY_KEY`; the user is `root` on OpenWrt), from anywhere with the hub's `limen.toml`:
 
 ```sh
 limen call nas apply --user limen-deploy --identity ~/.ssh/deploy      # sync, setup scripts, stacks, state
 limen call nas action --arg name=restart-immich --user limen-deploy --identity ~/.ssh/deploy
 ```
+
+Without the agent, `docker compose exec limen limen call nas status` asks a machine the same questions by hand.
 
 ## A repository per machine
 
@@ -245,7 +263,8 @@ them all without running anything.
 | A check script is malicious | Not covered: scripts belong to root, and limen trusts them |
 | An allowed file holds a secret | Partly covered: masking catches the usual shapes only |
 
-What is readable reaches the model provider, by design. The full threat model is in [`docs/spec.md`](docs/spec.md).
+What is readable reaches the model provider, by design. The full threat model is in
+[`docs/spec.md`](docs/spec.md#13-threat-model); to report a vulnerability, see [`SECURITY.md`](SECURITY.md).
 
 ## Platforms
 
@@ -254,19 +273,35 @@ What is readable reaches the model provider, by design. The full threat model is
   [`docs/openwrt.md`](docs/openwrt.md).
 - Hub: anything that runs the binary and OpenSSH's `ssh`; the image is `ghcr.io/xoadev/limen`, amd64 and arm64.
 
+## Documentation
+
+| | |
+|---|---|
+| [`docs/spec.md`](docs/spec.md) | The design and the reference: roles, protocol, tools, scripts, configuration, CLI, joining, threat model, decisions |
+| [`docs/openwrt.md`](docs/openwrt.md) | Why the binary is static, what that costs, and OpenWrt as a node |
+| [`CONTRIBUTING.md`](CONTRIBUTING.md) | How to build, test and send a change |
+| [`AGENTS.md`](AGENTS.md) | The full working contract, for people and coding agents |
+| [`SECURITY.md`](SECURITY.md) | How to report a vulnerability, and what counts as one |
+
+Releases and their notes are on [GitHub](https://github.com/xoadev/limen/releases).
+
 ## Develop
 
 ```sh
 make check   # lint, build and every test: what CI runs
 make cli     # the binary, in kotlin/build/tasks/_cli_linkLinuxX64Debug/cli.kexe
-make e2e     # Debian and OpenWrt containers with a real SSH server, the installer and the hub (SUITE=debian|openwrt)
+make e2e     # Debian and OpenWrt containers with a real SSH server, the installer and the hub (SUITE=debian|openwrt|join)
 make help    # the rest
 ```
 
-Kotlin/Native; the toolchain downloads itself, and the linter needs a JDK. The design is in
-[`docs/spec.md`](docs/spec.md), the working contract in [`AGENTS.md`](AGENTS.md). Releases follow the conventional
-commits: every push to `main` prepares a draft, and publishing it builds and attaches the binaries and the image.
+Needs Linux x86-64, a JDK for the linter and Docker for `make e2e`; the Kotlin toolchain downloads itself.
+Contributions are welcome: [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ## License
 
-[Apache License 2.0](LICENSE).
+limen is licensed under the [Apache License 2.0](LICENSE).
+
+The release binaries are static, so they contain third-party code under its own licences: the GNU C Library
+(LGPL-2.1-or-later), and the GCC runtime and C++ library (GPL-3.0 with the GCC Runtime Library Exception), besides
+Kotlin/Native's runtime and the Kotlin libraries limen uses (Apache-2.0). This repository is limen's complete source
+and build, so anyone can relink it with another build of the C library, as the LGPL provides.

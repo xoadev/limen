@@ -1,0 +1,46 @@
+name: Bug report
+description: Something limen does wrong
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        A way around limen's limits is a vulnerability: report it privately, not here (SECURITY.md).
+  - type: input
+    id: version
+    attributes:
+      label: limen version
+      description: "`limen --version`, on the hub and on the node if they differ"
+    validations:
+      required: true
+  - type: dropdown
+    id: where
+    attributes:
+      label: Where
+      options: [Hub (limen serve / mcp), Node (gate, install, join, apply), Both, Not sure]
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Platform
+      description: Distribution and version, architecture (e.g. Debian 13 x86-64, OpenWrt 24.10 arm64)
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what you expected
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How to reproduce
+      description: The commands, the request or tool call, and the relevant part of limen.toml
+  - type: textarea
+    id: output
+    attributes:
+      label: Output
+      description: Errors and logs. Check them for secrets and addresses before pasting.
+      render: text

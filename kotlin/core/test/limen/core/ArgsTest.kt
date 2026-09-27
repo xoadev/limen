@@ -78,7 +78,7 @@ class ArgsTest {
 
     @Test
     fun inputSchemaCarriesTheNodeAndTheRequired() {
-        val node = Param("node", ParamType.ENUM, "Node", values = listOf("hades"))
+        val node = Param("node", ParamType.ENUM, "Node", values = listOf("nas"))
         val schema = Args.inputSchema(Requests.SERVICE.params, listOf(node to true))
         assertEquals("""["node","name"]""", schema["required"].toString())
         assertEquals(JsonPrimitive("integer"), schema["properties"]!!.jsonObject["lines"]!!.jsonObject["type"])

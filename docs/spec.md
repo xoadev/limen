@@ -13,12 +13,17 @@ compromised or deceived, the worst outcome is reading what the node already allo
 
 ```
 limen/
-  docs/spec.md          # this spec: the single source of truth
-  AGENTS.md             # the working contract (CLAUDE.md points there)
+  README.md             # what limen is, install and use
+  docs/spec.md          # this spec: the design and the reference, the single source of truth
+  docs/openwrt.md       # the static binary: why, how, what it costs
+  AGENTS.md             # the working contract (CLAUDE.md points there); CONTRIBUTING.md is its short version
+  SECURITY.md           # reporting vulnerabilities, and what counts as one
+  install.sh            # the installer piped into `sh` on a new machine or a laptop hub
   kotlin/               # Kotlin Toolchain project: core/ (pure rules), cli/ (the binary)
   etc/Dockerfile        # the hub image
-  etc/e2e/              # the node image of `make e2e`
-  tools/                # scripts called by the Makefile
+  etc/e2e/              # the Debian node image of `make e2e`
+  tools/                # scripts called by the Makefile, and ld-static, the static linker
+  .github/              # CI, releases, issue and pull request templates
   Makefile              # `make check` is what CI runs
   LICENSE               # Apache-2.0
 ```
@@ -190,7 +195,7 @@ set -euo pipefail
 A node can take everything it runs from a folder of a Git repository — `[repo]` in `limen.toml`:
 
 ```
-nodes/hades/
+nodes/nas/
   node.toml                     # what must be running
   checks/  actions/  setup/     # the scripts, as in §6
   stacks/immich/compose.yaml    # Docker Compose stacks
@@ -250,9 +255,9 @@ max_bytes = 5242880
 runs = "/var/log/limen/runs"
 
 [repo]
-url = "https://github.com/xoadev/cloud.git"
+url = "https://github.com/you/infra.git"
 branch = "main"
-path = "nodes/hades"
+path = "nodes/nas"
 dir = "/opt/limen/repo"
 token_file = "/etc/limen/repo-token"
 ```
@@ -291,11 +296,11 @@ per_node_concurrency = 4
 listen = "127.0.0.1:7341"
 origins = []
 
-[nodes.hades]
+[nodes.nas]
 host = "100.64.0.2"
 host_key = "ssh-ed25519 AAAA…"
 
-[nodes.persephone]
+[nodes.router]
 host = "100.64.0.3"
 port = 2222
 host_key = "ssh-ed25519 AAAA…"

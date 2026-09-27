@@ -40,8 +40,9 @@ Rules that hold:
 - **Kotlin/Native only.** No JVM target, no GraalVM: a binary that starts without a runtime is the point.
 - **Anything testable without a machine goes in `core`.** A new request's argument rules, a new output format to
   parse: `core`, with a test that feeds it a captured sample. `cli` only runs things and glues.
-- **A new dependency must publish Kotlin/Native artifacts for both Linux targets.** foco (`../foco/docs/native-deps.md`)
-  keeps the register of what has been validated; the versions here are the ones validated there.
+- **A new dependency must publish Kotlin/Native artifacts for both Linux targets**, and survive the static link:
+  `make cli ARCH="x86_64 aarch64"` builds both, and `make e2e` runs the result on Debian and OpenWrt. Anything that
+  reaches for glibc's NSS or iconv at run time fails there (docs/openwrt.md).
 
 ## Technical choices
 
@@ -53,12 +54,12 @@ Each one had an alternative. Changing one is changing this table and the spec's 
 | Transport to nodes | The system `ssh` with a forced command | No daemon on the nodes; no SSH library exists for Kotlin/Native |
 | Request | One JSON line on stdin | No word splitting; `sudo` keeps stdin and drops `SSH_ORIGINAL_COMMAND` |
 | Child processes | `posix_spawn` (`platform.linux`), argument arrays | After `fork`, the Kotlin/Native runtime is not async-signal-safe; never a shell |
-| MCP | Own JSON-RPC 2.0, no SDK | Same as foco: a few hundred lines, fully under control |
+| MCP | Own JSON-RPC 2.0, no SDK | A few hundred lines, fully under control, and no dependency to validate on Native |
 | TOML | Own parser of the subset used | Operator-named tables (`[nodes.<name>]`) and errors that name the key |
 | CLI | `clikt-core` | The `clikt` artifact with markdown duplicates symbols when linking |
 | libc | glibc, linked statically (`tools/ld-static`) | Kotlin/Native has no musl target; static, one file runs on glibc and musl alike. A glibc bundle next to the binary also worked, with a directory of libraries to carry |
 | System facts | `/proc`, `statvfs`, `/etc/passwd` | `ps`, `ss` and `df` differ between distributions and busybox; NSS is out of reach of a static glibc |
-| HTTP | **Ktor first**: the server is Ktor (CIO) with its ordinary text APIs | Validated on Native by foco. Own code only where Ktor is shown not to work in the static binary, with a test that notices when it would: today only `HttpLite` for `limen join`, watched by `KtorCharsetTest` (docs/openwrt.md) |
+| HTTP | **Ktor first**: the server is Ktor (CIO) with its ordinary text APIs | Runs on Kotlin/Native and in the static binary. Own code only where Ktor is shown not to work in the static binary, with a test that notices when it would: today only `HttpLite` for `limen join`, watched by `KtorCharsetTest` (docs/openwrt.md) |
 
 ## Conventions
 

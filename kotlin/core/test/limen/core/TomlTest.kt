@@ -31,7 +31,7 @@ class TomlTest {
                 max_bytes = 262_144
                 enabled = true
 
-                [nodes.hades]
+                [nodes.nas]
                 host = "100.64.0.2"
                 "quoted key" = -3
                 a.b = "dotted"
@@ -42,9 +42,9 @@ class TomlTest {
         assertEquals(TomlArray(listOf(TomlString("/etc/nginx/**"), TomlString("/opt/*/compose.yaml"))), files.entries["allow"])
         assertEquals(TomlInt(262144), files.entries["max_bytes"])
         assertEquals(TomlBool(true), files.entries["enabled"])
-        val hades = (root.entries["nodes"] as TomlTable).entries["hades"] as TomlTable
-        assertEquals(TomlInt(-3), hades.entries["quoted key"])
-        assertEquals(TomlString("dotted"), (hades.entries["a"] as TomlTable).entries["b"])
+        val nas = (root.entries["nodes"] as TomlTable).entries["nas"] as TomlTable
+        assertEquals(TomlInt(-3), nas.entries["quoted key"])
+        assertEquals(TomlString("dotted"), (nas.entries["a"] as TomlTable).entries["b"])
     }
 
     @Test

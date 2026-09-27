@@ -31,7 +31,7 @@ import kotlin.time.TimeSource
 
 /**
  * The MCP server (spec §5, §9): JSON-RPC 2.0, one message in, at most one out. Transport-free: `limen mcp` feeds it
- * lines from stdin and `limen serve` HTTP bodies. Own implementation, no SDK, like foco's.
+ * lines from stdin and `limen serve` HTTP bodies. Own implementation, no SDK.
  *
  * Every tool is a read request to one node. Actions and setup scripts are listed in `nodes` and never become tools
  * (spec §1, principle 2).

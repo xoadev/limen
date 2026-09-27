@@ -55,12 +55,12 @@ class ConfigTest {
                 identity = "keys/limen"
                 connect_timeout = "3s"
 
-                [nodes.hades]
+                [nodes.nas]
                 host = "100.64.0.2"
                 host_key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGx"
 
-                [nodes.persephone]
-                host = "persephone.lan"
+                [nodes.router]
+                host = "router.lan"
                 port = 2222
                 user = "reader"
                 host_key = "ecdsa-sha2-nistp256 AAAAE2VjZHNh="
@@ -68,20 +68,20 @@ class ConfigTest {
             )
         assertEquals("keys/limen", config.identity)
         assertEquals(3.seconds, config.connectTimeout)
-        assertEquals(listOf("hades", "persephone"), config.nodes.map { it.name })
-        assertEquals(22, config.node("hades")!!.port)
-        assertEquals("limen-read", config.node("hades")!!.user)
-        assertEquals("reader", config.node("persephone")!!.user)
+        assertEquals(listOf("nas", "router"), config.nodes.map { it.name })
+        assertEquals(22, config.node("nas")!!.port)
+        assertEquals("limen-read", config.node("nas")!!.user)
+        assertEquals("reader", config.node("router")!!.user)
         assertEquals("127.0.0.1", config.listenHost)
         assertEquals(7341, config.listenPort)
     }
 
     @Test
     fun hubRequiresAPinnedHostKey() {
-        val e = assertFailsWith<TomlException> { HubConfig.parse("[nodes.hades]\nhost = \"h\"") }
-        assertTrue("nodes.hades.host_key: missing" in e.message!!, e.message)
-        val bad = assertFailsWith<TomlException> { HubConfig.parse("[nodes.hades]\nhost = \"h\"\nhost_key = \"h ssh-ed25519 AAAA\"") }
+        val e = assertFailsWith<TomlException> { HubConfig.parse("[nodes.nas]\nhost = \"h\"") }
+        assertTrue("nodes.nas.host_key: missing" in e.message!!, e.message)
+        val bad = assertFailsWith<TomlException> { HubConfig.parse("[nodes.nas]\nhost = \"h\"\nhost_key = \"h ssh-ed25519 AAAA\"") }
         assertTrue("host_key" in bad.message!!, bad.message)
-        assertFailsWith<TomlException> { HubConfig.parse("[nodes.Hades]\nhost = \"h\"\nhost_key = \"ssh-ed25519 AAAA\"") }
+        assertFailsWith<TomlException> { HubConfig.parse("[nodes.Nas]\nhost = \"h\"\nhost_key = \"ssh-ed25519 AAAA\"") }
     }
 }

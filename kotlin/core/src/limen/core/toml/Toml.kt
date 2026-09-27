@@ -6,7 +6,7 @@ package limen.core.toml
  * floats, dates or multi-line strings: a file that uses them is rejected with its line, never half-read.
  *
  * Own parser rather than a library: the configuration and the script headers map TOML tables with names chosen by
- * the operator (`[nodes.hades]`, `[args.threshold]`) onto typed values with errors that name the key, and that is
+ * the operator (`[nodes.nas]`, `[args.threshold]`) onto typed values with errors that name the key, and that is
  * simpler to say over a tree than through a deserializer.
  */
 sealed interface TomlValue
