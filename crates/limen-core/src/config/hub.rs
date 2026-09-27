@@ -1,8 +1,12 @@
 //! `$LIMEN_HOME/limen.toml` (spec §7.2): how the hub reaches its nodes and how it listens.
 
+use super::{ConfigResult, fail};
 use crate::durations;
-use crate::toml_reader::{self, Reader, TomlResult};
+use indexmap::IndexMap;
 use regex::Regex;
+use serde::Deserialize;
+use std::collections::HashMap;
+use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
 
 pub const READ_USER: &str = "limen-read";
@@ -13,8 +17,11 @@ pub const HOST: &str = "^[A-Za-z0-9.:_-]{1,253}$";
 pub const USER: &str = "^[a-z_][a-z0-9_-]{0,31}$";
 pub const PUBLIC_URL: &str = r"^http://(\d{1,3}(\.\d{1,3}){3}|\[[0-9a-fA-F:]+\]):\d{1,5}$";
 
-pub fn is(pattern: &str, text: &str) -> bool {
-    Regex::new(pattern).unwrap().is_match(text)
+/// Whether [text] matches [pattern], one of this module's: each compiled once.
+pub fn is(pattern: &'static str, text: &str) -> bool {
+    static COMPILED: LazyLock<Mutex<HashMap<&'static str, Regex>>> = LazyLock::new(Default::default);
+    let mut compiled = COMPILED.lock().unwrap();
+    compiled.entry(pattern).or_insert_with(|| Regex::new(pattern).expect("limen's own patterns compile")).is_match(text)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -54,87 +61,102 @@ impl Default for HubConfig {
     }
 }
 
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields, default)]
+struct File {
+    ssh: Ssh,
+    http: Http,
+    nodes: IndexMap<String, Node>,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields, default)]
+struct Ssh {
+    identity: Option<String>,
+    connect_timeout: Option<String>,
+    request_timeout: Option<String>,
+    per_node_concurrency: Option<i64>,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields, default)]
+struct Http {
+    listen: Option<String>,
+    origins: Vec<String>,
+    public_url: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Node {
+    host: Option<String>,
+    port: Option<i64>,
+    user: Option<String>,
+    host_key: Option<String>,
+}
+
 impl HubConfig {
     pub fn node(&self, name: &str) -> Option<&NodeEntry> {
         self.nodes.iter().find(|n| n.name == name)
     }
 
-    pub fn parse(text: &str) -> TomlResult<HubConfig> {
-        let table = toml_reader::parse(text)?;
-        let root = Reader::new(&table);
-        let mut config = HubConfig::default();
-        let ssh = root.table("ssh")?;
-        let http = root.table("http")?;
-        if let Some(nodes) = root.table("nodes")? {
-            for (name, t) in nodes.tables()? {
-                if !is(NODE_NAME, &name) {
-                    return nodes.fail(&name, &format!("a node name matches {NODE_NAME}"));
-                }
-                let Some(host) = t.string("host")? else { return t.fail("host", "missing") };
-                if !is(HOST, &host) {
-                    return t.fail("host", "not a host name or address");
-                }
-                let port = t.int("port")?.unwrap_or(22);
-                if !(1..=65535).contains(&port) {
-                    return t.fail("port", "out of range");
-                }
-                let user = t.string("user")?.unwrap_or_else(|| READ_USER.into());
-                if !is(USER, &user) {
-                    return t.fail("user", "not a user name");
-                }
-                let Some(key) = t.string("host_key")? else {
-                    return t.fail("host_key", "missing; get it with ssh-keyscan and verify it");
-                };
-                let key = key.trim().to_string();
-                if !is(HOST_KEY, &key) {
-                    return t.fail("host_key", "expected '<type> <base64>', as in known_hosts without the host");
-                }
-                t.reject_unknown()?;
-                config.nodes.push(NodeEntry { name, host, port: port as u16, user, host_key: key });
+    pub fn parse(text: &str) -> ConfigResult<HubConfig> {
+        let f: File = super::from_str(text)?;
+        let d = HubConfig::default();
+        let mut nodes = Vec::with_capacity(f.nodes.len());
+        for (name, n) in f.nodes {
+            let key = |k: &str| format!("nodes.{name}.{k}");
+            if !is(NODE_NAME, &name) {
+                return fail(&format!("nodes.{name}"), format!("a node name matches {NODE_NAME}"));
             }
-        }
-        if let Some(s) = &ssh {
-            config.identity = s.string("identity")?.unwrap_or(config.identity);
-            config.connect_timeout = duration(s, "connect_timeout")?.unwrap_or(config.connect_timeout);
-            config.request_timeout = duration(s, "request_timeout")?.unwrap_or(config.request_timeout);
-            if let Some(n) = s.int("per_node_concurrency")? {
-                if !(1..=64).contains(&n) {
-                    return s.fail("per_node_concurrency", "must be between 1 and 64");
-                }
-                config.per_node_concurrency = n as usize;
+            let Some(host) = n.host.filter(|h| is(HOST, h)) else {
+                return fail(&key("host"), "missing, or not a host name or address");
+            };
+            let port = match n.port.unwrap_or(22) {
+                p @ 1..=65535 => p as u16,
+                _ => return fail(&key("port"), "out of range"),
+            };
+            let user = n.user.unwrap_or_else(|| READ_USER.into());
+            if !is(USER, &user) {
+                return fail(&key("user"), "not a user name");
             }
-        }
-        if let Some(h) = &http {
-            if let Some(listen) = h.string("listen")? {
-                if !is(r"^\S+:[0-9]{1,5}$", &listen) {
-                    return h.fail("listen", "expected host:port");
-                }
-                config.listen = listen;
+            let Some(host_key) = n.host_key.map(|k| k.trim().to_string()) else {
+                return fail(&key("host_key"), "missing; get it with ssh-keyscan and verify it");
+            };
+            if !is(HOST_KEY, &host_key) {
+                return fail(&key("host_key"), "expected '<type> <base64>', as in known_hosts without the host");
             }
-            config.origins = h.strings("origins")?.unwrap_or_default();
-            if let Some(url) = h.string("public_url")? {
-                let url = url.trim_end_matches('/').to_string();
-                if !is(PUBLIC_URL, &url) {
-                    return h.fail("public_url", "expected http://<address>:<port>, an address and not a name");
-                }
-                config.public_url = Some(url);
-            }
+            nodes.push(NodeEntry { name, host, port, user, host_key });
         }
-        for t in [&ssh, &http].into_iter().flatten() {
-            t.reject_unknown()?;
+        let per_node_concurrency = match f.ssh.per_node_concurrency {
+            Some(n @ 1..=64) => n as usize,
+            Some(_) => return fail("ssh.per_node_concurrency", "must be between 1 and 64"),
+            None => d.per_node_concurrency,
+        };
+        if let Some(listen) = f.http.listen.as_ref().filter(|l| !is(r"^\S+:[0-9]{1,5}$", l)) {
+            return fail("http.listen", format!("'{listen}': expected host:port"));
         }
-        root.reject_unknown()?;
-        Ok(config)
+        let public_url = f.http.public_url.map(|u| u.trim_end_matches('/').to_string());
+        if public_url.as_ref().is_some_and(|u| !is(PUBLIC_URL, u)) {
+            return fail("http.public_url", "expected http://<address>:<port>, an address and not a name");
+        }
+        Ok(HubConfig {
+            identity: f.ssh.identity.unwrap_or(d.identity),
+            connect_timeout: duration("ssh.connect_timeout", f.ssh.connect_timeout)?.unwrap_or(d.connect_timeout),
+            request_timeout: duration("ssh.request_timeout", f.ssh.request_timeout)?.unwrap_or(d.request_timeout),
+            per_node_concurrency,
+            listen: f.http.listen.unwrap_or(d.listen),
+            origins: f.http.origins,
+            public_url,
+            nodes,
+        })
     }
 }
 
-fn duration(t: &Reader, key: &str) -> TomlResult<Option<Duration>> {
-    match t.string(key)? {
+fn duration(key: &str, text: Option<String>) -> ConfigResult<Option<Duration>> {
+    match text {
         None => Ok(None),
-        Some(s) => match durations::parse(&s) {
-            Some(d) => Ok(Some(d)),
-            None => t.fail(key, "expected a duration like 5s or 1m"),
-        },
+        Some(t) => durations::parse(&t).map(Some).map_or_else(|| fail(key, "expected a duration like 5s or 1m"), Ok),
     }
 }
 
@@ -177,5 +199,6 @@ host_key = "ecdsa-sha2-nistp256 AAAAE2VjZHNh="
         assert!(e.0.contains("nodes.nas.host_key: missing"), "{e}");
         assert!(HubConfig::parse("[nodes.nas]\nhost = \"h\"\nhost_key = \"h ssh-ed25519 AAAA\"").is_err());
         assert!(HubConfig::parse("[nodes.Nas]\nhost = \"h\"\nhost_key = \"ssh-ed25519 AAAA\"").is_err());
+        assert!(HubConfig::parse("[nodes.nas]\nhost = \"h\"\nhost_key = \"ssh-ed25519 AAAA\"\ncolour = 1").is_err());
     }
 }

@@ -15,14 +15,15 @@ use std::time::Duration;
 /// Spec §9. The token `init` writes has 32.
 pub const MIN_TOKEN: usize = 16;
 
+/// The nodes go after `[ssh]` as they join, so what is commented out comes first.
 const CONFIG_TEMPLATE: &str = r#"# limen hub (docs/spec.md §7.2). Nodes are added by `limen invite` and `limen trust`, or by hand.
-
-[ssh]
-identity = "id_ed25519"
 
 # [http]
 # Where nodes reach this hub to join: an address on your network or VPN, not a name.
 # public_url = "http://100.64.0.2:7341"
+
+[ssh]
+identity = "id_ed25519"
 "#;
 
 /// An invitation as `limen invite` prints it: the code goes on the wire, the secret stays in the line's fragment.
@@ -209,35 +210,19 @@ impl Hub {
         self.write_node(name, address, port, user, host_key)
     }
 
-    /// Writes one node's table and nothing else. The values are checked by [join::upsert_node]; then, whatever it
-    /// wrote, the result must parse and differ from what was there only in that node, or nothing is written.
+    /// Writes one node's table, checked by [join::upsert_node], and a file that still reads as a hub's.
     fn write_node(&self, name: &str, address: &str, port: u16, user: &str, host_key: &str) -> Result<()> {
         let text = fs::read_following(&self.config_path).unwrap_or_default();
-        let before =
-            HubConfig::parse(&text).map_err(|e| error(ErrorCode::BadRequest, format!("{}: {e}", self.config_path)))?;
         let updated = join::upsert_node(&text, name, address, port, user, host_key)?;
-        let after = HubConfig::parse(&updated)
-            .map_err(|e| error(ErrorCode::BadRequest, format!("the node does not fit the hub's configuration: {e}")))?;
-        let without = |c: &HubConfig| {
-            let mut c = c.clone();
-            c.nodes.retain(|n| n.name != name);
-            c
-        };
-        if without(&after) != without(&before) || after.node(name).is_none() {
-            return Err(error(
-                ErrorCode::BadRequest,
-                format!("adding {name} would change more than {name} in {}; refused", self.config_path),
-            ));
-        }
+        HubConfig::parse(&updated).map_err(|e| {
+            error(ErrorCode::BadRequest, format!("{} would not read after adding {name}: {e}", self.config_path))
+        })?;
         fs::write_following(&self.config_path, updated.as_bytes(), 0o600).map_err(|e| error(ErrorCode::Internal, e))
     }
 
     pub fn remove(&self, name: &str) -> Result<bool> {
         let Some(text) = fs::read_following(&self.config_path) else { return Ok(false) };
-        let updated = join::remove_node(&text, name);
-        if updated == text {
-            return Ok(false);
-        }
+        let Some(updated) = join::remove_node(&text, name)? else { return Ok(false) };
         fs::write_following(&self.config_path, updated.as_bytes(), 0o600).map_err(|e| error(ErrorCode::Internal, e))?;
         Ok(true)
     }

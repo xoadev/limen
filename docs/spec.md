@@ -440,9 +440,9 @@ hub:   [nodes.nas] with the request's source address, then `hello`  →  {"reach
 - The hub trusts the host key that arrives with a valid code: trust on first use, bound to an invitation a person
   gave out.
 - The node's address is where the `POST` comes from, unless it sends `--address`. The hub edits only that node's
-  table in `limen.toml`, and parses the result before writing it.
-- The node doesn't trust the hub more than the hub trusts it: the name it is given must be a node name, and every
-  value it writes to its own `limen.toml` is quoted.
+  table in `limen.toml`, edited as TOML and not as text, and parses the result before writing it.
+- The node doesn't trust the hub more than the hub trusts it: the name it is given must be a node name, and what
+  it writes to its own `limen.toml` is written as TOML values, which can't be more than values.
 - `limen join` talks HTTP to an address, never a name, so a join line means the same wherever it is pasted.
 - Without an HTTP hub, `invite` prints the hub's key in the line (`--hub-key`) and the node prints
   `limen trust <name> <address> '<host key>'` for the hub.
@@ -487,8 +487,8 @@ key opened.
     redaction, the join's formats and the parsers of what system programs print. Pure, tested without a
     machine.
   - `limen`: the binary — processes, files, SSH, MCP and HTTP.
-- MCP: own JSON-RPC 2.0 implementation, no SDK. HTTP: `tiny_http` for the hub, `ureq` for `join`, both
-  without TLS. JSON: `serde_json`. CLI: `clap`.
+- MCP: own JSON-RPC 2.0 implementation, no SDK. HTTP: `tiny_http` for the hub; `join`'s two requests over
+  `std::net`. Neither has TLS. JSON: `serde_json`. CLI: `clap`. System calls: `rustix`; no `unsafe` code.
 - Users and groups come from `/etc/passwd` and `/etc/group`, read by limen itself; nodes resolve no host
   names (`git` and `ssh` do).
 - Processes: `std::process::Command` with an argument array, never a shell; own process group, a clean
@@ -496,8 +496,8 @@ key opened.
   then `SIGKILL`.
 - SSH: the system `ssh` binary with `BatchMode=yes`, `IdentitiesOnly=yes` and connection
   multiplexing (`ControlMaster`, sockets in `$XDG_RUNTIME_DIR/limen-<uid>` or `/tmp/limen-<uid>`).
-- TOML: the `toml` crate, read through a reader that names the key in every error and fails on keys
-  nobody reads.
+- TOML: `toml_edit`. Files are read into `#[derive(Deserialize)]` types that refuse unknown keys, so a typo
+  fails with its line; the hub's and node's `limen.toml` are edited as documents, comments kept.
 
 ## 13. Threat model
 
@@ -531,7 +531,7 @@ key opened.
 | Empty allowlist by default | A broad default such as `/etc/**` | `/etc` holds Wi-Fi passwords, VPN keys and TLS keys |
 | Rust | Kotlin/Native (the first implementation), Go | Static musl binaries of about 3 MB built by the toolchain itself, arm64 without a cross compiler, and memory safety without a garbage collector in what runs as root. Kotlin/Native had no musl target: a static glibc needed its own linker script, no NSS, and an own HTTP client where glibc's iconv was missing |
 | A static binary | A package per distribution | One file runs on any Linux, and OpenWrt has no package for it |
-| A TOML reader over a table | Deserializing into structs | Tables named by the operator (`[nodes.<name>]`, `[args.<name>]`) map badly onto a deserializer, and errors must name the key |
+| Configuration as `serde` types, edited with `toml_edit` | Reading and editing TOML by hand | `deny_unknown_fields` turns a typo into an error with its line; an edited document can't gain a table from a value, and keeps the operator's comments |
 | `/proc` and `statvfs` | `ps`, `ss`, `df` | busybox's versions lack the options, and the formats differ between distributions |
 | Scripts converge, `node.toml` declares | limen installing packages and services | limen would become a configuration manager for every distribution; scripts already know how |
 | Joining with a one-time invitation | Copying keys by hand, or the hub logging into nodes with an administrator's SSH | Nothing to carry but one line; the hub never holds more than its read key |

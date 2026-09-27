@@ -10,6 +10,7 @@ use hmac::{Hmac, KeyInit, Mac};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use toml_edit::{DocumentMut, Item, Table, value};
 
 /// `SHA256:<base64>` of the key blob, as `ssh-keygen -lf` prints it: what a person can check with standard tools.
 pub fn fingerprint(public_key: &str) -> Result<String> {
@@ -138,11 +139,9 @@ pub struct PendingInvite {
     pub secret: String,
 }
 
-/// The hub's limen.toml, edited as text so that everything else in it —comments, order, other settings— stays as the
-/// operator wrote it: a node's `[nodes.<name>]` table is replaced or appended, nothing more.
-///
-/// Every value is checked against the pattern the configuration itself enforces before it is written: they come from
-/// the node that joins, and a quote and a newline in an address would otherwise let it write TOML of its own.
+/// The hub's limen.toml with node [name]'s table set to these values; everything else in it —comments, order, other
+/// settings— stays as the operator wrote it. The values come from the node that joins: checked against the patterns
+/// the configuration enforces, and written as values, which can't be more than values.
 pub fn upsert_node(text: &str, name: &str, host: &str, port: u16, user: &str, host_key: &str) -> Result<String> {
     let key = without_comment(host_key);
     if !is(hub::NODE_NAME, name) {
@@ -160,33 +159,36 @@ pub fn upsert_node(text: &str, name: &str, host: &str, port: u16, user: &str, ho
     if !is(hub::HOST_KEY, &key) {
         return Err(bad_request("the host key is not '<type> <base64>'"));
     }
-    let mut section = format!("[nodes.{name}]\nhost = \"{host}\"\n");
+    let mut doc = document(text)?;
+    let mut node = Table::new();
+    node["host"] = value(host);
     if port != 22 {
-        section.push_str(&format!("port = {port}\n"));
+        node["port"] = value(i64::from(port));
     }
     if user != hub::READ_USER {
-        section.push_str(&format!("user = \"{user}\"\n"));
+        node["user"] = value(user);
     }
-    section.push_str(&format!("host_key = \"{key}\"\n"));
-    let kept = remove_node(text, name);
-    let kept = kept.trim_end();
-    Ok(if kept.is_empty() { section } else { format!("{kept}\n\n{section}") })
+    node["host_key"] = value(key);
+    let nodes = doc.entry("nodes").or_insert_with(|| {
+        // `[nodes.nas]` and no `[nodes]` of its own.
+        let mut t = Table::new();
+        t.set_implicit(true);
+        Item::Table(t)
+    });
+    let nodes = nodes.as_table_like_mut().ok_or_else(|| bad_request("`nodes` in limen.toml is not a table"))?;
+    nodes.insert(name, Item::Table(node));
+    Ok(doc.to_string())
 }
 
-pub fn remove_node(text: &str, name: &str) -> String {
-    let header = Regex::new(&format!(r#"^\s*\[\s*nodes\."?{}"?\s*]\s*(#.*)?$"#, regex::escape(name))).unwrap();
-    let mut skipping = false;
-    let kept: Vec<&str> = text
-        .lines()
-        .filter(|line| {
-            if line.trim_start().starts_with('[') {
-                skipping = header.is_match(line);
-            }
-            !skipping
-        })
-        .collect();
-    let out = kept.join("\n");
-    Regex::new(r"\n{3,}").unwrap().replace_all(&out, "\n\n").into_owned()
+/// The hub's limen.toml without node [name]; None when it had no such node.
+pub fn remove_node(text: &str, name: &str) -> Result<Option<String>> {
+    let mut doc = document(text)?;
+    let removed = doc.get_mut("nodes").and_then(Item::as_table_like_mut).and_then(|nodes| nodes.remove(name));
+    Ok(removed.map(|_| doc.to_string()))
+}
+
+fn document(text: &str) -> Result<DocumentMut> {
+    text.parse().map_err(|e| bad_request(format!("the hub's limen.toml is not TOML: {e}")))
 }
 
 #[cfg(test)]
@@ -261,7 +263,8 @@ mod tests {
             ("10.0.0.9", 2222, "root", KEY)
         );
         assert_eq!(config.node("router").unwrap().host, "10.0.0.2");
-        assert!(!remove_node(&updated, "nas").contains("nodes.nas"));
+        assert!(!remove_node(&updated, "nas").unwrap().unwrap().contains("nodes.nas"));
+        assert_eq!(remove_node(&updated, "olympus").unwrap(), None);
     }
 
     #[test]

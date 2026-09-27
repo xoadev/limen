@@ -1,9 +1,12 @@
 //! `/etc/limen/limen.toml` (spec §7.1). Every key has a default; a missing file means nothing is readable.
 
+use super::{ConfigError, ConfigResult, absolute, fail, positive};
 use crate::glob::Glob;
 use crate::scripts::ScriptKind;
-use crate::toml_reader::{self, Reader, TomlResult, quote};
 use regex::Regex;
+use serde::Deserialize;
+use std::sync::LazyLock;
+use toml_edit::{DocumentMut, Item, Table, value};
 
 pub const PATH: &str = "/etc/limen/limen.toml";
 
@@ -36,15 +39,19 @@ impl RepoConfig {
 
     /// The URL without credentials, for answers and logs.
     pub fn display_url(&self) -> String {
-        Regex::new(r"^(\w+://)[^/@]*@").unwrap().replace(&self.url, "$1").into_owned()
+        static CREDENTIALS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(\w+://)[^/@]*@").unwrap());
+        CREDENTIALS.replace(&self.url, "$1").into_owned()
     }
 
     /// Owner and name when the repository is on GitHub, for the token link of `install`.
     pub fn github(&self) -> Option<(String, String)> {
-        Regex::new(r"^(?:https://github\.com/|git@github\.com:|ssh://git@github\.com/)([^/]+)/([^/]+?)(?:\.git)?/?$")
+        static GITHUB: LazyLock<Regex> = LazyLock::new(|| {
+            Regex::new(
+                r"^(?:https://github\.com/|git@github\.com:|ssh://git@github\.com/)([^/]+)/([^/]+?)(?:\.git)?/?$",
+            )
             .unwrap()
-            .captures(&self.url)
-            .map(|c| (c[1].to_string(), c[2].to_string()))
+        });
+        GITHUB.captures(&self.url).map(|c| (c[1].to_string(), c[2].to_string()))
     }
 
     /// Last `sync`: next to the checkout, outside it, so `git clean` never removes it.
@@ -93,6 +100,72 @@ impl Default for NodeConfig {
     }
 }
 
+/// The file as written; [NodeConfig] is what it means.
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields, default)]
+struct File {
+    files: Files,
+    logs: Logs,
+    limits: Limits,
+    redact: Redact,
+    scripts: Scripts,
+    audit: Audit,
+    repo: Option<Repo>,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields, default)]
+struct Files {
+    allow: Vec<String>,
+    deny: Vec<String>,
+    max_bytes: Option<i64>,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields, default)]
+struct Logs {
+    max_lines: Option<i64>,
+    scan_lines: Option<i64>,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields, default)]
+struct Limits {
+    max_response: Option<i64>,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields, default)]
+struct Redact {
+    patterns: Vec<String>,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields, default)]
+struct Scripts {
+    checks: Option<String>,
+    actions: Option<String>,
+    setup: Option<String>,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields, default)]
+struct Audit {
+    path: Option<String>,
+    max_bytes: Option<i64>,
+    runs: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Repo {
+    url: Option<String>,
+    branch: Option<String>,
+    path: Option<String>,
+    dir: Option<String>,
+    token_file: Option<String>,
+}
+
 impl NodeConfig {
     /// A script directory: what `[scripts]` says, else the repository's folder, else `/etc/limen/<kind>.d`.
     pub fn directory(&self, kind: ScriptKind) -> String {
@@ -117,136 +190,83 @@ impl NodeConfig {
         self.repo.as_ref().map(|r| format!("{}/node.toml", r.base()))
     }
 
-    pub fn parse(text: &str) -> TomlResult<NodeConfig> {
-        let table = toml_reader::parse(text)?;
-        let root = Reader::new(&table);
+    pub fn parse(text: &str) -> ConfigResult<NodeConfig> {
+        let f: File = super::from_str(text)?;
         let d = NodeConfig::default();
-        let files = root.table("files")?;
-        let logs = root.table("logs")?;
-        let limits = root.table("limits")?;
-        let redact = root.table("redact")?;
-        let scripts = root.table("scripts")?;
-        let audit = root.table("audit")?;
-        let repo = root.table("repo")?;
-        let mut config = d.clone();
-        if let Some(f) = &files {
-            if let Some(allow) = f.strings("allow")? {
-                patterns(f, "allow", &allow)?;
-                config.allow = allow;
-            }
-            if let Some(deny) = f.strings("deny")? {
-                patterns(f, "deny", &deny)?;
-                config.deny = deny;
-            }
-            if let Some(n) = positive(f, "max_bytes")? {
-                config.max_file_bytes = n;
+        for (key, list) in [("files.allow", &f.files.allow), ("files.deny", &f.files.deny)] {
+            if let Some(e) = list.iter().find_map(|p| Glob::new(p).err()) {
+                return fail(key, e);
             }
         }
-        if let Some(l) = &logs {
-            config.max_lines = positive(l, "max_lines")?.unwrap_or(d.max_lines);
-            config.scan_lines = positive(l, "scan_lines")?.unwrap_or(d.scan_lines);
+        if let Some(p) = f.redact.patterns.iter().find(|p| Regex::new(p).is_err()) {
+            return fail("redact.patterns", format!("bad regex '{p}'"));
         }
-        if let Some(l) = &limits {
-            config.max_response_bytes = positive(l, "max_response")?.unwrap_or(d.max_response_bytes);
-        }
-        if let Some(r) = &redact {
-            if let Some(list) = r.strings("patterns")? {
-                for p in &list {
-                    if regex::Regex::new(p).is_err() {
-                        return r.fail("patterns", &format!("bad regex '{p}'"));
-                    }
-                }
-                config.redact = list;
-            }
-        }
-        if let Some(s) = &scripts {
-            config.explicit_checks = absolute(s, "checks")?;
-            config.explicit_actions = absolute(s, "actions")?;
-            config.explicit_setup = absolute(s, "setup")?;
-        }
-        if let Some(a) = &audit {
-            config.audit = absolute(a, "path")?.unwrap_or(d.audit.clone());
-            if let Some(n) = a.long("max_bytes")? {
-                if n < 1024 {
-                    return a.fail("max_bytes", "at least 1024");
-                }
-                config.audit_max_bytes = n as u64;
-            }
-            config.runs = absolute(a, "runs")?.unwrap_or(d.runs.clone());
-        }
-        if let Some(r) = &repo {
-            config.repo = Some(repo_config(r)?);
-        }
-        for t in [&files, &logs, &limits, &redact, &scripts, &audit, &repo].into_iter().flatten() {
-            t.reject_unknown()?;
-        }
-        root.reject_unknown()?;
-        Ok(config)
+        let audit_max_bytes = match f.audit.max_bytes {
+            Some(n) if n < 1024 => return fail("audit.max_bytes", "at least 1024"),
+            n => n.map_or(d.audit_max_bytes, |n| n as u64),
+        };
+        Ok(NodeConfig {
+            max_file_bytes: positive("files.max_bytes", f.files.max_bytes)?.unwrap_or(d.max_file_bytes),
+            max_lines: positive("logs.max_lines", f.logs.max_lines)?.unwrap_or(d.max_lines),
+            scan_lines: positive("logs.scan_lines", f.logs.scan_lines)?.unwrap_or(d.scan_lines),
+            max_response_bytes: positive("limits.max_response", f.limits.max_response)?.unwrap_or(d.max_response_bytes),
+            allow: f.files.allow,
+            deny: f.files.deny,
+            redact: f.redact.patterns,
+            explicit_checks: absolute("scripts.checks", f.scripts.checks)?,
+            explicit_actions: absolute("scripts.actions", f.scripts.actions)?,
+            explicit_setup: absolute("scripts.setup", f.scripts.setup)?,
+            audit: absolute("audit.path", f.audit.path)?.unwrap_or(d.audit),
+            audit_max_bytes,
+            runs: absolute("audit.runs", f.audit.runs)?.unwrap_or(d.runs),
+            repo: f.repo.map(repo).transpose()?,
+        })
     }
 }
 
-/// The `[repo]` table `install` and `join` write. The values come from the command line and, for the folder, from
-/// the hub's name for the node: quoted, so none of them can write TOML of its own.
-pub fn repo_section(url: &str, branch: &str, path: &str) -> String {
-    format!("[repo]\nurl = {}\nbranch = {}\npath = {}\n", quote(url), quote(branch), quote(path.trim_matches('/')))
-}
-
-fn repo_config(t: &Reader) -> TomlResult<RepoConfig> {
-    let url = match t.string("url")? {
-        Some(u) => u,
-        None => return t.fail("url", "missing"),
-    };
-    if !Regex::new(r"^(https://|ssh://|git@|file://)\S+$").unwrap().is_match(&url) {
-        return t.fail("url", "expected an https://, ssh://, git@ or file:// URL");
+fn repo(r: Repo) -> ConfigResult<RepoConfig> {
+    static URL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(https://|ssh://|git@|file://)\S+$").unwrap());
+    static BRANCH: LazyLock<Regex> = LazyLock::new(|| Regex::new("^[A-Za-z0-9._/-]{1,100}$").unwrap());
+    static FOLDER: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^([A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*)?$").unwrap());
+    let Some(url) = r.url else { return fail("repo.url", "missing") };
+    if !URL.is_match(&url) {
+        return fail("repo.url", "expected an https://, ssh://, git@ or file:// URL");
     }
     let mut repo = RepoConfig::new(&url);
-    if let Some(branch) = t.string("branch")? {
-        if !Regex::new("^[A-Za-z0-9._/-]{1,100}$").unwrap().is_match(&branch) || branch.starts_with('-') {
-            return t.fail("branch", "not a branch name");
+    if let Some(branch) = r.branch {
+        if !BRANCH.is_match(&branch) || branch.starts_with('-') {
+            return fail("repo.branch", "not a branch name");
         }
         repo.branch = branch;
     }
-    let path = t.string("path")?.unwrap_or_default().trim_matches('/').to_string();
-    if !Regex::new(r"^([A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*)?$").unwrap().is_match(&path)
-        || path.split('/').any(|s| s == ".." || s == ".")
-    {
-        return t.fail("path", "a relative folder of the repository");
+    let path = r.path.unwrap_or_default().trim_matches('/').to_string();
+    if !FOLDER.is_match(&path) || path.split('/').any(|s| s == ".." || s == ".") {
+        return fail("repo.path", "a relative folder of the repository");
     }
     repo.path = path;
-    if let Some(dir) = absolute(t, "dir")? {
+    if let Some(dir) = absolute("repo.dir", r.dir)? {
         let dir = dir.trim_end_matches('/').to_string();
         if dir.matches('/').count() < 2 {
-            return t.fail("dir", "too close to /; it is replaced on every sync");
+            return fail("repo.dir", "too close to /; it is replaced on every sync");
         }
         repo.dir = dir;
     }
-    if let Some(token_file) = absolute(t, "token_file")? {
+    if let Some(token_file) = absolute("repo.token_file", r.token_file)? {
         repo.token_file = token_file;
     }
     Ok(repo)
 }
 
-fn patterns(t: &Reader, key: &str, list: &[String]) -> TomlResult<()> {
-    for p in list {
-        if let Err(e) = Glob::new(p) {
-            return t.fail(key, &e);
-        }
-    }
-    Ok(())
-}
-
-fn positive(t: &Reader, key: &str) -> TomlResult<Option<usize>> {
-    match t.int(key)? {
-        Some(n) if n <= 0 => t.fail(key, "must be positive"),
-        n => Ok(n.map(|n| n as usize)),
-    }
-}
-
-fn absolute(t: &Reader, key: &str) -> TomlResult<Option<String>> {
-    match t.string(key)? {
-        Some(v) if !v.starts_with('/') => t.fail(key, "must be an absolute path"),
-        v => Ok(v),
-    }
+/// [text] with its `[repo]` set to these values, what `install` and `join` write; everything else in it, comments
+/// included, stays. The folder can come from the hub's name for the node: written as a value, it can't be more.
+pub fn with_repo(text: &str, url: &str, branch: &str, path: &str) -> ConfigResult<String> {
+    let mut doc: DocumentMut = text.parse().map_err(|e| ConfigError(format!("not TOML: {e}")))?;
+    let mut repo = Table::new();
+    repo["url"] = value(url);
+    repo["branch"] = value(branch);
+    repo["path"] = value(path.trim_matches('/'));
+    doc["repo"] = Item::Table(repo);
+    Ok(doc.to_string())
 }
 
 #[cfg(test)]
@@ -270,8 +290,9 @@ mod tests {
     #[test]
     fn rejects_mistakes() {
         for (text, expected) in [
-            ("[files]\nalow = []", "files.alow: unknown key"),
+            ("[files]\nalow = []", "line 2, column 1: unknown field `alow`"),
             ("[files]\nallow = [\"etc/*\"]", "files.allow"),
+            ("[files]\nallow = [1]", "line 2"),
             ("[scripts]\nchecks = \"relative\"", "scripts.checks: must be an absolute path"),
             ("[redact]\npatterns = [\"(\"]", "redact.patterns: bad regex"),
             ("[logs]\nmax_lines = 0", "logs.max_lines: must be positive"),
@@ -294,18 +315,17 @@ mod tests {
     }
 
     #[test]
-    fn a_repo_section_cannot_write_more_than_itself() {
-        let ok = NodeConfig::parse(&repo_section("https://github.com/you/infra.git", "main", "nodes/nas/")).unwrap();
-        assert_eq!(ok.repo.unwrap().path, "nodes/nas");
+    fn a_repo_is_added_and_nothing_else_changes() {
+        let before = "# mine\n[files]\nallow = [\"/etc/**\"] # this too\n";
+        let after = with_repo(before, "https://github.com/you/infra.git", "main", "nodes/nas/").unwrap();
+        assert!(after.starts_with(before), "{after}");
+        let c = NodeConfig::parse(&after).unwrap();
+        assert_eq!((c.allow.len(), c.repo.unwrap().path.as_str()), (1, "nodes/nas"));
         // A hub that names the node like this must not point the checks at the actions, or `dir` at /usr/lib.
         for hostile in ["x\"\n[scripts]\nchecks = \"/opt/limen/repo/nodes/x/actions\"\n#", "x\"\ndir = \"/usr/lib\"\n#"]
         {
-            let e = NodeConfig::parse(&repo_section(
-                "https://github.com/you/infra.git",
-                "main",
-                &format!("nodes/{hostile}"),
-            ))
-            .unwrap_err();
+            let text = with_repo("", "https://github.com/you/infra.git", "main", &format!("nodes/{hostile}")).unwrap();
+            let e = NodeConfig::parse(&text).unwrap_err();
             assert!(e.0.starts_with("repo.path"), "{e}");
         }
     }

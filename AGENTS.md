@@ -32,8 +32,8 @@ next session, another agent or a person can't read it.
 
 | Crate | Type | May depend on | Never on |
 |---|---|---|---|
-| `limen-core` | Library | Pure crates: `serde`, `serde_json`, `toml`, `regex`, `sha2`, `hmac`, `base64` | processes, files, network, `libc` |
-| `limen` | The binary, static musl for `x86_64` and `aarch64` | `limen-core`, `clap`, `libc`, `getrandom`, `tiny_http`, `ureq` (no TLS) | — |
+| `limen-core` | Library | Pure crates: `serde`, `serde_json`, `toml_edit`, `indexmap`, `regex`, `sha2`, `hmac`, `base64` | processes, files, network, system calls |
+| `limen` | The binary, static musl for `x86_64` and `aarch64` | `limen-core`, `clap`, `rustix`, `tiny_http` | — |
 
 Rules that hold:
 
@@ -42,7 +42,8 @@ Rules that hold:
 - **A new dependency must build for both musl targets without a C compiler** —`make cli ARCH="x86_64 aarch64"`—
   and earn its size: the binary goes on routers with a few megabytes of flash. `make e2e` runs the result on Debian
   and OpenWrt.
-- **No `unsafe` but the system calls `libc` offers** (`statvfs`, `poll`, `kill`, termios), each where `std` has none.
+- **No `unsafe` code**: `#![forbid(unsafe_code)]` in both crates. What `std` lacks (`statvfs`, `poll`, `kill` of a
+  process group, termios, `uname`) comes from `rustix`'s safe API.
 
 ## Technical choices
 
@@ -56,9 +57,9 @@ Each one had an alternative. Changing one is changing this table and the spec's 
 | Language | Rust | One small static binary per architecture, no runtime, and memory safety in a program that runs as root at a security boundary. Kotlin/Native was the first implementation; docs/openwrt.md says what it cost |
 | Child processes | `std::process::Command`, argument arrays, own process group | A timeout reaches what a script started; never a shell |
 | MCP | Own JSON-RPC 2.0, no SDK | A few hundred lines, fully under control; the SDKs bring an async runtime |
-| TOML | The `toml` crate, read through `toml_reader::Reader` | Errors name the key (`files.alow: unknown key`), and a key nobody reads is an error |
+| TOML | `toml_edit`: `#[derive(Deserialize)]` with `deny_unknown_fields` to read, `DocumentMut` to edit | A typo is an error with its line; editing a document keeps the operator's comments, and a value can't become a table |
 | CLI | `clap` (derive) | Help and usage from the definitions |
-| HTTP | `tiny_http` for the hub, `ureq` for `join`, both without TLS | Synchronous and small; the hub is reached over a VPN or the LAN |
+| HTTP | `tiny_http` for the hub; `join`'s two requests over `std::net` (`os/http.rs`) | Synchronous and small; the hub is reached over a VPN or the LAN, and a client library was ten crates for two requests to our own server |
 | libc | musl, linked statically by Rust's own targets and `rust-lld` | One file per architecture runs on any Linux, and building for arm64 needs no cross compiler |
 | System facts | `/proc`, `statvfs`, `/etc/passwd` | `ps`, `ss` and `df` differ between distributions and busybox |
 
@@ -158,8 +159,8 @@ Mistakes made here, with what avoids them. `make check` does not see them.
   (`-s`), and `install` warns about an empty root password.
 - **A join is input from both sides.** The hub's name for a node became the node's repository folder, pasted
   into its `limen.toml`: a hostile hub could write `[scripts]` or `[repo].dir` there. Values from the other side
-  are checked against their pattern and written with `toml_reader::quote`; the same holds for what a node sends the
-  hub.
+  are checked against their pattern and written as TOML values through `toml_edit`, never pasted into text; the
+  same holds for what a node sends the hub.
 - **An e2e scene that only checked for an absence passed on a dead hub.** `limen forget` from another process made
   the running `serve` recurse until its stack overflowed; "and it is gone" found nothing, as it expected. `refuse`
   now takes a needle the answer must contain.

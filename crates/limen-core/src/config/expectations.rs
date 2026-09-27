@@ -1,11 +1,13 @@
 //! `node.toml` in the node's folder of the repository (spec §6.1): what must be running. The scripts are how the
 //! node gets there; this is what `state` compares against.
 
+use super::{ConfigResult, fail};
 use crate::requests::UNIT;
-use crate::toml_reader::{self, Reader, TomlResult};
 use regex::Regex;
+use serde::Deserialize;
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, default)]
 pub struct Expectations {
     /// Docker Compose stacks: `stacks/<name>/compose.yaml`, brought up by `apply`.
     pub compose: Vec<String>,
@@ -15,29 +17,27 @@ pub struct Expectations {
     pub procd: Vec<String>,
 }
 
-impl Expectations {
-    pub fn parse(text: &str) -> TomlResult<Expectations> {
-        let table = toml_reader::parse(text)?;
-        let root = Reader::new(&table);
-        let mut out = Expectations::default();
-        if let Some(expect) = root.table("expect")? {
-            out.compose = names(&expect, "compose", "^[a-z0-9][a-z0-9_-]{0,62}$")?;
-            out.units = names(&expect, "units", UNIT)?;
-            out.procd = names(&expect, "procd", "^[A-Za-z0-9._-]{1,64}$")?;
-            expect.reject_unknown()?;
-        }
-        root.reject_unknown()?;
-        Ok(out)
-    }
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields, default)]
+struct File {
+    expect: Expectations,
 }
 
-fn names(t: &Reader, key: &str, shape: &str) -> TomlResult<Vec<String>> {
-    let list = t.strings(key)?.unwrap_or_default();
-    let shape = Regex::new(shape).unwrap();
-    if let Some(bad) = list.iter().find(|n| !shape.is_match(n)) {
-        return t.fail(key, &format!("'{bad}' is not a valid name"));
+impl Expectations {
+    pub fn parse(text: &str) -> ConfigResult<Expectations> {
+        let e = super::from_str::<File>(text)?.expect;
+        for (key, names, shape) in [
+            ("expect.compose", &e.compose, "^[a-z0-9][a-z0-9_-]{0,62}$"),
+            ("expect.units", &e.units, UNIT),
+            ("expect.procd", &e.procd, "^[A-Za-z0-9._-]{1,64}$"),
+        ] {
+            let shape = Regex::new(shape).expect("limen's own patterns compile");
+            if let Some(bad) = names.iter().find(|n| !shape.is_match(n)) {
+                return fail(key, format!("'{bad}' is not a valid name"));
+            }
+        }
+        Ok(e)
     }
-    Ok(list)
 }
 
 #[cfg(test)]

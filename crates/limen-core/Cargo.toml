@@ -9,8 +9,9 @@ rust-version.workspace = true
 [dependencies]
 base64 = "0.23.1"
 hmac = "0.13.0"
+indexmap = { version = "2.14.2", features = ["serde"] }
 regex = "1.13.1"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.151", features = ["preserve_order"] }
 sha2 = "0.11.0"
-toml = "1.1.6"
+toml_edit = { version = "0.25.15", default-features = false, features = ["parse", "display", "serde"] }

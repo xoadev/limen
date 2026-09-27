@@ -15,6 +15,5 @@ pub mod requests;
 pub mod scripts;
 pub mod system;
 pub mod time;
-pub mod toml_reader;
 pub mod trust;
 pub mod version;

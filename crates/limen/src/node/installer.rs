@@ -427,11 +427,17 @@ impl Installer {
                 self.act(&format!("create {dir}"), || fs::mkdirs(dir, 0o755))?;
             }
         }
-        let section = |r: &RepoOptions| node_config::repo_section(&r.url, &r.branch, &r.path);
+        // Written into the operator's text, comments and all.
+        let with_repo = |text: &str, r: &RepoOptions| {
+            node_config::with_repo(text, &r.url, &r.branch, &r.path).map_err(|e| format!("--repo: {e}"))
+        };
         match (fs::read_following(node_config::PATH), repo) {
             (None, _) => {
                 self.act(&format!("write {} (nothing readable until you list it)", node_config::PATH), || {
-                    let text = format!("{CONFIG_TEMPLATE}\n{}", repo.map(section).unwrap_or(REPO_TEMPLATE.into()));
+                    let text = match repo {
+                        Some(r) => with_repo(CONFIG_TEMPLATE, r)?,
+                        None => format!("{CONFIG_TEMPLATE}\n{REPO_TEMPLATE}"),
+                    };
                     fs::write_following(node_config::PATH, text.as_bytes(), 0o644)
                 })?;
             }
@@ -446,8 +452,7 @@ impl Installer {
                     }
                     None => {
                         self.act(&format!("add [repo] to {}", node_config::PATH), || {
-                            let text = format!("{}\n\n{}", existing.trim_end(), section(r));
-                            fs::write_following(node_config::PATH, text.as_bytes(), 0o644)
+                            fs::write_following(node_config::PATH, with_repo(&existing, r)?.as_bytes(), 0o644)
                         })?;
                     }
                     Some(c) if c.url != r.url || c.branch != r.branch || c.path != r.path.trim_matches('/') => {
@@ -576,9 +581,9 @@ fn say(text: &str) {
 }
 
 fn repo_config(options: &RepoOptions) -> Outcome<RepoConfig> {
-    NodeConfig::parse(&node_config::repo_section(&options.url, &options.branch, &options.path))
-        .map(|c| c.repo.expect("the section is there"))
-        .map_err(|e| format!("--repo: {e}"))
+    let text =
+        node_config::with_repo("", &options.url, &options.branch, &options.path).map_err(|e| format!("--repo: {e}"))?;
+    NodeConfig::parse(&text).map(|c| c.repo.expect("the section is there")).map_err(|e| format!("--repo: {e}"))
 }
 
 fn validate_key(option: &str, key: &str) -> Outcome<()> {
