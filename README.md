@@ -183,7 +183,8 @@ names = ["DB_PASSWORD", "MQTT_PASS"]
 
 - **Files**: whatever is readable ends up in the context of the model the hub talks to. List what helps diagnose,
   nothing that holds a secret. Some paths are never readable whatever the list says —`/etc/shadow`, private keys,
-  `/proc`, `/root`, `/etc/limen`—.
+  `/proc`, `/root`, `/etc/limen`—. A link is read where it leads, so it is the target that must be allowed:
+  `/etc/os-release` on Debian is `/usr/lib/os-release`.
 - **Scripts**: every script of the packs listed is a tool. **Offer only changes you would let whoever writes to
   your logs trigger**: text in a log can lead the model to call any of them.
 - **Secrets**: `password=…`, tokens, keys and the values of `redact.names` are masked in everything that leaves the

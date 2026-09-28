@@ -93,18 +93,17 @@ fn read_entry(node: &Node, pack: &str, file: &str) -> Option<ScriptEntry> {
     })
 }
 
-/// The script at [path], resolved, trusted and with its header parsed; none when it has no header; what stops it
-/// otherwise.
+/// The script at [path], resolved, with its header parsed and trusted; none when it has no header —a helper, or the
+/// node's own `limen.toml` in its folder—, executable or not; what stops it otherwise. Reading a header runs nothing,
+/// so it comes first: only a file that says it is a script must meet the rules for running one.
 fn trusted_spec(node: &Node, name: &str, path: &str) -> std::result::Result<Option<(String, ScriptSpec)>, String> {
     let resolved = fs::real_path(path).ok_or("cannot resolve")?;
+    let header = fs::read(&resolved, MAX_HEADER).ok_or("cannot read")?;
+    let Some(spec) = scripts::parse(name, &String::from_utf8_lossy(&header)) else { return Ok(None) };
     if let Some(problem) = trust::problem(&fs::chain(&resolved), node.trusted_owner) {
         return Err(problem);
     }
-    let header = fs::read(&resolved, MAX_HEADER).ok_or("cannot read")?;
-    match scripts::parse(name, &String::from_utf8_lossy(&header)) {
-        None => Ok(None),
-        Some(spec) => spec.map(|spec| Some((resolved, spec))),
-    }
+    spec.map(|spec| Some((resolved, spec)))
 }
 
 pub fn catalog(node: &Node) -> Catalog {
@@ -255,13 +254,20 @@ mod tests {
             ("one/say.sh", ECHO),
             ("one/README.md", "# the pack\n"),
             ("one/helper", "#!/bin/sh\necho help\n"),
+            ("one/limen.toml", "[files]\nallow = []\n"),
+            ("one/forgotten", "#!/bin/sh\n#: description = \"Not made executable\"\n"),
             ("one/lib/format.sh", "#: description = \"inside a subdirectory\"\n"),
             ("two/broken", "#: timeout = \"1s\"\n"),
         ]);
+        // Not executable: the node's own limen.toml, next to its scripts, and a script whose chmod was forgotten.
+        for file in ["one/limen.toml", "one/forgotten"] {
+            std::fs::set_permissions(format!("{}/{file}", packs.dir), std::fs::Permissions::from_mode(0o644)).unwrap();
+        }
         let catalog = catalog(&packs.node);
         assert_eq!(catalog.scripts.iter().map(|spec| spec.name.as_str()).collect::<Vec<_>>(), ["say"]);
-        assert_eq!(catalog.problems.len(), 1, "{:?}", catalog.problems);
-        assert!(catalog.problems[0].contains("broken: the header has no description"), "{:?}", catalog.problems);
+        assert_eq!(catalog.problems.len(), 2, "{:?}", catalog.problems);
+        assert!(catalog.problems[0].contains("forgotten is not executable"), "{:?}", catalog.problems);
+        assert!(catalog.problems[1].contains("broken: the header has no description"), "{:?}", catalog.problems);
     }
 
     #[test]
