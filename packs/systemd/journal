@@ -1,0 +1,17 @@
+#!/bin/sh
+#: description = "The whole system journal, every unit and the kernel, over the last while"
+#: [args.since]
+#: type = "string"
+#: default = "1h"
+#: pattern = '^[0-9]{1,4}[smhd]$'
+#: description = "How far back: 30m, 6h, 2d"
+#: [args.priority]
+#: type = "enum"
+#: required = false
+#: values = ["emerg", "alert", "crit", "err", "warning", "notice", "info", "debug"]
+#: description = "Only entries of this priority or more severe"
+set -eu
+
+set -- --no-pager --output=short-iso --since="-$LIMEN_ARG_SINCE"
+[ -z "${LIMEN_ARG_PRIORITY:-}" ] || set -- "$@" --priority="$LIMEN_ARG_PRIORITY"
+exec journalctl "$@"

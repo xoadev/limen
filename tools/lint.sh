@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # make lint: the linters of this repository, cheap ones first.
 #
-#   .github/workflows/*.yml   actionlint   syntax and expressions of GitHub Actions
-#   tools/, install.sh        shellcheck   quoting, unset variables, the classics
-#   crates/**/*.rs            rustfmt      the layout of rustfmt.toml (FIX=1 rewrites)
-#   crates/**/*.rs            clippy       Rust's own lints, every warning an error
+#   .github/workflows/*.yml      actionlint   syntax and expressions of GitHub Actions
+#   tools/, install.sh, packs/   shellcheck   quoting, unset variables, the classics
+#   crates/**/*.rs               rustfmt      the layout of rustfmt.toml (FIX=1 rewrites)
+#   crates/**/*.rs               clippy       Rust's own lints, every warning an error
 #
 # (the tool names go second on purpose: a comment line that starts with a linter's name is read by that linter
 # as a directive)
@@ -63,8 +63,10 @@ run() {
 fetch_tar "shellcheck-$SHELLCHECK_VERSION" \
   "https://github.com/koalaman/shellcheck/releases/download/v$SHELLCHECK_VERSION/shellcheck-v$SHELLCHECK_VERSION.linux.$arch.tar.xz" \
   "shellcheck-v$SHELLCHECK_VERSION/shellcheck" "${SHA256[shellcheck-$arch]}"
-# install.sh is POSIX sh (OpenWrt has no bash): its shebang tells shellcheck to hold it to that.
-run shellcheck "$CACHE/shellcheck-$SHELLCHECK_VERSION" tools/*.sh install.sh
+# install.sh and the packs' scripts are POSIX sh (OpenWrt has no bash): their shebang tells shellcheck to hold them to
+# that. A pack's scripts have no extension: they are its executable files.
+mapfile -t pack_scripts < <(find packs -type f -perm -u+x | sort)
+run shellcheck "$CACHE/shellcheck-$SHELLCHECK_VERSION" tools/*.sh install.sh "${pack_scripts[@]}"
 
 fetch_tar "actionlint-$ACTIONLINT_VERSION" \
   "https://github.com/rhysd/actionlint/releases/download/v$ACTIONLINT_VERSION/actionlint_${ACTIONLINT_VERSION}_linux_${al_arch}.tar.gz" \

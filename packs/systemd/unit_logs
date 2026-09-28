@@ -1,0 +1,21 @@
+#!/bin/sh
+#: description = "The journal of one systemd unit over the last while"
+#: [args.name]
+#: type = "string"
+#: pattern = '^[A-Za-z0-9@_:\\][A-Za-z0-9@._:\\-]{0,254}$'
+#: description = "The unit, e.g. nginx.service; without a suffix it is a service"
+#: [args.since]
+#: type = "string"
+#: default = "1h"
+#: pattern = '^[0-9]{1,4}[smhd]$'
+#: description = "How far back: 30m, 6h, 2d"
+#: [args.priority]
+#: type = "enum"
+#: required = false
+#: values = ["emerg", "alert", "crit", "err", "warning", "notice", "info", "debug"]
+#: description = "Only entries of this priority or more severe"
+set -eu
+
+set -- --no-pager --output=short-iso --unit="$LIMEN_ARG_NAME" --since="-$LIMEN_ARG_SINCE"
+[ -z "${LIMEN_ARG_PRIORITY:-}" ] || set -- "$@" --priority="$LIMEN_ARG_PRIORITY"
+exec journalctl "$@"

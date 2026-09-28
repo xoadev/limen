@@ -1,0 +1,35 @@
+#!/bin/sh
+#: description = "The machine at a glance: uptime, load, memory, disk use of each real filesystem, and whether a reboot is pending"
+set -eu
+
+read -r seconds _ < /proc/uptime
+seconds=${seconds%.*}
+read -r load1 load5 load15 _ < /proc/loadavg
+cpus=$(grep -c '^processor' /proc/cpuinfo)
+if [ -e /run/reboot-required ]; then reboot=yes; else reboot=no; fi
+
+echo "$(uname -n): up $((seconds / 86400))d $((seconds % 86400 / 3600))h $((seconds % 3600 / 60))m," \
+  "load $load1 $load5 $load15 on $cpus CPUs, reboot required: $reboot"
+if [ -r /run/reboot-required.pkgs ]; then
+  echo "reboot asked for by: $(sort -u /run/reboot-required.pkgs | tr '\n' ' ')"
+fi
+
+# Old kernels have no MemAvailable: free, buffers and cache are what it would be.
+awk '
+  { kib[$1] = $2 }
+  END {
+    available = ("MemAvailable:" in kib) ? kib["MemAvailable:"] : kib["MemFree:"] + kib["Buffers:"] + kib["Cached:"]
+    total = kib["MemTotal:"]
+    printf "memory: %.1f GiB used of %.1f GiB (%d%%)", (total - available) / 1048576, total / 1048576, (total - available) * 100 / total
+    if (kib["SwapTotal:"] > 0)
+      printf ", swap %.1f GiB used of %.1f GiB", (kib["SwapTotal:"] - kib["SwapFree:"]) / 1048576, kib["SwapTotal:"] / 1048576
+    printf "\n"
+  }
+' /proc/meminfo
+
+echo
+# The type of each mount comes from /proc/mounts; memory, pseudo and read-only image filesystems are noise here.
+df -hP | awk '
+  NR == FNR { type[$2] = $3; next }
+  FNR == 1 || type[$6] !~ /^(tmpfs|devtmpfs|ramfs|overlay|squashfs|proc|sysfs|cgroup2?|devpts|efivarfs|nsfs|autofs|fuse\.snapfuse)$/
+' /proc/mounts -

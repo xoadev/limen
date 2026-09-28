@@ -1,0 +1,12 @@
+#!/bin/sh
+#: description = "Changes the machine: restarts one Docker container as it is, without applying compose changes, then shows its state"
+#: timeout = "2m"
+#: [args.name]
+#: type = "string"
+#: pattern = '^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$'
+#: description = "The container's name or id"
+set -eu
+
+docker restart -- "$LIMEN_ARG_NAME" >/dev/null
+docker inspect --type=container \
+  --format='restarted {{slice .Name 1}}: {{.State.Status}}{{with .State.Health}} ({{.Status}}){{end}}' -- "$LIMEN_ARG_NAME"

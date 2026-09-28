@@ -160,6 +160,9 @@ suite_debian() {
   docker cp "$work/hub.pub" "$node:/tmp/hub.pub"
   docker exec "$node" mkdir -p /opt/state
   docker cp "$ROOT/packs" "$node:/opt/state/"
+  # docker cp keeps the owner and mode of this checkout: root's and not group-writable, as an operator's setup leaves
+  # them.
+  docker exec "$node" sh -c 'chown -R root:root /opt/state && chmod -R go-w /opt/state'
 
   echo "e2e/debian: install"
   # Through install.sh, unattended, as dash runs it; the hub's key given as a file.
@@ -205,7 +208,6 @@ EOF
 echo which
 EOF
   done
-  docker exec "$node" chmod -R go-w /opt/state/packs/system
 
   host_key=$(docker exec "$node" cat /etc/ssh/ssh_host_ed25519_key.pub | cut -d' ' -f1,2)
   hub_config debian "$port" limen "$host_key"
