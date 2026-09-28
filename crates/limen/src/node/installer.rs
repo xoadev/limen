@@ -208,8 +208,10 @@ impl Installer {
                 );
             }
         }
-        let same_key =
-            matches!((read_key, deploy_key), (Some(read_key), Some(deploy_key)) if key_blob(read_key) == key_blob(deploy_key));
+        let same_key = match (read_key, deploy_key) {
+            (Some(read_key), Some(deploy_key)) => key_blob(read_key) == key_blob(deploy_key),
+            _ => false,
+        };
         if same_key {
             return Err("--read-key and --deploy-key are the same key: the hub would hold the deploy role too".into());
         }

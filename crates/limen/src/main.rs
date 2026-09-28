@@ -592,7 +592,9 @@ fn join_with_key(hub_key: &str, args: &JoinArgs) -> Exit {
 
 fn install(args: &InstallArgs) -> Exit {
     let node = sys::hostname().to_lowercase();
-    Installer::new(args.dry_run).install(args.read_key.as_deref(), &args.setup.setup(), &node, true).map_err(failed("install"))
+    Installer::new(args.dry_run)
+        .install(args.read_key.as_deref(), &args.setup.setup(), &node, true)
+        .map_err(failed("install"))
 }
 
 fn apply(from: Option<&str>, sync_first: bool, dry_run: bool, config: &str) -> Exit {
