@@ -4,7 +4,7 @@
 #
 # OpenSSH's client comes from Alpine, which keeps it patched, with just the libraries it links (musl, libcrypto,
 # zlib); the image it runs in is distroless. Both base images are pinned by digest, and Dependabot moves them.
-FROM alpine:3.22@sha256:5291449c3df73caf6ed85e649dec1b9e818b39a5d8c871e97afc13e9cd5e8fa8 AS ssh
+FROM alpine:3.24@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6 AS ssh
 
 # /out is the image's own files: ssh and ssh-keygen with what `ldd` says they load, and /data. The user is
 # distroless's `nonroot` (65532), already in its /etc/passwd, where ssh looks for it.
