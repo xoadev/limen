@@ -1,0 +1,45 @@
+#!/bin/sh
+#: description = "The processes using the most CPU or memory: pid, user, CPU and memory share, running time, name"
+#: [args.sort]
+#: type = "enum"
+#: values = ["cpu", "memory"]
+#: default = "cpu"
+#: description = "cpu: share since each process started; memory: resident size"
+#: [args.limit]
+#: type = "int"
+#: range = [1, 200]
+#: default = 20
+#: description = "How many processes"
+set -eu
+
+sort=$LIMEN_ARG_SORT
+limit=$LIMEN_ARG_LIMIT
+set -- /proc/[0-9]*
+echo "$# processes, the first $limit by $sort"
+
+# Names only, never arguments: a command line can hold a password.
+if [ "$sort" = cpu ]; then key=-pcpu; else key=-rss; fi
+if table=$(ps -eo pid,user,pcpu,pmem,rss,etime,comm --sort="$key" 2>/dev/null); then
+  printf '%s\n' "$table" | head -n "$((limit + 1))"
+  exit 0
+fi
+
+# busybox's ps can't sort: its top can, by %CPU, or by RSS (VSZ on older ones) in KiB, or with an m or g suffix.
+if [ "$sort" = cpu ]; then columns=%CPU; else columns="RSS VSZ"; fi
+top -b -n 1 | awk -v columns="$columns" '
+  function up_to_name(   line, i) { line = $1; for (i = 2; i <= name; i++) line = line " " $i; return line }
+  $1 == "PID" {
+    for (i = 1; i <= NF; i++) { if (index(" " columns " ", " " $i " ")) key = i; if ($i == "COMMAND") name = i }
+    print up_to_name()
+    next
+  }
+  name {
+    value = key ? $key + 0 : 0
+    if (key && $key ~ /m$/) value *= 1024
+    if (key && $key ~ /g$/) value *= 1048576
+    print value, up_to_name()
+  }
+' | {
+  IFS= read -r header && echo "$header"
+  sort -rn | head -n "$limit" | cut -d ' ' -f 2-
+}

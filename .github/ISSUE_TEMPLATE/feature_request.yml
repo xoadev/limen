@@ -1,0 +1,16 @@
+name: Idea
+description: Something limen should do
+labels: [enhancement]
+body:
+  - type: textarea
+    id: need
+    attributes:
+      label: What you need
+      description: The situation, and what you would ask the agent or limen to do
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: How it could work
+      description: A tool, a request, a script, a configuration key… and how it stays read-only and bounded on the node

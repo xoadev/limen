@@ -1,0 +1,17 @@
+#!/bin/sh
+#: description = "The log of one Docker container over the last while, with timestamps, its stdout and stderr together"
+#: [args.name]
+#: type = "string"
+#: pattern = '^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$'
+#: description = "The container's name or id"
+#: [args.since]
+#: type = "string"
+#: default = "1h"
+#: pattern = '^[0-9]{1,4}[smhd]$'
+#: description = "How far back: 30m, 6h, 2d"
+set -eu
+
+since=$LIMEN_ARG_SINCE
+# Docker takes Go durations, which have no days.
+case $since in *d) since="$((${since%d} * 24))h" ;; esac
+exec docker logs --timestamps --since="$since" -- "$LIMEN_ARG_NAME" 2>&1

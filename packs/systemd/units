@@ -1,0 +1,31 @@
+#!/bin/sh
+#: description = "systemd units of one type and their state: load, active, sub-state, description"
+#: [args.type]
+#: type = "enum"
+#: values = ["service", "timer", "socket", "mount", "path", "target", "all"]
+#: default = "service"
+#: description = "The kind of unit"
+#: [args.state]
+#: type = "enum"
+#: values = ["all", "running", "failed", "active", "inactive"]
+#: default = "all"
+#: description = "Only units in this state"
+#: [args.pattern]
+#: type = "string"
+#: required = false
+#: pattern = '^[A-Za-z0-9@_*?][A-Za-z0-9@._:*?-]{0,127}$'
+#: description = "Only units whose name matches this glob, e.g. docker* or getty@*"
+set -eu
+
+set -- --no-pager --no-legend --plain --full --all
+[ "$LIMEN_ARG_TYPE" = all ] || set -- "$@" --type="$LIMEN_ARG_TYPE"
+[ "$LIMEN_ARG_STATE" = all ] || set -- "$@" --state="$LIMEN_ARG_STATE"
+[ -z "${LIMEN_ARG_PATTERN:-}" ] || set -- "$@" -- "$LIMEN_ARG_PATTERN"
+
+units=$(systemctl list-units "$@")
+printf '%s\n' "$units" | awk -v type="$LIMEN_ARG_TYPE" -v state="$LIMEN_ARG_STATE" '
+  NF { total++ } $3 == "failed" { failed++ }
+  END { printf "%d %s units (state %s), %d failed\n", total, type, state, failed }
+'
+echo "UNIT LOAD ACTIVE SUB DESCRIPTION"
+printf '%s\n' "$units"

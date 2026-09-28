@@ -1,0 +1,75 @@
+# `make check` on every push to main and every pull request: the one mandatory gate, and what a release waits for.
+# The end-to-end scenes are e2e.yml: they need Docker and several minutes, and run on the pull requests that touch
+# what they cover.
+name: check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: check-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      # Every action pinned by commit SHA, with its version in a comment: a tag can move, a SHA cannot.
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Toolchain, dependencies and build cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.rustup/toolchains
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+            ~/.cache/limen/lint
+          key: rust-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'tools/lint.sh') }}
+          restore-keys: rust-${{ runner.os }}-
+
+      # `-k`: every check runs even when one fails, so a red build says everything that is wrong at once.
+      - name: make -k check
+        run: make -k check
+
+      # `make check` builds and tests this runner's architecture only. Both static binaries are linked here too, so a
+      # change that breaks one is found on its pull request and not when a release is being published.
+      - name: Both binaries link, statically
+        run: |
+          make cli ARCH="x86_64 aarch64"
+          file "$(tools/cargo.sh artifact x86_64)" | tee /dev/stderr | grep -Eq "x86-64.*static(-pie)?(ally)? linked"
+          file "$(tools/cargo.sh artifact aarch64)" | tee /dev/stderr | grep -Eq "ARM aarch64.*static(-pie)?(ally)? linked"
+
+  # A red `main` must be impossible to miss: one open issue, reused, that says which commit broke it.
+  alert:
+    needs: check
+    if: failure() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const title = 'main is red';
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const body = `\`make check\` failed on \`main\` at ${context.sha.slice(0, 7)}.\n\n` +
+              `Run: ${runUrl}\n\nFixed like everything else: a branch, a PR and a green \`check\` (AGENTS.md).`;
+            const { data: open } = await github.rest.issues.listForRepo({
+              ...context.repo, state: 'open', labels: 'main-red',
+            });
+            if (open.length) {
+              await github.rest.issues.createComment({ ...context.repo, issue_number: open[0].number, body });
+            } else {
+              await github.rest.issues.create({ ...context.repo, title, body, labels: ['main-red'] });
+            }

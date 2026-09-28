@@ -1,0 +1,14 @@
+# build
+/target/
+# ide
+.idea/
+*.iml
+.vscode/
+# os
+.DS_Store
+# claude: repository agents and skills are committed; each machine's settings are not
+.claude/settings.local.json
+.claude/worktrees/
+# local state
+*.env
+/.limen/

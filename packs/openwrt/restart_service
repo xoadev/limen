@@ -1,0 +1,26 @@
+#!/bin/sh
+#: description = "Changes the machine: restarts one OpenWrt service with /etc/init.d/<name> restart, then shows its state"
+#: timeout = "2m"
+#: [args.name]
+#: type = "string"
+#: pattern = '^[a-z0-9][a-z0-9_-]{0,31}$'
+#: description = "The service, as named in /etc/init.d, e.g. dnsmasq"
+set -eu
+
+name=$LIMEN_ARG_NAME
+script=/etc/init.d/$name
+if [ ! -x "$script" ]; then
+  echo "no service $name in /etc/init.d"
+  exit 1
+fi
+# This answer goes back over the network: restarting it would cut the connection halfway.
+if [ "$name" = network ]; then
+  echo "refused: restarting network cuts this connection; do it by hand"
+  exit 1
+fi
+"$script" restart
+echo "restarted $name"
+# Only procd services answer `status`; the others would print their usage.
+if grep -q '^USE_PROCD=1' "$script"; then
+  echo "status: $("$script" status)"
+fi

@@ -1,0 +1,26 @@
+#!/bin/sh
+#: description = "OpenWrt services: whether each starts at boot and how many of its procd instances are running"
+set -eu
+
+# Only the running flags of procd's list: its instances also carry command lines and environments.
+procd=$(ubus call service list)
+rows=
+total=0 enabled=0 stopped=0
+for script in /etc/init.d/*; do
+  [ -x "$script" ] || continue
+  name=${script##*/}
+  if "$script" enabled; then boot=enabled enabled=$((enabled + 1)); else boot=disabled; fi
+  instances=0 running=0
+  for flag in $(jsonfilter -q -s "$procd" -e "@['$name'].instances[*].running"); do
+    instances=$((instances + 1))
+    if [ "$flag" = true ]; then running=$((running + 1)); fi
+  done
+  if [ "$running" -lt "$instances" ]; then stopped=$((stopped + 1)); fi
+  if [ "$instances" -eq 0 ]; then state="no instances"; else state="$running/$instances running"; fi
+  total=$((total + 1))
+  rows="$rows$name $boot $state
+"
+done
+
+echo "$total services, $enabled start at boot, $stopped with an instance not running"
+printf '%s' "$rows"

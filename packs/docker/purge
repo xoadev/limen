@@ -1,0 +1,14 @@
+#!/bin/sh
+#: description = "Changes the machine: deletes stopped containers, unused networks, dangling images and build cache; with images, every image no container uses too. Never volumes"
+#: timeout = "10m"
+#: [args.images]
+#: type = "bool"
+#: default = false
+#: description = "Also delete every image no container uses, not only dangling ones"
+set -eu
+
+set -- --force
+[ "$LIMEN_ARG_IMAGES" = false ] || set -- "$@" --all
+docker system prune "$@"
+echo
+docker system df

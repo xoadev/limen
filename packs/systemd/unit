@@ -1,0 +1,27 @@
+#!/bin/sh
+#: description = "One systemd unit: state and since when, restarts, main process, memory, unit file, and its last journal lines"
+#: [args.name]
+#: type = "string"
+#: pattern = '^[A-Za-z0-9@_:\\][A-Za-z0-9@._:\\-]{0,254}$'
+#: description = "The unit, e.g. nginx.service; without a suffix it is a service"
+set -eu
+
+name=$LIMEN_ARG_NAME
+# Chosen properties, not `systemctl status`: that prints the command line of each of the unit's processes, which
+# can hold a secret.
+properties=$(systemctl show --no-pager \
+  --property=Id,Description,LoadState,ActiveState,SubState,Result,UnitFileState,FragmentPath \
+  --property=ActiveEnterTimestamp,NRestarts,MainPID,ExecMainStatus,MemoryCurrent,TriggeredBy \
+  -- "$name")
+property() { printf '%s\n' "$properties" | sed -n "s/^$1=//p"; }
+
+if [ "$(property LoadState)" = not-found ]; then
+  echo "no unit $name"
+  exit 1
+fi
+echo "$(property Id): $(property ActiveState) ($(property SubState)) since $(property ActiveEnterTimestamp)," \
+  "$(property UnitFileState), $(property NRestarts) restarts"
+printf '%s\n' "$properties"
+echo
+echo "last lines of its journal:"
+journalctl --no-pager --output=short-iso --lines=10 --unit="$name"
