@@ -158,7 +158,7 @@ pub fn open_read(path: &str) -> Result<File, String> {
     OpenOptions::new().read(true).custom_flags(NOFOLLOW).open(path).map_err(cannot("open", path))
 }
 
-/// A file the read role opened, and what it is: everything checked about it is checked on this descriptor, never
+/// A file `read_file` opened, and what it is: everything checked about it is checked on this descriptor, never
 /// on the path again, so a file swapped in after the check is not the one read.
 pub struct Opened {
     pub file: File,
@@ -253,7 +253,7 @@ pub fn read_text(path: &str) -> Option<String> {
 }
 
 /// A configuration file, following links: an operator's `limen.toml` or `authorized_keys` that links to a file kept
-/// elsewhere is that file. Only for files under root's or the hub user's directories; what the read role opens goes
+/// elsewhere is that file. Only for files under root's or the hub user's directories; what `read_file` opens goes
 /// through the policy and [read] instead.
 pub fn read_following(path: &str) -> Option<String> {
     real_path(path).and_then(|resolved| read_text(&resolved))

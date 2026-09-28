@@ -381,7 +381,7 @@ mod tests {
         let issued = hub.invite("nas", Duration::from_secs(3600)).unwrap();
         assert_eq!(hub.invitation(&issued.code).unwrap().name, "nas");
         let host_key = format!("{KEY} root@nas");
-        let arrival = Arrival::new(&host_key, "limen-read", 22, None).signed(&issued.secret);
+        let arrival = Arrival::new(&host_key, "limen", 22, None).signed(&issued.secret);
         let welcome = hub.arrive(&issued.code, &arrival, "::ffff:10.0.0.7", &Answering).unwrap();
         assert!(welcome.reachable);
         assert_eq!(welcome.address, "10.0.0.7");
@@ -398,14 +398,13 @@ mod tests {
         // Whoever sees the code on the wire arrives first, with their own machine: refused, and the invitation waits.
         let hub = TempHub::initialised();
         let issued = hub.invite("nas", Duration::from_secs(3600)).unwrap();
-        for forged in [
-            Arrival::new(KEY, "limen-read", 22, None),
-            Arrival::new(KEY, "limen-read", 22, None).signed(&"a".repeat(26)),
-        ] {
+        for forged in
+            [Arrival::new(KEY, "limen", 22, None), Arrival::new(KEY, "limen", 22, None).signed(&"a".repeat(26))]
+        {
             assert!(hub.arrive(&issued.code, &forged, "10.0.0.66", &Answering).is_err());
         }
         // Nor can a real arrival be changed on the way: the proof covers every field.
-        let real = Arrival::new(KEY, "limen-read", 22, Some("10.0.0.7")).signed(&issued.secret);
+        let real = Arrival::new(KEY, "limen", 22, Some("10.0.0.7")).signed(&issued.secret);
         let mut moved = real.clone();
         moved.address = Some("10.0.0.66".into());
         assert!(hub.arrive(&issued.code, &moved, "10.0.0.66", &Answering).is_err());
@@ -432,22 +431,22 @@ mod tests {
         let injections = [
             Arrival::new(
                 KEY,
-                "limen-read",
+                "limen",
                 22,
                 Some(&format!("10.0.0.7\"\n[nodes.evil]\nhost = \"6.6.6.6\"\nhost_key = \"{KEY}")),
             ),
-            Arrival::new(KEY, "limen-read", 22, Some("10.0.0.7\"\n[http]\norigins = [\"http://evil\"]\n#")),
+            Arrival::new(KEY, "limen", 22, Some("10.0.0.7\"\n[http]\norigins = [\"http://evil\"]\n#")),
             Arrival::new(
                 KEY,
                 &format!("root\"\n[nodes.evil]\nhost = \"6.6.6.6\"\nhost_key = \"{KEY}\"\n#"),
                 22,
                 Some("10.0.0.7"),
             ),
-            Arrival::new(&format!("{KEY}\"\n[http]\nlisten = \"0.0.0.0:1\"\n#"), "limen-read", 22, Some("10.0.0.7")),
+            Arrival::new(&format!("{KEY}\"\n[http]\nlisten = \"0.0.0.0:1\"\n#"), "limen", 22, Some("10.0.0.7")),
             // Well formed: the hub's own `host_key` line completes the injected node.
             Arrival::new(
                 KEY,
-                "limen-read",
+                "limen",
                 22,
                 Some(&format!("10.0.0.7\"\nhost_key = \"{KEY}\"\n[nodes.evil]\nhost = \"6.6.6.6")),
             ),

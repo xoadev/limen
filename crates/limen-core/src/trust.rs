@@ -23,8 +23,8 @@ pub fn problem(chain: &[FileStat], owner: u32) -> Option<String> {
     untrusted(chain, owner)
 }
 
-/// The same rule for a file root reads and acts on without running it: its configuration, `node.toml`, a compose
-/// file. Whoever can write one of those can make root run anything too.
+/// The same rule for a file root acts on without running it: its configuration, which says what may be read and
+/// run. Whoever can write it can make root run anything too.
 pub fn untrusted(chain: &[FileStat], owner: u32) -> Option<String> {
     let Some(file) = chain.first() else {
         return Some("not found".into());
@@ -57,23 +57,25 @@ mod tests {
 
     #[test]
     fn follows_strict_modes() {
-        let script = stat("/etc/limen/checks.d/a", 0, 0o755, false);
-        let parents: Vec<FileStat> =
-            ["/etc/limen/checks.d", "/etc/limen", "/etc", "/"].iter().map(|path| stat(path, 0, 0o755, true)).collect();
+        let script = stat("/opt/state/packs/docker/a", 0, 0o755, false);
+        let parents: Vec<FileStat> = ["/opt/state/packs/docker", "/etc/limen", "/etc", "/"]
+            .iter()
+            .map(|path| stat(path, 0, 0o755, true))
+            .collect();
         let chain = |first: FileStat, parents: &[FileStat]| [vec![first], parents.to_vec()].concat();
         assert_eq!(problem(&chain(script.clone(), &parents), 0), None);
         let mut foreign = script.clone();
         foreign.uid = 1000;
         assert_eq!(
             problem(&chain(foreign.clone(), &parents), 0).unwrap(),
-            "/etc/limen/checks.d/a is not owned by root"
+            "/opt/state/packs/docker/a is not owned by root"
         );
         // Run as a user, that user's files are trusted too, and root's parents still are.
         assert_eq!(problem(&chain(foreign.clone(), &parents), 1000), None);
         foreign.uid = 1001;
         assert_eq!(
             problem(&chain(foreign, &parents), 1000).unwrap(),
-            "/etc/limen/checks.d/a is not owned by root or uid 1000"
+            "/opt/state/packs/docker/a is not owned by root or uid 1000"
         );
         let mut loose = parents.clone();
         loose[1].mode = 0o775;
@@ -83,6 +85,6 @@ mod tests {
         assert_eq!(problem(&chain(script.clone(), &foreign_parent), 0).unwrap(), "/etc/limen is not owned by root");
         let mut plain = script;
         plain.mode = 0o644;
-        assert_eq!(problem(&chain(plain, &parents), 0).unwrap(), "/etc/limen/checks.d/a is not executable");
+        assert_eq!(problem(&chain(plain, &parents), 0).unwrap(), "/opt/state/packs/docker/a is not executable");
     }
 }

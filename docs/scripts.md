@@ -77,12 +77,12 @@ whose description, arguments or patterns aren't short and plain.
   | `LIMEN_NODE` | The machine's hostname |
 
 - cwd `/`, stdin `/dev/null`, umask `022`.
-- What the agent gets back: the exit code, stdout and stderr, each redacted. `grep` and `tail`, when the
-  agent asks for them, apply to stdout after redaction; a script never sees them. Each stream is captured up to
-  16 MiB: past it the script is stopped and the answer says it was truncated. The answer as a whole is bounded
-  by `limits.max_response`.
+- What the agent gets back: the exit code, stdout and stderr, each redacted, and each cut to its last
+  `limits.max_lines` lines. `grep` and `tail`, when the agent asks for them, apply to stdout after redaction; a script
+  never sees them. Both streams together are captured up to 16 MiB: past it the script is stopped. Whatever a limit
+  cuts, the answer says so, and the answer as a whole is bounded by `limits.max_response`.
 - The exit code is data, not an error: `0` is success, anything else is what the script says it is.
-- Every run is recorded in the audit log, with its arguments.
+- Every run is recorded in the audit log with its arguments, when it starts and when it ends.
 
 ## Who owns it
 

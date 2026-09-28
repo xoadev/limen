@@ -1,7 +1,8 @@
 # Security policy
 
-limen's purpose is a security boundary: an agent may read what a machine allows and nothing more, and may change
-nothing. A way around that boundary is a vulnerability, and it is treated before anything else.
+limen's purpose is a security boundary: an agent may read the files a machine allows and run the scripts it offers,
+with the arguments they declare, and nothing more. A way around that boundary is a vulnerability, and it is treated
+before anything else.
 
 ## Reporting a vulnerability
 
@@ -14,10 +15,11 @@ this is a small project, so please allow a few days.
 
 ## What counts
 
-- The read role (the hub's key) running anything but `limen gate`, or reaching a shell.
+- The hub's key running anything but `limen gate`, or reaching a shell.
 - Reading a path the node's policy denies, including through symlinks or `..`.
-- An argument reaching a shell, or running a script that is not in the node's script directories.
-- The read role doing what only the deploy role may: `sync`, `apply`, actions.
+- An argument reaching a shell, an argument a script's header doesn't declare reaching it, or running a file that
+  is not a script of the node's packs.
+- `grep` or `tail` telling apart what redaction masked.
 - The MCP server over HTTP answering without the token.
 - A join invitation used more than once, after it expires, or to add a node other than the one it names.
 - A secret leaving a node through something limen masks (redaction) in a way the documentation says it doesn't.
@@ -28,10 +30,12 @@ this is a small project, so please allow a few days.
 
 These are limits of the design, documented in the [threat model](docs/spec.md#13-threat-model):
 
-- Anything a script in the node's script directories does: they belong to root and limen trusts them.
+- Anything a script of the node's packs does, or prints: they belong to root and limen trusts them.
+- The agent running a script it was led to by text in a log or a file: every script on offer is the operator's
+  choice.
 - Secrets in files the operator allowed: masking is a safety net, not the protection.
 - Whatever the node allows to be read reaching the model provider the hub talks to.
-- Whoever can push to a node's repository branch running code on it as root.
+- Whoever can change a node's packs, or push where one of its scripts fetches them from, running code on it as root.
 - A root login by password on OpenWrt's dropbear: `limen install` warns about it; turning it off is the operator's.
 - Whoever holds write access to this repository, or controls the maintainers' GitHub accounts: `SHA256SUMS` comes
   from the same release as the binaries, so it catches a broken download, not a replaced one, and `install.sh`

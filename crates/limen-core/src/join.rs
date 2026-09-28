@@ -304,7 +304,7 @@ mod tests {
 
     #[test]
     fn an_arrival_is_signed_over_every_field() {
-        let arrival = Arrival::new("ssh-ed25519 AAAA", "limen-read", 22, Some("10.0.0.7")).signed("s");
+        let arrival = Arrival::new("ssh-ed25519 AAAA", "limen", 22, Some("10.0.0.7")).signed("s");
         assert_eq!(arrival.proof, arrival.proof_with("s"));
         assert_ne!(arrival.proof, arrival.proof_with("t"));
         let mut moved = arrival.clone();
@@ -333,9 +333,9 @@ mod tests {
     #[test]
     fn hub_file_writes_nothing_but_its_own_values() {
         for (host, user, key) in [
-            ("10.0.0.7\"\n[nodes.evil]\nhost = \"6.6.6.6", "limen-read", KEY.to_string()),
+            ("10.0.0.7\"\n[nodes.evil]\nhost = \"6.6.6.6", "limen", KEY.to_string()),
             ("10.0.0.7", "root\"\n[http]\n#", KEY.to_string()),
-            ("10.0.0.7", "limen-read", format!("{KEY}\"\n[http]\nlisten = \"0.0.0.0:1")),
+            ("10.0.0.7", "limen", format!("{KEY}\"\n[http]\nlisten = \"0.0.0.0:1")),
         ] {
             assert!(upsert_node("", "nas", host, 22, user, &key).is_err(), "{host} {user} {key}");
         }

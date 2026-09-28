@@ -101,7 +101,7 @@ is ignored.
 
 | Request | Does |
 |---|---|
-| `hello` | limen's version, hostname, OS (`PRETTY_NAME` of `/etc/os-release`), architecture, and the catalog of scripts with what `lint` finds wrong |
+| `hello` | limen's version, hostname, OS (`PRETTY_NAME` of `/etc/os-release`), kernel, architecture, and the catalog of scripts with what is wrong with the ones left out |
 | `read_file` | An allowed file (§7.1), by line range or its last lines |
 | `list_dir` | An allowed directory |
 | `history` | The node's audit log (§8) |
@@ -114,7 +114,8 @@ is ignored.
   anything runs; unknown fields are rejected.
 - A script that ran answers `ok` with its exit code, whatever it is: a failure of the script is data, not
   an error of the request.
-- Error codes: `bad_request`, `denied`, `not_found`, `unavailable` (the node is at `limits.concurrency`),
+- Error codes: `bad_request`, `denied`, `not_found`, `unavailable` (the node is at `limits.concurrency`, or the
+  script is refused: not root's, two with its name),
   `timeout`, `unsupported_version`, `internal`. The hub adds `unreachable` and `host_key_mismatch` from
   `ssh`'s exit status 255.
 - `v` is the protocol version. A node answers `unsupported_version` with the versions it speaks, so
@@ -127,7 +128,7 @@ Every tool takes a `node` argument.
 | Tool | Returns |
 |---|---|
 | `nodes` | Configured nodes, reachability, limen version, OS, and each node's catalog and its problems |
-| `read_file` | An allowed file: `from` and `lines`, or `tail`; and `grep` |
+| `read_file` | An allowed file: a range, `from` and `lines`; or its end, the last `tail` lines, or those that hold `grep` |
 | `list_dir` | An allowed directory: names, types, sizes, owners, modes, modification times. Only entries that are readable or lead to something readable; at most 1000 |
 | `history` | The node's audit log |
 | `<script>` | One per script in the nodes' catalogs, with its declared arguments plus `grep` and `tail` |
@@ -292,8 +293,8 @@ host_key = "ssh-ed25519 AAAA…"
   That includes malformed ones, those of an unknown version, and those that come while the configuration is
   broken (to the default path then). Arguments over 4 KiB are replaced by their size. Past `audit.max_bytes`
   it becomes `audit.jsonl.1`: no logrotate, which OpenWrt doesn't have.
-- The line is written when the request starts and again when it ends, so a request killed halfway still
-  left a trace.
+- A script's run is written when it starts too, with `started` as its result: it may change the machine, and a run
+  killed halfway still leaves a trace.
 - `history` shows it redacted, like everything that leaves the node. Arguments are recorded: a script
   doesn't take secrets as arguments.
 - The hub logs each tool call to stderr (node, tool, result, duration): over stdio, stdout is the

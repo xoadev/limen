@@ -271,7 +271,7 @@ mod tests {
     }
 
     fn tree() -> Tree {
-        let dir = format!("{}/limen-read-{}", std::env::temp_dir().display(), crate::hub::dir::random(8).unwrap());
+        let dir = format!("{}/limen-files-{}", std::env::temp_dir().display(), crate::hub::dir::random(8).unwrap());
         for subdir in ["etc/private", "outside"] {
             std::fs::create_dir_all(format!("{dir}/{subdir}")).unwrap();
         }
