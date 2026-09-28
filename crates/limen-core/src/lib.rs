@@ -1,8 +1,6 @@
 //! limen's rules (spec §12): protocol, request schemas, argument validation, configuration, script headers, path
 //! policy, redaction and parsers. Pure: no processes, no files, no network, so every rule is tested without a machine.
 
-#![forbid(unsafe_code)]
-
 pub mod config;
 pub mod durations;
 pub mod glob;

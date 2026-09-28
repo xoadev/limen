@@ -9,6 +9,20 @@ license = "Apache-2.0"
 repository = "https://github.com/xoadev/limen"
 rust-version = "1.85"
 
+# What makes code readable is checked by clippy, not left to review (AGENTS.md, "Code"). Warnings fail `make lint`.
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+min_ident_chars = "warn"
+too_many_lines = "warn"
+needless_pass_by_value = "warn"
+items_after_statements = "warn"
+unwrap_used = "warn"
+allow_attributes_without_reason = "warn"
+dbg_macro = "warn"
+todo = "warn"
+
 # One small static binary per architecture (spec §11): what a router's flash has room for.
 [profile.release]
 opt-level = "z"

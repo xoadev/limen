@@ -1,8 +1,6 @@
 //! The `limen` binary (spec §10): the hub (`mcp`, `serve`, `call`, …) and the node side (`gate`, `join`, `install`,
 //! `apply`, …) in one file. Exit codes: 0 ok, 1 error, 2 usage; `check` exits with Nagios' codes.
 
-#![forbid(unsafe_code)]
-
 mod hub;
 mod node;
 mod os;
