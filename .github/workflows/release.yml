@@ -60,7 +60,7 @@ jobs:
 
       - name: Next version and changes
         id: version
-        uses: xoadev/convco-version@d00ff5e010d01a62143731de34ab6a4a8c17ce16 # v1.0.0
+        uses: xoadev/convco-version@97bbabfd76db29aaa7046eebcfb419a4e892449a # v1.0.1
         with:
           # What ends up in the binary or the image: the code, the toolchain and dependencies, the image.
           paths: crates,Cargo.toml,Cargo.lock,rust-toolchain.toml,.cargo,etc/Dockerfile
