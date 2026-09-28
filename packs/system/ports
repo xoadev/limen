@@ -1,0 +1,8 @@
+#!/bin/sh
+#: description = "Listening TCP and UDP sockets, with the process behind each"
+set -eu
+
+if command -v ss >/dev/null 2>&1; then
+  exec ss -tulpn
+fi
+exec netstat -tulpn

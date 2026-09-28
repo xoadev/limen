@@ -1,0 +1,7 @@
+# Static binaries for every Linux (spec §11): musl, linked by the linker Rust ships, so building for arm64 needs no
+# cross compiler.
+[target.x86_64-unknown-linux-musl]
+linker = "rust-lld"
+
+[target.aarch64-unknown-linux-musl]
+linker = "rust-lld"

@@ -1,0 +1,211 @@
+//! Masks secrets in text going out of the node: files, scripts' output, the audit log (spec §7.1). A pattern
+//! with a group named `secret` replaces only that group, so `password=hunter2` stays readable as
+//! `password=[redacted]`; without it the whole match goes.
+//!
+//! Best-effort by nature: the protection is not allowing files that hold secrets. This only catches the usual shapes.
+
+use regex::{Captures, Regex};
+use std::sync::OnceLock;
+
+pub const MASK: &str = "[redacted]";
+
+const SECRET_NAME: &str = "(?:password|passwd|passphrase|pwd|secret|token|psk|api[_-]?key|access[_-]?key|private[_-]?key|\
+     preshared[_-]?key|client[_-]?secret)";
+
+/// OpenWrt's UCI options that hold a secret: `option key '…'` is the Wi-Fi key.
+const UCI_SECRET: &str =
+    "(?:key|psk|private_key|preshared_key|priv_key_pwd|[a-z0-9_]*(?:password|passwd|secret|token))";
+
+/// Whitespace and its opposite, ASCII: Unicode's classes cost milliseconds to compile, on every request.
+const SPACE: &str = r"[\t\n\x0B\x0C\r ]";
+const NOT_SPACE: &str = r"[^\t\n\x0B\x0C\r ]";
+
+/// The value assigned to a name [name] matches: `key = value`, `key: value`, `--key=value`, `"key": "value"`. A quoted
+/// value is masked to its closing quote (or the end of the line), spaces included; a bare one to the next space or
+/// separator.
+fn assignments(name: &str) -> [String; 3] {
+    let assignment = format!(r#"(?i){name}["']?{SPACE}*[:=]{SPACE}*"#);
+    [
+        format!(r#"{assignment}"(?<secret>[^"\n]*)"#),
+        format!(r#"{assignment}'(?<secret>[^'\n]*)"#),
+        format!(r#"{assignment}(?<secret>[^\t\n\x0B\x0C\r "',;&]+)"#),
+    ]
+}
+
+/// The patterns of `redact.names`: the value assigned to any of [names], a whole name and not part of a longer one.
+pub fn of_names(names: &[String]) -> Vec<String> {
+    if names.is_empty() {
+        return vec![];
+    }
+    let escaped: Vec<String> = names.iter().map(|name| regex::escape(name)).collect();
+    assignments(&format!("(?:(?m:^)|[^A-Za-z0-9_])(?:{})", escaped.join("|"))).to_vec()
+}
+
+pub fn built_in() -> Vec<String> {
+    let mut patterns = assignments(SECRET_NAME).to_vec();
+    patterns.extend([
+        // --password value: a flag and its value, apart. The character before it is matched, not looked behind.
+        format!(
+            r#"(?i)(?:^|[^A-Za-z0-9_-])--?{SECRET_NAME}{SPACE}+(?<secret>[^\t\n\x0B\x0C\r "'-][^\t\n\x0B\x0C\r "']*)"#
+        ),
+        format!(r"(?i)authorization:{SPACE}*(?:bearer|basic|token){SPACE}+(?<secret>{NOT_SPACE}+)"),
+        // UCI: option key 'value', quoted or not.
+        format!(r#"(?m)^[\t ]*option[\t ]+{UCI_SECRET}[\t ]+['"]?(?<secret>[^'"\n]*)"#),
+        // Passwords some commands take in their own way: curl -u user:pass, sshpass -p pass, mysql -ppass.
+        r#"(?-u:\b)curl(?-u:\b)[^\n]*?[\t ](?:-u|--user)(?:[\t ]+|=)['"]?[^\t\n :'"]*:(?<secret>[^\t\n '"]+)"#.into(),
+        r#"(?-u:\b)sshpass(?-u:\b)[^\n]*?[\t ]-p[\t ]*(?<secret>[^\t\n '"-][^\t\n '"]*)"#.into(),
+        r#"(?-u:\b)mysql(?:dump|admin)?(?-u:\b)[^\n]*?[\t ]-p(?<secret>[^\t\n '"]+)"#.into(),
+        // Credentials inside a URL: scheme://user:password@host.
+        r"[a-zA-Z][a-zA-Z0-9+.-]*://[^/\t\n\x0B\x0C\r :@]+:(?<secret>[^@\t\n\x0B\x0C\r /]+)@".into(),
+        r"-----BEGIN [A-Z ]*PRIVATE KEY-----(?s:.)*?-----END [A-Z ]*PRIVATE KEY-----".into(),
+        // A line of base64 alone, as a key's body is written: a window of lines that starts inside a key has no
+        // markers to find it by.
+        r"(?m)^[A-Za-z0-9+/]{64,}={0,2}\r?$".into(),
+    ]);
+    patterns
+}
+
+/// Compiled on the first text it redacts: most requests redact nothing, and every request is a process of its own.
+#[derive(Debug, Clone, Default)]
+pub struct Redactor {
+    extra: Vec<String>,
+    patterns: OnceLock<Vec<Regex>>,
+}
+
+impl Redactor {
+    /// The built-in patterns, the operator's `redact.names` and `redact.patterns`, which reading the configuration
+    /// already checked: one that doesn't compile is left out rather than stop every answer.
+    pub fn new(names: &[String], patterns: &[String]) -> Self {
+        let mut extra = of_names(names);
+        extra.extend_from_slice(patterns);
+        Self { extra, patterns: OnceLock::new() }
+    }
+
+    fn patterns(&self) -> &[Regex] {
+        self.patterns.get_or_init(|| {
+            built_in().iter().chain(&self.extra).filter_map(|pattern| Regex::new(pattern).ok()).collect()
+        })
+    }
+
+    pub fn redact(&self, text: &str) -> String {
+        let mut redacted = text.to_string();
+        for regex in self.patterns() {
+            redacted = regex.replace_all(&redacted, masked).into_owned();
+        }
+        redacted
+    }
+}
+
+/// A match with its `secret` group masked, or all of it when the pattern has no such group.
+fn masked(captures: &Captures) -> String {
+    let whole = captures.get(0).expect("group 0 is the whole match");
+    match captures.name("secret") {
+        Some(secret) => {
+            let text = whole.as_str();
+            let before = &text[..secret.start() - whole.start()];
+            let after = &text[secret.end() - whole.start()..];
+            format!("{before}{MASK}{after}")
+        }
+        None => MASK.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn redact(text: &str) -> String {
+        Redactor::default().redact(text)
+    }
+
+    #[test]
+    fn keeps_the_key_and_masks_the_value() {
+        assert_eq!(redact("password=hunter2 user=ana"), "password=[redacted] user=ana");
+        assert_eq!(redact("DB_PASSWORD: s3cr3t"), "DB_PASSWORD: [redacted]");
+        assert_eq!(redact("--api-key=abc123 --verbose"), "--api-key=[redacted] --verbose");
+        assert_eq!(redact(r#""token": "eyJhbGc""#), r#""token": "[redacted]""#);
+    }
+
+    #[test]
+    fn a_quoted_value_goes_whole_spaces_included() {
+        assert_eq!(redact("password = \"correct horse\"\nuser = \"ana\""), "password = \"[redacted]\"\nuser = \"ana\"");
+        assert_eq!(redact("secret: 'two words' # x"), "secret: '[redacted]' # x");
+        assert_eq!(redact(r#"{"password":"a b","user":"ana"}"#), r#"{"password":"[redacted]","user":"ana"}"#);
+        // A line cut before the closing quote still loses the value.
+        assert_eq!(redact("token=\"abc def"), "token=\"[redacted]");
+    }
+
+    #[test]
+    fn a_flag_and_its_value_apart() {
+        // As /proc/<pid>/cmdline reads, arguments joined by spaces.
+        assert_eq!(redact("app --password hunter2 --user ana"), "app --password [redacted] --user ana");
+        assert_eq!(redact("app -token abc"), "app -token [redacted]");
+        assert_eq!(redact("--password hunter2"), "--password [redacted]");
+        assert_eq!(redact("app --token-file /etc/app/token"), "app --token-file /etc/app/token");
+        assert_eq!(redact("the token was refreshed"), "the token was refreshed");
+    }
+
+    #[test]
+    fn headers_urls_and_keys() {
+        assert_eq!(redact("Authorization: Bearer eyJ.abc.def"), "Authorization: Bearer [redacted]");
+        assert_eq!(redact("postgres://app:pa55@db:5432/x"), "postgres://app:[redacted]@db:5432/x");
+        let pem = "a\n-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaA\n-----END OPENSSH PRIVATE KEY-----\nz";
+        assert_eq!(redact(pem), "a\n[redacted]\nz");
+    }
+
+    #[test]
+    fn openwrt_and_the_usual_tools() {
+        assert_eq!(
+            redact("config wifi-iface\n\toption ssid 'home'\n\toption key 'hunter22'"),
+            "config wifi-iface\n\toption ssid 'home'\n\toption key '[redacted]'"
+        );
+        assert_eq!(redact("\toption private_key \"wgkey=\""), "\toption private_key \"[redacted]\"");
+        assert_eq!(redact("\toption password s3cr3t"), "\toption password [redacted]");
+        assert_eq!(redact("wpa_passphrase=hunter22\npsk=\"abc def\""), "wpa_passphrase=[redacted]\npsk=\"[redacted]\"");
+        assert_eq!(redact("PresharedKey = abc="), "PresharedKey = [redacted]");
+        assert_eq!(redact("curl -s -u ana:pa55 https://x"), "curl -s -u ana:[redacted] https://x");
+        assert_eq!(redact("sshpass -p pa55 ssh host"), "sshpass -p [redacted] ssh host");
+        assert_eq!(redact("mysql -u root -ppa55 db"), "mysql -u root -p[redacted] db");
+        // Not every -u or -p is a password.
+        assert_eq!(redact("docker run -u 1000:1000 -p 80:80 app"), "docker run -u 1000:1000 -p 80:80 app");
+    }
+
+    #[test]
+    fn a_key_body_without_its_markers() {
+        let body = "b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW";
+        assert_eq!(
+            redact(&format!("{body}\n{body}\n-----END OPENSSH PRIVATE KEY-----")),
+            "[redacted]\n[redacted]\n-----END OPENSSH PRIVATE KEY-----"
+        );
+        assert_eq!(redact("short line of text"), "short line of text");
+    }
+
+    #[test]
+    fn every_built_in_pattern_compiles() {
+        for pattern in built_in() {
+            Regex::new(&pattern).unwrap_or_else(|error| panic!("{pattern}: {error}"));
+        }
+    }
+
+    #[test]
+    fn leaves_ordinary_text_alone() {
+        let text = "Started nginx.service - A high performance web server.";
+        assert_eq!(redact(text), text);
+    }
+
+    #[test]
+    fn extra_patterns_with_and_without_group() {
+        let redactor = Redactor::new(&[], &["sk-[A-Za-z0-9]{8,}".into(), r"pin (?<secret>\d{4})".into()]);
+        assert_eq!(redactor.redact("key sk-abcdefgh123 and pin 1234"), "key [redacted] and pin [redacted]");
+    }
+
+    #[test]
+    fn the_operators_names() {
+        let redactor = Redactor::new(&["MQTT_PASS".into(), "ha.key".into()], &[]);
+        assert_eq!(redactor.redact("MQTT_PASS=abc MQTT_USER=ana"), "MQTT_PASS=[redacted] MQTT_USER=ana");
+        assert_eq!(redactor.redact(r#"{"mqtt_pass": "a b"}"#), r#"{"mqtt_pass": "[redacted]"}"#);
+        assert_eq!(redactor.redact("ha.key: x1"), "ha.key: [redacted]");
+        // A whole name: not the end of a longer one, and a dot is a dot.
+        assert_eq!(redactor.redact("OLD_MQTT_PASS=abc haXkey=1"), "OLD_MQTT_PASS=abc haXkey=1");
+    }
+}

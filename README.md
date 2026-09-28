@@ -1,150 +1,299 @@
 # limen
 
-An MCP server that lets an AI agent inspect Linux machines — configuration files, logs, systemd
-services, Docker containers and your own checks — **without being able to change anything**.
+```
+    ╭─────╮
+    │  ◉  │   limen
+  ══╧═════╧══  only what the machine allows
+```
 
-**The machine decides.** Every limit lives on the machine being inspected, in `limen` running as an
-SSH forced command. The MCP server, its clients and the model behind them are untrusted: if any of
-them is compromised, or deceived by something it read in a log, the worst it can do is read what the
-machine already allows to be read.
+[![check](https://github.com/xoadev/limen/actions/workflows/check.yml/badge.svg)](https://github.com/xoadev/limen/actions/workflows/check.yml)
+[![release](https://img.shields.io/github/v/release/xoadev/limen?include_prereleases&sort=semver)](https://github.com/xoadev/limen/releases)
+[![license](https://img.shields.io/github/license/xoadev/limen)](LICENSE)
+
+Let an AI agent into your Linux machines **without giving it a shell.** It reads the files each machine allows, and
+runs the scripts each machine offers —to look, and to change what you decided may be changed—. Nothing else.
+
+limen is an [MCP](https://modelcontextprotocol.io) server —MCP is how Claude Code and other agents call tools— that
+reaches every machine you join to it over SSH. Every script becomes a tool: `containers`, `unit_logs`,
+`restart_unit`, `purge`, `sync`… whatever you put in the machine's packs.
+
+*Limen* is Latin for *threshold*: the agent stands at the door of each machine, and the machine decides what crosses.
+
+```
+You:    Immich is down. Why?
+Agent:  (status on nas, then container immich, then container_logs immich)
+        immich-server restarts every minute: Postgres can't write, "No space left on device".
+        /srv is at 100%; most of it is /srv/immich/upload/encoded-video, and 40 GB are dangling images.
+You:    Clear the images.
+Agent:  (purge on nas) Freed 41 GB; immich-server is up.
+```
+
+> **Status: early.** limen works end to end —its tests run it on Debian and on OpenWrt's own image, against real
+> SSH servers—, but it has not run for long on real machines, and until 1.0 its configuration and protocol may
+> change between minor versions. **There is no release yet**: the image and the binaries the install below
+> downloads don't exist until the first one. Until then, [build them from source](#before-the-first-release).
+
+## Why
+
+Asking an agent "why is Immich down?" is useful only if it can look, and "clear the old images" only if it can act.
+The usual way is an MCP server with SSH access, and those give the agent a shell, perhaps with a list of forbidden
+commands kept by the MCP server itself. That list is only as strong as the MCP server and the model behind it: a
+compromised client, or an instruction hidden in a log line the agent just read, and the shell is there.
+
+limen turns it around: **the machine decides.**
+
+- On every machine, SSH only lets the hub's key run one program, `limen gate`, as a forced command. It reads only
+  the paths the machine allows, runs only the scripts in the machine's packs with the arguments their headers
+  declare, masks secrets, caps every answer and writes each request to an audit log.
+- The MCP server —the *hub*— is just a relay. If the hub, its token or the model are compromised, the worst outcome
+  is reading what each machine allows and running the scripts it offers: never a command of their own.
+- **limen knows nothing of systemd, Docker or git.** Everything a machine can do is a script, grouped in packs: one
+  for systemd, one for Docker, one for your own services. A new kind of machine is a new pack, not a new release.
+
+## What you get
+
+- **An agent that can diagnose and act, within what you wrote.** Status, logs of a unit or a container, a
+  configuration file, restarting a service, clearing old images, bringing the machine to its repository: each a
+  script you can read, on each machine.
+- **Every machine alike.** One static binary per architecture runs on Debian, Ubuntu and OpenWrt, x86-64 and arm64.
+- **Nothing extra to run on the machines.** No daemon, no open port: `sshd` is already there, and `limen` starts
+  per request and exits.
+- **A record of everything asked.** Every request and every script run, with its arguments, client and exit code,
+  in each machine's audit log, readable with the `history` tool.
+
+## How it works
 
 ```
 MCP client ──stdio or HTTP──▶ hub: limen mcp | limen serve
-                                │  ssh limen-read@node   (one JSON request on stdin)
+(Claude Code…)                  │  ssh limen@node   (one JSON request on stdin)
                                 ▼
-node:  sshd ──forced command──▶ sudo limen gate --role read ──▶ systemctl, journalctl, docker, files, checks
+node:  sshd ──forced command──▶ sudo limen gate ──▶ allowed files, the packs' scripts
+                                (answers JSON on stdout and exits)
+
+a new machine ──GET/POST /join/<one-time code>──▶ hub   (its key, then the machine's host key)
 ```
 
-- **Nothing listens on the nodes.** `sshd` is the way in; `limen` starts per request and exits.
-- **Nothing is readable by default.** Each node lists the paths it allows; secrets such as
-  `/etc/shadow`, private keys or `/proc/*/environ` are never readable, whatever the list says.
-- **Your scripts become tools.** Drop an executable with a small header into `/etc/limen/checks.d/`
-  and the agent gets a `check_<name>` tool with typed arguments. Nagios-style exit codes, so existing
-  monitoring plugins work as they are.
-- **Changes go through another door.** Setup scripts (from a bare machine to a working one, or to
-  restore it) and one-off actions run with a second key, the `deploy` role, which the MCP server never
-  holds. CI or a person uses it; the agent can only suggest it.
-- **One binary, no runtime.** Kotlin/Native, Linux `amd64` and `arm64`.
-
-The full design is in [`docs/spec.md`](docs/spec.md).
+The hub talks to each machine (each *node*) with the system's `ssh`; nothing listens on the machines but `sshd`.
 
 ## Tools
 
 | Tool | What it answers |
 |---|---|
-| `nodes` | The machines, whether they answer, their OS and the scripts each one has |
-| `status` | Uptime, load, memory, disks, failed units, unhealthy containers, pending reboot |
-| `services`, `service` | systemd units; one unit with its state, restarts and last journal lines |
-| `containers`, `container` | Docker containers; one with its health, mounts, ports and labels (environment by name only) |
-| `logs` | A unit, the journal, a container or an allowed file, always a bounded window, with `grep` |
-| `read_file`, `list_dir` | Allowed files and the directories that lead to them |
-| `processes`, `ports` | Top processes, listening sockets |
-| `history` | The node's audit log of every request |
-| `check_<name>` | Your check scripts |
+| `nodes` | The machines, whether they answer, their OS, limen version and the scripts each one offers |
+| `read_file`, `list_dir` | Files the machine allows, and the directories that lead to them: a range of lines, or the last ones with `grep` |
+| `history` | The machine's audit log |
+| *each script* | One tool per script in the machines' packs, with its own typed arguments, plus `grep` and `tail` to narrow its output |
 
-## Setting up a node
+The packs in [`packs/`](packs/) are examples to copy: `system` (status, processes, ports), `systemd` (units, their
+logs, restarting one), `docker` (containers, their logs, restarting, purging) and `openwrt`.
 
-As root, on a Debian or Ubuntu machine with systemd:
+## Install
 
-```sh
-limen install --read-key "$(cat hub.pub)" --from 100.64.0.0/10
+Two pieces: the **hub**, where the MCP server runs, and every **machine** it inspects —a *node*, in the tools and the
+configuration—. You start the hub once; each machine then joins it with one line the hub gives you.
+
+You need:
+
+- For the hub: Docker on an always-on machine; or, for a hub on your laptop, OpenSSH's `ssh` and `ssh-keygen`.
+- For each machine: Debian, Ubuntu or OpenWrt, x86-64 or arm64, running an SSH server the hub can reach —over a VPN
+  such as Tailscale or Headscale, or your LAN—, and root to install. `curl` and `sudo` on Debian and Ubuntu (OpenWrt
+  has `wget` and needs no sudo). What the packs' scripts use —systemd, Docker— is their business.
+
+### 1. Start the hub
+
+On an always-on machine of your network or VPN, with Docker:
+
+```yaml
+# compose.yaml
+services:
+  limen:
+    image: ghcr.io/xoadev/limen
+    environment:
+      LIMEN_PUBLIC_URL: http://100.64.0.2:7341   # where machines reach the hub: an address, not a name
+    volumes:
+      - limen:/data                              # the whole hub: its key, limen.toml, the token
+    ports:
+      - "100.64.0.2:7341:7341"                   # only on the VPN address
+    restart: unless-stopped
+
+volumes:
+  limen:
 ```
 
-It installs the binary in `/usr/local/bin`, creates the `limen-read` user with a forced command in
-its `authorized_keys`, a `sudoers` rule for exactly that command, `/etc/limen/` and the audit log. Add
-`--deploy-key` for the deploy role. `--dry-run` shows what it would do, and running it again changes
-nothing. At the end it prints the node's host key for the hub.
+```sh
+docker compose up -d
+docker compose exec limen limen connect
+# claude mcp add --transport http limen http://100.64.0.2:7341/mcp --header "Authorization: Bearer …"
+```
 
-Then say what may be read, in `/etc/limen/limen.toml`:
+On its first start the hub creates, in the `limen` volume, its SSH key, its `limen.toml` and the token of MCP
+clients. (The image runs as distroless's `nonroot`, uid 65532: a bind mount instead of the volume needs a directory that
+user owns.)
+`limen connect` prints the line that connects Claude Code (or any MCP client) to it.
+
+### 2. Add a machine
+
+Ask the hub for an invitation:
+
+```sh
+docker compose exec limen limen invite nas
+# On nas, as root:
+#   curl -fsSL https://raw.githubusercontent.com/xoadev/limen/main/install.sh | sudo sh -s -- --join 'http://100.64.0.2:7341/join/…#SHA256:…'
+# OpenWrt:
+#   wget -qO- https://raw.githubusercontent.com/xoadev/limen/main/install.sh | sh -s -- --join 'http://100.64.0.2:7341/join/…#SHA256:…'
+# Valid once, for 1h.
+```
+
+Paste the line for the machine's system on it. It downloads limen and checks it, fetches the hub's key and checks
+it against the fingerprint in the line, sets the machine up and reports to the hub, which adds it and tries it:
+
+```
+nas is on the hub, at 100.64.0.5: Debian GNU/Linux 13, limen 0.1.0
+```
+
+- **Debian, Ubuntu**: a `limen` user whose key only runs `limen gate`, and a sudo rule for exactly that.
+- **OpenWrt**: the hub's key in root's dropbear `authorized_keys`, held to `limen gate`, next to the keys already
+  there; limen survives `sysupgrade`. **Turn off dropbear's password logins**: a forced command only holds a login
+  by key, and the installer warns when root has no password.
+
+The hub needs no restart, and the invitation is spent: the next machine gets its own. How the join is protected
+against someone in between: [`docs/spec.md`](docs/spec.md#101-joining-a-node).
+
+### Before the first release
+
+There is nothing to download yet. Build from source (see [Develop](#develop)), then `make docker` for the hub
+—`image: limen:local` in the compose file— and, on each machine, copy the binary of `make cli` and `install.sh`
+and run `sudo env LIMEN_BINARY=./limen sh install.sh --join '<line>'`.
+
+### What the agent may read and run
+
+Nothing, until you say so, in the machine's `/etc/limen/limen.toml`:
 
 ```toml
 [files]
 allow = ["/etc/nginx/**", "/opt/stacks/*/compose.yaml", "/var/log/nginx/*.log"]
 deny = ["**/*.env"]
+
+[scripts]
+packs = ["/opt/state/packs/system", "/opt/state/packs/docker", "/opt/state/nodes/nas"]
+
+[redact]
+names = ["DB_PASSWORD", "MQTT_PASS"]
 ```
 
-Whatever is readable ends up in the context of the model the hub talks to: list what helps diagnose
-and nothing that holds a secret. Redaction of `password=…`, tokens and keys is a safety net, not the
-protection.
+- **Files**: whatever is readable ends up in the context of the model the hub talks to. List what helps diagnose,
+  nothing that holds a secret. Some paths are never readable whatever the list says —`/etc/shadow`, private keys,
+  `/proc`, `/root`, `/etc/limen`—. A link is read where it leads, so it is the target that must be allowed:
+  `/etc/os-release` on Debian is `/usr/lib/os-release`.
+- **Scripts**: every script of the packs listed is a tool. **Offer only changes you would let whoever writes to
+  your logs trigger**: text in a log can lead the model to call any of them.
+- **Secrets**: `password=…`, tokens, keys and the values of `redact.names` are masked in everything that leaves the
+  machine, as a safety net.
 
-## Setting up the hub
+`limen.toml` can be a link into your own repository, with the packs next to it: limen never writes it after
+install. `sudo limen lint` checks the packs without running anything; `sudo limen run <script>` runs one as the hub
+would.
 
-`~/.limen/limen.toml` (or `$LIMEN_HOME`), with the read key next to it:
+## Packs
 
-```toml
-[ssh]
-identity = "id_ed25519"
-
-[nodes.hades]
-host = "100.64.0.2"
-host_key = "ssh-ed25519 AAAA…"
-```
-
-`host_key` is required: there is no trust on first use.
-
-**stdio**, for Claude Code on the same machine:
+A pack is a directory of scripts. A script is an executable file with a header: `#:` lines that form a TOML
+document, read and never run.
 
 ```sh
-claude mcp add limen -- limen mcp
+#!/bin/sh
+#: description = "Last lines of a Docker container's log"
+#: [args.name]
+#: type = "string"
+#: pattern = '^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$'
+#: [args.since]
+#: type = "string"
+#: default = "1h"
+#: pattern = '^[0-9]{1,4}[smhd]$'
+exec docker logs --timestamps --since "$LIMEN_ARG_SINCE" "$LIMEN_ARG_NAME" 2>&1
 ```
 
-**HTTP**, as a container any MCP client on your network can use:
+The agent gets a tool with `name` and `since`; limen checks both before the script runs, and they reach it as
+`LIMEN_ARG_NAME` and `LIMEN_ARG_SINCE`. The script runs as root, owned by root and writable by nobody else, like
+every directory above it. The whole format, and a machine set up from a Git repository with a `sync` script the
+agent can run, are in [`docs/scripts.md`](docs/scripts.md).
 
-```yaml
-services:
-  limen:
-    image: ghcr.io/xoadev/limen
-    environment:
-      LIMEN_TOKEN: ${LIMEN_TOKEN}   # 16 characters or more; clients send it as a bearer token
-    volumes:
-      - ./limen:/data               # limen.toml and the SSH key
-    ports:
-      - "100.64.0.2:7341:7341"
-```
+### Other ways
 
-```sh
-claude mcp add --transport http limen http://100.64.0.2:7341/mcp --header "Authorization: Bearer $LIMEN_TOKEN"
-```
+- **Before a hub**, a machine can have its configuration and packs first:
+  `curl -fsSL …/install.sh | sudo env LIMEN_YES=1 sh` installs limen with nothing open to SSH, and a hub joins it
+  later with its line. [`docs/scripts.md`](docs/scripts.md#a-machine-from-a-git-repository) shows a bootstrap that
+  clones the machine's repository first.
+- **The hub on your laptop**, for Claude Code there (stdio, nothing listening):
+  `curl -fsSL …/install.sh | sh -s -- --hub` installs `limen` in `~/.local/bin`, creates `~/.limen` and prints the
+  `claude mcp add` line. Without an HTTP hub to call back, `limen invite nas` prints a line with the hub's key in it
+  (`--hub-key`), and the machine ends printing the `limen trust nas <address> '<host key>'` to run on the laptop.
+- **Unattended**, every answer comes from the environment: `sudo env LIMEN_YES=1 LIMEN_JOIN='…' sh install.sh`.
+  `LIMEN_FROM` limits where the hub's key may connect from (not on OpenWrt). The whole list is at the top of
+  [`install.sh`](install.sh).
+- **By hand**: download `limen-<version>-linux-$(uname -m)` from the [releases](https://github.com/xoadev/limen/releases)
+  and run `sudo ./limen-… join '<line>'`. Where there is `gh`, `gh attestation verify limen-… --repo xoadev/limen`
+  checks that the release workflow built it; the image, likewise with `oci://ghcr.io/xoadev/limen:<version>`.
+- `limen forget nas` takes a machine off the hub; `limen uninstall --purge` on the machine removes limen from it.
 
-Try a node by hand with `limen call hades status`.
+## Use it
 
-## Writing a check
+Ask the agent as you would ask a colleague with access to the machines' scripts:
 
-```bash
-#!/usr/bin/env bash
-#: description = "Free space on the backup volume"
-#: timeout = "30s"
-#: [args.threshold]
-#: type = "int"
-#: default = 90
-#: range = [1, 100]
-#: description = "Percent above which it warns"
-set -euo pipefail
-used=$(df --output=pcent /srv/backups | tail -1 | tr -dc 0-9)
-if (( used >= LIMEN_ARG_THRESHOLD )); then echo "backups at ${used}%"; exit 1; fi
-echo "backups at ${used}%"
-```
+- *"What's wrong on the NAS?"* — `status`, then `units state=failed` and `unit_logs` of what failed.
+- *"Why does Immich restart?"* — `container immich`, then `container_logs name=immich grep=error`.
+- *"Bring the NAS to the repository."* — `sync`, if the machine's pack offers it.
 
-Save it as `/etc/limen/checks.d/backup-space.sh`, owned by root and not writable by anyone else, and
-the agent gets `check_backup-space`. Exit `0` ok, `1` warn, `2` fail, `3` unknown; the first line is
-the summary. `limen lint` checks every script without running any.
+Without the agent, `docker compose exec limen limen call nas status` asks a machine the same by hand.
 
-Setup scripts go in `/etc/limen/setup.d/` as `10-packages.sh`, `20-users.sh`… and run in order with
-`limen apply`; actions go in `/etc/limen/actions.d/` and run with `limen action <name>`. Both, from
-elsewhere, only with the deploy key: `limen call hades apply --user limen-deploy --identity deploy_key`.
+## Security, in short
 
-## Building
+| If this happens | Then |
+|---|---|
+| The hub, its token or the MCP client are compromised | Reads what the machines allow and runs the scripts they offer, with the arguments they declare. No shell |
+| An instruction is injected through a log or a file | The same: the model can be led to run any script on offer. Offer only changes you'd let anyone writing your logs trigger |
+| Arguments are crafted to escape | They are typed, validated on the machine, and reach the script as variables, never a shell |
+| A symlink points from an allowed path to a secret | Paths are walked as the kernel does before they are checked |
+| Someone can change a pack, or push where a script fetches packs from | **They are root on the machine.** Keep the agent out of it, and protect the branch |
+| A script is malicious or prints secrets | Not covered: scripts belong to root, and limen trusts them. Masking catches the usual shapes |
+
+What is readable or printed reaches the model provider, by design. The full threat model is in
+[`docs/spec.md`](docs/spec.md#13-threat-model); to report a vulnerability, see [`SECURITY.md`](SECURITY.md).
+
+## Platforms
+
+- Machines: any Linux with OpenSSH and sudo, and OpenWrt with dropbear. What the scripts need is the packs' business.
+- Binaries: Linux x86-64 and arm64, static (musl), about 3 MB; the same file runs on any distribution. OpenWrt
+  in detail: [`docs/openwrt.md`](docs/openwrt.md).
+- Hub: anything that runs the binary and OpenSSH's `ssh`; the image is `ghcr.io/xoadev/limen`, amd64 and arm64.
+
+## Documentation
+
+| | |
+|---|---|
+| [`docs/spec.md`](docs/spec.md) | The design and the reference: access, protocol, tools, packs, configuration, CLI, joining, threat model, decisions |
+| [`docs/scripts.md`](docs/scripts.md) | Writing scripts and packs, and a machine set up from a Git repository |
+| [`docs/openwrt.md`](docs/openwrt.md) | OpenWrt as a node, and one binary for every Linux |
+| [`CONTRIBUTING.md`](CONTRIBUTING.md) | How to build, test and send a change |
+| [`AGENTS.md`](AGENTS.md) | The full working contract, for people and coding agents |
+| [`SECURITY.md`](SECURITY.md) | How to report a vulnerability, and what counts as one |
+
+Releases and their notes are on [GitHub](https://github.com/xoadev/limen/releases).
+
+## Develop
 
 ```sh
 make check   # lint, build and every test: what CI runs
-make cli     # the binary, in kotlin/build/tasks/_cli_linkLinuxX64Debug/cli.kexe
-make e2e     # a Debian container with sshd, `limen install` inside, and the hub against it
+make cli     # the static binary, in target/<arch>-unknown-linux-musl/debug/limen
+make e2e     # Debian and OpenWrt containers with a real SSH server, the installer and the hub (SUITE=debian|openwrt|join)
 make help    # the rest
 ```
 
-Needs a JDK for the linter; the Kotlin toolchain downloads itself. [`AGENTS.md`](AGENTS.md) is the
-working contract of the repository.
+Needs Linux, [rustup](https://rustup.rs) and Docker for `make e2e`; the pinned Rust version installs itself.
+Contributions are welcome: [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ## License
 
-[Apache License 2.0](LICENSE).
+limen is licensed under the [Apache License 2.0](LICENSE).
+
+The release binaries are static, so they contain third-party code under its own permissive licences: musl (MIT),
+Rust's standard library and the crates listed in `Cargo.lock` (MIT or Apache-2.0).

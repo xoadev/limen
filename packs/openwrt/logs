@@ -1,0 +1,15 @@
+#!/bin/sh
+#: description = "The system log (logread) of every process, or of one"
+#: [args.name]
+#: type = "string"
+#: required = false
+#: pattern = '^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$'
+#: description = "Only the lines of this process, e.g. dnsmasq, netifd or kernel"
+set -eu
+
+name=${LIMEN_ARG_NAME:-}
+if [ -z "$name" ]; then
+  exec logread
+fi
+# A line names its process as ` dnsmasq[1234]: ` or ` kernel: `; busybox's logread has no filter of its own.
+logread | grep -F -e " ${name}[" -e " $name: " || echo "no lines of $name in the log"

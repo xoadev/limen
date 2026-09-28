@@ -1,0 +1,20 @@
+[package]
+name = "limen-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+base64 = "0.23.1"
+hmac = "0.13.0"
+indexmap = { version = "2.14.2", features = ["serde"] }
+regex = { version = "1.13.1", default-features = false, features = ["std", "unicode-perl", "unicode-case", "perf-dfa", "perf-backtrack"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = { version = "1.0.151", features = ["preserve_order"] }
+sha2 = "0.11.0"
+toml_edit = { version = "0.25.15", default-features = false, features = ["parse", "display", "serde"] }

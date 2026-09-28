@@ -1,5 +1,5 @@
-# A node for `make e2e`: Debian with sshd and sudo, and the programs the gate reads from. No systemd: the
-# requests that need it answer with their part in `errors`, which the scenes accept.
+# A node for `make e2e`: Debian with sshd and sudo, and procps and iproute2 for the example `system` pack. No systemd:
+# its pack is not run here.
 FROM debian:trixie-slim
 
 RUN apt-get update \

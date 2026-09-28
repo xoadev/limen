@@ -1,0 +1,2 @@
+# Tests may unwrap: a panic there is the failure being reported. Elsewhere, `expect` says why it cannot fail.
+allow-unwrap-in-tests = true

@@ -1,0 +1,20 @@
+#!/bin/sh
+#: description = "Changes the machine: restarts one systemd unit, then says whether it is active, or shows its last journal lines if it failed"
+#: timeout = "3m"
+#: [args.name]
+#: type = "string"
+#: pattern = '^[A-Za-z0-9@_:\\][A-Za-z0-9@._:\\-]{0,254}$'
+#: description = "The unit, e.g. nginx.service; without a suffix it is a service"
+set -eu
+
+name=$LIMEN_ARG_NAME
+if [ "$(systemctl show --property=LoadState --value -- "$name")" != loaded ]; then
+  echo "no unit $name"
+  exit 1
+fi
+if ! systemctl restart -- "$name"; then
+  echo "restarting $name failed; its last journal lines:"
+  journalctl --no-pager --output=short-iso --lines=20 --unit="$name"
+  exit 1
+fi
+echo "restarted $name: $(systemctl is-active -- "$name")"

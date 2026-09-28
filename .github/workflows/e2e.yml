@@ -1,30 +1,52 @@
-# `make e2e` on demand: a Debian container with sshd, `limen install` inside, and the hub against it.
+# `make e2e`: Debian and OpenWrt containers with a real SSH server, `limen install` and `limen join` inside, and the
+# hub's image against them. It is what proves the limits hold on a real machine —forced commands, sudo, dropbear,
+# the static binary on musl—, so it runs on every pull request that touches code, and once a week against the
+# latest upstream images (debian:trixie-slim and openwrt/rootfs move under us).
 name: e2e
 
 on:
+  pull_request:
+    paths:
+      - 'crates/**'
+      - 'Cargo.*'
+      - 'rust-toolchain.toml'
+      - '.cargo/**'
+      - 'tools/**'
+      - 'etc/**'
+      - 'install.sh'
+      - 'packs/**'
+      - 'Makefile'
+      - '.github/workflows/e2e.yml'
+  schedule:
+    - cron: '17 5 * * 1'
   workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: e2e-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   e2e:
     runs-on: ubuntu-latest
     timeout-minutes: 40
-    env:
-      KOTLIN_CLI_JAVA_OPTIONS: -Xmx2g
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Toolchain and dependencies cache
+      - name: Toolchain, dependencies and build cache
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
-            ~/.konan
-            ~/.cache/JetBrains/Kotlin
-          key: kotlin-${{ runner.os }}-${{ hashFiles('kotlin/kotlin', 'kotlin/gradle/libs.versions.toml', 'kotlin/**/module.yaml') }}
-          restore-keys: kotlin-${{ runner.os }}-
+            ~/.rustup/toolchains
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: rust-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
+          restore-keys: rust-${{ runner.os }}-
 
       - name: make e2e
         run: make e2e

@@ -1,0 +1,26 @@
+#!/bin/sh
+#: description = "One Docker container: image, state, health, restarts and policy, mounts, ports, networks, labels. Never its environment"
+#: [args.name]
+#: type = "string"
+#: pattern = '^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$'
+#: description = "The container's name or id"
+set -eu
+
+# Chosen fields, never the whole inspect: the environment and the command line can hold secrets.
+# shellcheck disable=SC2016 # the $ are the template's variables
+format='{{slice .Name 1}}: {{.State.Status}}{{with .State.Health}} ({{.Status}}){{end}}, started {{.State.StartedAt}}, {{.RestartCount}} restarts
+image {{.Config.Image}} {{.Image}}
+restart policy {{.HostConfig.RestartPolicy.Name}}
+last exit code {{.State.ExitCode}}{{with .State.Error}}, error {{.}}{{end}}
+{{range .Mounts}}mount {{.Type}} {{.Source}} -> {{.Destination}}{{if not .RW}} (read-only){{end}}
+{{end}}{{range $port, $bindings := .HostConfig.PortBindings}}port {{$port}}{{range $bindings}} <- {{.HostIp}}:{{.HostPort}}{{end}}
+{{end}}{{range $network, $settings := .NetworkSettings.Networks}}network {{$network}} {{$settings.IPAddress}}
+{{end}}{{range $key, $value := .Config.Labels}}label {{$key}}={{$value}}
+{{end}}'
+
+details=$(docker inspect --type=container --format="$format" -- "$LIMEN_ARG_NAME")
+# A label can carry a credential, such as a proxy's basic auth: its value is left out.
+printf '%s' "$details" | awk '
+  /^label / && tolower(substr($0, 1, index($0, "="))) ~ /pass|secret|token|auth|credential/ { sub(/=.*/, "=[hidden]") }
+  { print }
+'

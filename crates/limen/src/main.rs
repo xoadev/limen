@@ -1,0 +1,565 @@
+//! The `limen` binary (spec §10): the hub (`mcp`, `serve`, `call`, …) and the node side (`gate`, `join`, `install`,
+//! `run`, …) in one file. Exit codes: 0 ok, 1 error, 2 usage; `run` exits with its script's code.
+
+mod hub;
+mod node;
+mod os;
+
+use clap::{Args, Parser, Subcommand};
+use hub::dir::{Hub, LiveHub};
+use hub::{NodeClient, transports};
+use limen_core::config::hub::{self as hub_config, is};
+use limen_core::config::node::PATH as NODE_CONFIG;
+use limen_core::durations;
+use limen_core::join::{self, JoinUrl};
+use limen_core::params::{self, Param, ParamType};
+use limen_core::protocol::{LimenError, pretty};
+use limen_core::requests;
+use limen_core::scripts::Catalog;
+use limen_core::version::{BUILD_DATE, BUILD_NUMBER, VERSION};
+use node::installer::Installer;
+use node::joiner::Joiner;
+use node::{Node, gate, lint, scripts};
+use os::sys;
+use serde_json::{Map, Value};
+use std::sync::Arc;
+use std::time::Duration;
+
+/// What the installer is fetched from, in the lines `invite` prints.
+const INSTALL_SCRIPT: &str = "https://raw.githubusercontent.com/xoadev/limen/main/install.sh";
+/// ssh and the node's own work on top of a script's timeout, for `call`.
+const SCRIPT_MARGIN: Duration = Duration::from_secs(45);
+
+#[derive(Parser)]
+#[command(
+    name = "limen",
+    about = "Access to Linux machines for MCP clients: the files each allows, and the scripts it offers. The hub runs \
+             `mcp` or `serve`; each node runs `gate` as an SSH forced command, set up by `join` (or `install`).",
+    disable_version_flag = true
+)]
+struct Cli {
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// Create the hub: its key, limen.toml and, with --serve, the token of HTTP clients
+    Init {
+        /// Also the token of HTTP clients
+        #[arg(long)]
+        serve: bool,
+        /// Hub directory (default: $LIMEN_HOME or ~/.limen)
+        #[arg(long)]
+        home: Option<String>,
+    },
+    /// MCP server over stdio (the hub)
+    Mcp {
+        /// Hub directory with limen.toml (default: $LIMEN_HOME or ~/.limen)
+        #[arg(long)]
+        home: Option<String>,
+    },
+    /// MCP server over HTTP (the hub), and where nodes join; creates the hub on first start
+    Serve {
+        /// Hub directory (default: $LIMEN_HOME or ~/.limen)
+        #[arg(long)]
+        home: Option<String>,
+        /// host:port, over [http].listen and LIMEN_LISTEN
+        #[arg(long)]
+        listen: Option<String>,
+    },
+    /// Print the command that connects Claude Code to this hub
+    Connect {
+        /// Hub directory
+        #[arg(long)]
+        home: Option<String>,
+        /// The hub's HTTP address, over [http].public_url and LIMEN_PUBLIC_URL
+        #[arg(long)]
+        url: Option<String>,
+    },
+    /// A one-time line that joins a machine to this hub; paste it on the machine as root
+    Invite {
+        /// The machine's name on the hub
+        name: String,
+        /// Hub directory
+        #[arg(long)]
+        home: Option<String>,
+        /// How long the invitation lasts
+        #[arg(long, default_value = "1h")]
+        ttl: String,
+    },
+    /// Add a machine to this hub by hand: its name, address and host key
+    Trust {
+        name: String,
+        address: String,
+        host_key: String,
+        /// root for OpenWrt
+        #[arg(long, default_value = hub_config::NODE_USER)]
+        user: String,
+        #[arg(long, default_value_t = 22)]
+        port: u16,
+        /// Hub directory
+        #[arg(long)]
+        home: Option<String>,
+    },
+    /// Remove a machine from this hub (uninstall on the machine is separate)
+    Forget {
+        name: String,
+        /// Hub directory
+        #[arg(long)]
+        home: Option<String>,
+    },
+    /// One request to a node over SSH, printed as JSON: hello, read_file, list_dir, history, or a script by its name
+    Call {
+        node: String,
+        request: String,
+        /// key=value, repeatable
+        #[arg(long = "arg")]
+        args: Vec<String>,
+        #[command(flatten)]
+        filters: Filters,
+        /// Hub directory with limen.toml
+        #[arg(long)]
+        home: Option<String>,
+    },
+    /// Join this machine to a hub (as root): with the line of `limen invite`, or with --hub-key and --name when the
+    /// hub is not reachable over HTTP
+    Join(JoinArgs),
+    /// The SSH forced command on a node: one JSON request on stdin, the answer on stdout
+    Gate {
+        /// Node configuration
+        #[arg(long, default_value = NODE_CONFIG)]
+        config: String,
+    },
+    /// Set this node up: binary, the limen user, authorized_keys, sudoers, /etc/limen (as root)
+    Install(InstallArgs),
+    /// Undo install (as root)
+    Uninstall {
+        /// Also remove /etc/limen and /var/log/limen
+        #[arg(long)]
+        purge: bool,
+        /// Say what would change and change nothing
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Run one script of this node's packs, as the hub would; exits with its exit code (as root)
+    Run {
+        script: String,
+        /// key=value, repeatable
+        #[arg(long = "arg")]
+        args: Vec<String>,
+        #[command(flatten)]
+        filters: Filters,
+        #[arg(long, default_value = NODE_CONFIG)]
+        config: String,
+    },
+    /// Check the packs: script names, headers and permissions, without running anything
+    Lint {
+        #[arg(long, default_value = NODE_CONFIG)]
+        config: String,
+    },
+    /// Print the version
+    Version,
+}
+
+#[derive(Args)]
+struct JoinArgs {
+    /// The join line of `limen invite`
+    line: Option<String>,
+    /// The hub's public key, when there is no join line
+    #[arg(long)]
+    hub_key: Option<String>,
+    /// This machine's name on the hub, with --hub-key
+    #[arg(long)]
+    name: Option<String>,
+    /// Addresses or CIDRs the hub's key may connect from, e.g. 100.64.0.0/10 (not OpenWrt)
+    #[arg(long)]
+    from: Option<String>,
+    /// Where the hub reaches this machine (default: where the join request comes from)
+    #[arg(long)]
+    address: Option<String>,
+    /// This machine's SSH port, as the hub reaches it
+    #[arg(long, default_value_t = 22)]
+    ssh_port: u16,
+}
+
+#[derive(Args)]
+struct InstallArgs {
+    /// The hub's public key; without it there is no hub yet, and a join adds one later
+    #[arg(long)]
+    hub_key: Option<String>,
+    /// Addresses or CIDRs the hub's key may connect from, e.g. 100.64.0.0/10 (not OpenWrt)
+    #[arg(long)]
+    from: Option<String>,
+    /// Say what would change and change nothing
+    #[arg(long)]
+    dry_run: bool,
+}
+
+/// What limen does to a script's output, once redacted.
+#[derive(Args)]
+struct Filters {
+    /// Only the lines holding this text, case-insensitive
+    #[arg(long)]
+    grep: Option<String>,
+    /// Only the last lines, this many
+    #[arg(long)]
+    tail: Option<u32>,
+}
+
+impl Filters {
+    fn add_to(&self, args: &mut Map<String, Value>) {
+        if let Some(grep) = &self.grep {
+            args.insert("grep".into(), grep.as_str().into());
+        }
+        if let Some(tail) = self.tail {
+            args.insert("tail".into(), tail.into());
+        }
+    }
+}
+
+/// Why a command stopped: its usage (exit 2), limen's own error (1), or a message (1).
+enum Stop {
+    Usage(String),
+    Limen(LimenError),
+    Message(String),
+}
+
+impl From<LimenError> for Stop {
+    fn from(error: LimenError) -> Self {
+        Stop::Limen(error)
+    }
+}
+
+impl Stop {
+    /// Says why on stderr, and gives the exit code.
+    fn report(self) -> i32 {
+        let (text, code) = match self {
+            Stop::Usage(message) => (message, 2),
+            Stop::Limen(error) => (error.summary(), 1),
+            Stop::Message(message) => (message, 1),
+        };
+        sys::log(&text);
+        code
+    }
+}
+
+type Exit = Result<i32, Stop>;
+
+/// How `join`, `install` and `uninstall` stop: their own message, after the command's name.
+fn failed(command: &'static str) -> impl FnOnce(String) -> Stop {
+    move |message| Stop::Message(format!("{command}: {message}"))
+}
+
+fn exit_code(succeeded: bool) -> i32 {
+    i32::from(!succeeded)
+}
+
+/// `limen 0.3.1 · build 42 · 2026-09-26T08:00:00Z`, or `limen dev` for a local build.
+fn version_line() -> String {
+    let mut parts = vec![format!("limen {VERSION}")];
+    if !BUILD_NUMBER.is_empty() {
+        parts.push(format!("build {BUILD_NUMBER}"));
+    }
+    if !BUILD_DATE.is_empty() {
+        parts.push(BUILD_DATE.into());
+    }
+    parts.join(" · ")
+}
+
+fn version() -> Exit {
+    sys::say(&version_line());
+    Ok(0)
+}
+
+fn main() {
+    let asks_version = matches!(std::env::args().nth(1).as_deref(), Some("--version" | "-V"));
+    let exit = if asks_version { version() } else { run(parse_command()) };
+    std::process::exit(exit.unwrap_or_else(Stop::report));
+}
+
+/// The command on the command line; on a mistake, clap's message and exit code.
+fn parse_command() -> Command {
+    match Cli::try_parse() {
+        Ok(cli) => cli.command,
+        Err(error) => {
+            error.print().ok();
+            std::process::exit(error.exit_code());
+        }
+    }
+}
+
+fn run(command: Command) -> Exit {
+    match command {
+        Command::Init { serve, home } => init(serve, home.as_deref()),
+        Command::Mcp { home } => mcp(home.as_deref()),
+        Command::Serve { home, listen } => serve(home.as_deref(), listen),
+        Command::Connect { home, url } => connect(home.as_deref(), url),
+        Command::Invite { name, home, ttl } => invite(&name, home.as_deref(), &ttl),
+        Command::Trust { name, address, host_key, user, port, home } => {
+            trust(&name, &address, &host_key, &user, port, home.as_deref())
+        }
+        Command::Forget { name, home } => forget(&name, home.as_deref()),
+        Command::Call { node, request, args, filters, home } => call(&node, &request, &args, &filters, home.as_deref()),
+        Command::Join(args) => join_hub(&args),
+        Command::Gate { config } => Ok(gate::run(&config)),
+        Command::Install(args) => Installer::new(args.dry_run)
+            .install(args.hub_key.as_deref(), args.from.as_deref(), true)
+            .map_err(failed("install")),
+        Command::Uninstall { purge, dry_run } => Installer::new(dry_run).uninstall(purge).map_err(failed("uninstall")),
+        Command::Run { script, args, filters, config } => run_script(&script, &args, &filters, &config),
+        Command::Lint { config } => Ok(lint::run(&Node::load(&config)?)),
+        Command::Version => version(),
+    }
+}
+
+fn init(serve: bool, home: Option<&str>) -> Exit {
+    let hub = Hub::at(home);
+    let created = hub.init(serve)?;
+    for path in &created {
+        sys::say(&format!("created {path}"));
+    }
+    if created.is_empty() {
+        sys::say(&format!("{} was already a hub", hub.home));
+    }
+    sys::say(&format!("hub key: {}", join::fingerprint(&hub.public_key()?)?));
+    sys::out("Next: `limen invite <name>` for each machine, and `limen connect` for the MCP client.\n");
+    Ok(0)
+}
+
+fn mcp(home: Option<&str>) -> Exit {
+    let hub = Arc::new(Hub::at(home));
+    hub.config()?;
+    transports::stdio(Arc::new(LiveHub::new(hub)));
+    Ok(0)
+}
+
+fn serve(home: Option<&str>, listen: Option<String>) -> Exit {
+    let hub = Arc::new(Hub::at(home));
+    for path in hub.init(true)? {
+        sys::log(&format!("created {path}"));
+    }
+    let token = hub.token()?;
+    let live = Arc::new(LiveHub::new(hub.clone()));
+    let address = listen_address(listen, &live)?;
+    transports::http(hub, live, &address, token)?;
+    Ok(0)
+}
+
+/// `--listen`, else `LIMEN_LISTEN` when it says something, else `[http].listen`.
+fn listen_address(listen: Option<String>, live: &LiveHub) -> Result<String, LimenError> {
+    match listen.or_else(|| sys::env_setting("LIMEN_LISTEN")) {
+        Some(address) => Ok(address),
+        None => live.config().map(|config| config.listen),
+    }
+}
+
+/// Prints the command that adds this hub to Claude Code: over HTTP when the hub has an address and a token, else
+/// over stdio.
+fn connect(home: Option<&str>, url: Option<String>) -> Exit {
+    let hub = Hub::at(home);
+    let base = url.or_else(|| hub.config().ok().and_then(|config| config.public_url));
+    let command = match (base, hub.token().ok()) {
+        (Some(base), Some(token)) => {
+            format!("claude mcp add --transport http limen {base}/mcp --header \"Authorization: Bearer {token}\"")
+        }
+        _ => format!("claude mcp add limen -- limen mcp{}", home_option(&hub)),
+    };
+    sys::say(&command);
+    Ok(0)
+}
+
+/// ` --home <dir>` when the hub is not where `limen mcp` looks by default.
+fn home_option(hub: &Hub) -> String {
+    if hub.home == Hub::home(None).trim_end_matches('/') { String::new() } else { format!(" --home {}", hub.home) }
+}
+
+fn invite(name: &str, home: Option<&str>, ttl: &str) -> Exit {
+    let hub = Hub::at(home);
+    if !is(hub_config::NODE_NAME, name) {
+        return Err(Stop::Usage(format!("a node name matches {}", hub_config::NODE_NAME)));
+    }
+    let Some(public_url) = hub.config()?.public_url else {
+        // No HTTP hub to call back: the line carries the key, and the machine prints what to trust here.
+        let key = join::without_comment(&hub.public_key()?);
+        print_install_lines(name, &format!("--hub-key '{key}' --name {name}"));
+        sys::out("It ends printing a `limen trust` line to run here.\n");
+        return Ok(0);
+    };
+    let valid_for = durations::parse(ttl).ok_or_else(|| Stop::Usage("--ttl takes a duration like 30m or 2h".into()))?;
+    let issued = hub.invite(name, valid_for)?;
+    let line = JoinUrl {
+        base: public_url,
+        code: issued.code,
+        fingerprint: join::fingerprint(&hub.public_key()?)?,
+        secret: issued.secret,
+    };
+    print_install_lines(name, &format!("--join '{line}'"));
+    sys::say(&format!("Valid once, for {ttl}."));
+    Ok(0)
+}
+
+/// How to run the installer on [name] with [options]: with curl and sudo, and on OpenWrt.
+fn print_install_lines(name: &str, options: &str) {
+    sys::say(&format!("On {name}, as root:\n  curl -fsSL {INSTALL_SCRIPT} | sudo sh -s -- {options}"));
+    sys::say(&format!("OpenWrt:\n  wget -qO- {INSTALL_SCRIPT} | sh -s -- {options}"));
+}
+
+fn trust(name: &str, address: &str, host_key: &str, user: &str, port: u16, home: Option<&str>) -> Exit {
+    Hub::at(home).trust(name, address, host_key, user, port)?;
+    sys::say(&format!("{name} added; try it with `limen call {name} hello`"));
+    Ok(0)
+}
+
+fn forget(name: &str, home: Option<&str>) -> Exit {
+    if !Hub::at(home).remove(name)? {
+        return Err(Stop::Usage(format!("no node named '{name}'")));
+    }
+    sys::say(&format!("{name} removed from the hub"));
+    Ok(0)
+}
+
+fn call(node: &str, request: &str, pairs: &[String], filters: &Filters, home: Option<&str>) -> Exit {
+    let live = LiveHub::new(Arc::new(Hub::at(home)));
+    if live.config()?.node(node).is_none() {
+        return Err(Stop::Usage(format!("no node named '{node}'")));
+    }
+    let (name, args, timeout) = match requests::find(request) {
+        Some(definition) if definition.name != "run" => {
+            let mut args = parse_args(pairs, &definition.params)?;
+            filters.add_to(&mut args);
+            (definition.name, args, None)
+        }
+        _ => {
+            let (params, timeout) = script_params(&live, node, request);
+            let mut args = Map::new();
+            filters.add_to(&mut args);
+            args.insert("script".into(), request.into());
+            args.insert("args".into(), Value::Object(parse_args(pairs, &params)?));
+            ("run", args, timeout)
+        }
+    };
+    let response = live.call(node, name, &args, timeout);
+    sys::say(&pretty(&response));
+    Ok(exit_code(response.ok))
+}
+
+/// The parameters and the timeout [name]'s header declares, from the node's catalog, so a script's arguments are
+/// typed as it says —`--arg tag=20` stays a string— and `call` waits as long as it may take. Nothing when the node
+/// doesn't tell.
+fn script_params(live: &LiveHub, node: &str, name: &str) -> (Vec<Param>, Option<Duration>) {
+    let hello = live.call(node, "hello", &Map::new(), None);
+    let catalog: Option<Catalog> =
+        hello.data.and_then(|data| serde_json::from_value(data.get("catalog")?.clone()).ok());
+    catalog
+        .and_then(|catalog| catalog.scripts.into_iter().find(|script| script.name == name))
+        .map(|script| (script.params, Some(Duration::from_secs(script.timeout_seconds) + SCRIPT_MARGIN)))
+        .unwrap_or_default()
+}
+
+fn join_hub(args: &JoinArgs) -> Exit {
+    match (&args.line, &args.hub_key) {
+        (Some(line), _) => join_with_line(line, args),
+        (None, Some(hub_key)) => join_with_key(hub_key, args),
+        (None, None) => Err(Stop::Usage("give the join line of `limen invite`, or --hub-key and --name".into())),
+    }
+}
+
+/// Joins through the hub's HTTP server, which gives its key and this machine's name.
+fn join_with_line(line: &str, args: &JoinArgs) -> Exit {
+    let url = JoinUrl::parse(line)?;
+    Joiner { installer: Installer::new(false) }
+        .join(&url, args.from.as_deref(), args.address.as_deref(), args.ssh_port)
+        .map_err(failed("join"))
+}
+
+/// Joins with the hub's key given by hand: the machine prints the `limen trust` line to run on the hub.
+fn join_with_key(hub_key: &str, args: &JoinArgs) -> Exit {
+    let name = args.name.as_deref().ok_or_else(|| Stop::Usage("--hub-key needs --name".into()))?;
+    Joiner { installer: Installer::new(false) }
+        .with_key(hub_key, name, args.from.as_deref(), args.ssh_port)
+        .map_err(failed("join"))
+}
+
+/// Runs a script here as the gate would, prints what the hub would get, and exits with the script's code.
+fn run_script(script: &str, pairs: &[String], filters: &Filters, config: &str) -> Exit {
+    sys::chdir_root();
+    sys::umask_022();
+    let node = Node::load(config)?;
+    let (_, spec) = scripts::find(&node, script)?;
+    let mut args = Map::new();
+    filters.add_to(&mut args);
+    args.insert("script".into(), script.into());
+    args.insert("args".into(), Value::Object(parse_args(pairs, &spec.params)?));
+    let args = params::validate(&requests::named("run").params, &args)?;
+    let answer = scripts::run(&node, &args)?;
+    let text = |key: &str| answer.data.get(key).and_then(Value::as_str).unwrap_or_default().to_string();
+    let (stdout, stderr) = (text("stdout"), text("stderr"));
+    if !stdout.is_empty() {
+        sys::say(&stdout);
+    }
+    if !stderr.is_empty() {
+        sys::log(&stderr);
+    }
+    if answer.truncated {
+        sys::log("[truncated: a limit cut this output]");
+    }
+    Ok(answer.data.get("exit").and_then(Value::as_i64).map_or(1, |exit| exit as i32))
+}
+
+/// `--arg key=value`, typed by [params] where it names one; otherwise a number, a boolean or a string.
+fn parse_args(pairs: &[String], params: &[Param]) -> Result<Map<String, Value>, Stop> {
+    let mut args = Map::new();
+    for pair in pairs {
+        let Some((key, value)) = pair.split_once('=').filter(|(key, _)| !key.is_empty()) else {
+            return Err(Stop::Usage(format!("--arg takes key=value, not '{pair}'")));
+        };
+        let kind = params.iter().find(|param| param.name == key).map(|param| param.kind);
+        args.insert(key.into(), typed_value(key, value, kind)?);
+    }
+    Ok(args)
+}
+
+fn typed_value(key: &str, value: &str, kind: Option<ParamType>) -> Result<Value, Stop> {
+    match kind {
+        Some(ParamType::Int) => {
+            value.parse::<i64>().map(Value::from).map_err(|_| Stop::Usage(format!("{key} must be an integer")))
+        }
+        Some(ParamType::Bool) => {
+            value.parse::<bool>().map(Value::from).map_err(|_| Stop::Usage(format!("{key} must be true or false")))
+        }
+        Some(_) => Ok(Value::from(value)),
+        None => Ok(guessed_value(value)),
+    }
+}
+
+/// A value no parameter declares: a number, a boolean, or else a string.
+fn guessed_value(value: &str) -> Value {
+    if let Ok(number) = value.parse::<i64>() {
+        Value::from(number)
+    } else if let Ok(flag) = value.parse::<bool>() {
+        Value::from(flag)
+    } else {
+        Value::from(value)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn parse_args_types_by_the_schema() {
+        let params = [Param::new("name", ParamType::String, ""), Param::new("lines", ParamType::Int, "")];
+        let pairs: Vec<String> = ["name=123", "lines=5", "all=true"].map(String::from).to_vec();
+        let Ok(args) = parse_args(&pairs, &params) else { panic!() };
+        assert_eq!(Value::Object(args), json!({"name": "123", "lines": 5, "all": true}));
+    }
+
+    #[test]
+    fn the_cli_is_well_formed() {
+        use clap::CommandFactory;
+        Cli::command().debug_assert();
+    }
+}

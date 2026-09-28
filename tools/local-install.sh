@@ -3,7 +3,7 @@
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 PREFIX=${PREFIX:-$HOME/.local/bin}
-binary=$("$ROOT/tools/kt" artifact)
+binary=$("$ROOT/tools/cargo.sh" artifact)
 mkdir -p "$PREFIX"
 install -m 0755 "$binary" "$PREFIX/limen.tmp"
 mv "$PREFIX/limen.tmp" "$PREFIX/limen"

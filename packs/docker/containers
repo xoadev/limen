@@ -1,0 +1,17 @@
+#!/bin/sh
+#: description = "Every Docker container, running or not: name, image, state, and status with health"
+set -eu
+
+list=$(docker ps --all --format '{{.Names}}\t{{.Image}}\t{{.State}}\t{{.Status}}')
+printf '%s\n' "$list" | awk -F '\t' '
+  NF { total++; count[$3]++ } $4 ~ /\(unhealthy\)/ { unhealthy++ }
+  END {
+    printf "%d container(s)", total
+    for (state in count) printf ", %d %s", count[state], state
+    if (unhealthy) printf ", %d unhealthy", unhealthy
+    printf "\n"
+  }
+'
+[ -n "$list" ] || exit 0
+printf 'NAME\tIMAGE\tSTATE\tSTATUS\n'
+printf '%s\n' "$list" | sort
