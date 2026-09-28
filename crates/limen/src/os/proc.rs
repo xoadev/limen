@@ -55,10 +55,6 @@ pub struct ProcResult {
 }
 
 impl ProcResult {
-    pub fn ok(&self) -> bool {
-        self.exit_code == 0 && !self.timed_out
-    }
-
     pub fn out(&self) -> String {
         String::from_utf8_lossy(&self.stdout).into_owned()
     }
@@ -66,29 +62,19 @@ impl ProcResult {
     pub fn err(&self) -> String {
         String::from_utf8_lossy(&self.stderr).into_owned()
     }
-
-    /// Why it failed: the last line of its stderr, or its exit code when it wrote nothing there.
-    pub fn failure_reason(&self) -> String {
-        self.err().trim().lines().last().map_or_else(|| format!("exit {}", self.exit_code), String::from)
-    }
 }
 
-/// Sees every block of output as it arrives, fd 1 or 2.
-pub type OnChunk<'a> = &'a mut dyn FnMut(i32, &[u8]);
-
 /// How to run: the defaults are a clean system environment, no input, a minute and 16 MiB of output.
-pub struct Run<'a> {
+pub struct Run {
     pub env: Vec<String>,
     pub stdin: Option<Vec<u8>>,
     pub timeout: Duration,
     pub max_output: usize,
-    /// Sees every block of output as it arrives, fd 1 or 2: how `apply` streams. When given, output is not kept.
-    pub on_chunk: Option<OnChunk<'a>>,
 }
 
-impl Default for Run<'_> {
+impl Default for Run {
     fn default() -> Self {
-        Self { env: system_env(), stdin: None, timeout: Duration::from_secs(60), max_output: 16 << 20, on_chunk: None }
+        Self { env: system_env(), stdin: None, timeout: Duration::from_secs(60), max_output: 16 << 20 }
     }
 }
 
@@ -123,7 +109,7 @@ pub fn run(argv: &[String], mut options: Run) -> Result<ProcResult, String> {
         max_output: options.max_output,
     };
     track(running.pid);
-    let status = running.await_child(&mut child, options.stdin.take(), options.timeout, &mut options.on_chunk);
+    let status = running.await_child(&mut child, options.stdin.take(), options.timeout);
     untrack(running.pid);
     let (exit_code, signal) = exit_code_and_signal(status);
     Ok(ProcResult {
@@ -249,13 +235,7 @@ impl Pipes {
 }
 
 impl Running {
-    fn await_child(
-        &mut self,
-        child: &mut Child,
-        input: Option<Vec<u8>>,
-        timeout: Duration,
-        on_chunk: &mut Option<OnChunk>,
-    ) -> Option<ExitStatus> {
+    fn await_child(&mut self, child: &mut Child, input: Option<Vec<u8>>, timeout: Duration) -> Option<ExitStatus> {
         let start = Instant::now();
         let mut pipes = Pipes::take(child, input);
         let mut status = None;
@@ -283,7 +263,7 @@ impl Running {
                 }
             };
             for end in ready {
-                self.transfer(&mut pipes, end, &mut buffer, on_chunk);
+                self.transfer(&mut pipes, end, &mut buffer);
             }
             if self.truncated {
                 self.signal(Signal::TERM);
@@ -295,14 +275,14 @@ impl Running {
     }
 
     /// Moves what [end] is ready for: input into the child, or its output into this run.
-    fn transfer(&mut self, pipes: &mut Pipes, end: End, buffer: &mut [u8], on_chunk: &mut Option<OnChunk>) {
+    fn transfer(&mut self, pipes: &mut Pipes, end: End, buffer: &mut [u8]) {
         let read = match end {
             End::Stdin => return pipes.feed(),
             End::Stdout => read_some(&mut pipes.stdout, buffer),
             End::Stderr => read_some(&mut pipes.stderr, buffer),
         };
         if let Some(n) = read {
-            self.accept(end, &buffer[..n], on_chunk);
+            self.accept(end, &buffer[..n]);
         }
     }
 
@@ -319,14 +299,9 @@ impl Running {
         child.wait().ok()
     }
 
-    fn accept(&mut self, end: End, bytes: &[u8], on_chunk: &mut Option<OnChunk>) {
-        let fd = if matches!(end, End::Stdout) { 1 } else { 2 };
-        if let Some(stream) = on_chunk {
-            stream(fd, bytes);
-            return;
-        }
+    fn accept(&mut self, end: End, bytes: &[u8]) {
         let room = self.max_output.saturating_sub(self.stdout.len() + self.stderr.len());
-        let kept = if fd == 1 { &mut self.stdout } else { &mut self.stderr };
+        let kept = if matches!(end, End::Stdout) { &mut self.stdout } else { &mut self.stderr };
         if bytes.len() > room {
             kept.extend_from_slice(&bytes[..room]);
             self.truncated = true;
@@ -437,18 +412,6 @@ mod tests {
         assert!(result.truncated);
         assert!(!result.timed_out);
         assert!(result.stdout.len() <= 10_000);
-    }
-
-    #[test]
-    fn streams_when_asked() {
-        let mut chunks = Vec::new();
-        let mut collect = |fd: i32, bytes: &[u8]| chunks.push((fd, String::from_utf8_lossy(bytes).into_owned()));
-        let result =
-            run(&sh("echo one; echo two >&2"), Run { on_chunk: Some(&mut collect), ..Default::default() }).unwrap();
-        assert_eq!(result.exit_code, 0);
-        assert!(result.stdout.is_empty());
-        chunks.sort();
-        assert_eq!(chunks, [(1, "one\n".to_string()), (2, "two\n".to_string())]);
     }
 
     #[test]

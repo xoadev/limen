@@ -66,43 +66,26 @@ impl SshClient {
         &self.config
     }
 
-    /// Sends [line] and hands over the answer as it comes: for `limen call` of a deploy request, whose answer is the
-    /// scripts' output as text.
-    pub fn stream(
-        &self,
-        node: &str,
-        user: &str,
-        key: Option<&str>,
-        line: &str,
-        timeout: Duration,
-        on_chunk: proc::OnChunk<'_>,
-    ) -> Result<proc::ProcResult> {
-        let entry = self.config.node(node).ok_or_else(|| no_node(node))?;
-        // Never through the multiplexed connection: on OpenWrt both roles log in as root, and a deploy request would
-        // ride the socket the read key opened, landing in the read role.
-        let argv = self.argv(entry, user, key.unwrap_or(&self.identity), false);
-        let run = proc::Run {
-            env: ssh_env(true),
-            stdin: Some(line.as_bytes().to_vec()),
-            timeout,
-            on_chunk: Some(on_chunk),
-            ..Default::default()
-        };
-        proc::run(&argv, run).map_err(internal)
-    }
-
-    fn argv(&self, entry: &NodeEntry, user: &str, key: &str, multiplex: bool) -> Vec<String> {
+    fn argv(&self, entry: &NodeEntry) -> Vec<String> {
         // `-F none`: the operator's ~/.ssh/config, with its ProxyCommand or ForwardAgent, doesn't apply to the hub.
-        let mut argv = vec![self.ssh.clone(), "-F".into(), "none".into(), "-T".into(), "-i".into(), key.into()];
-        for option in self.options(entry, multiplex) {
+        let mut argv =
+            vec![self.ssh.clone(), "-F".into(), "none".into(), "-T".into(), "-i".into(), self.identity.clone()];
+        for option in self.options(entry) {
             argv.extend(["-o".into(), option]);
         }
-        argv.extend(["-p".into(), entry.port.to_string(), "-l".into(), user.into(), "--".into(), entry.host.clone()]);
+        argv.extend([
+            "-p".into(),
+            entry.port.to_string(),
+            "-l".into(),
+            entry.user.clone(),
+            "--".into(),
+            entry.host.clone(),
+        ]);
         argv
     }
 
-    fn options(&self, entry: &NodeEntry, multiplex: bool) -> Vec<String> {
-        let mut options = vec![
+    fn options(&self, entry: &NodeEntry) -> Vec<String> {
+        vec![
             // Nothing forwarded to a node, which may be hostile: not the operator's agent, not a port.
             "ForwardAgent=no".to_string(),
             "ForwardX11=no".into(),
@@ -116,17 +99,10 @@ impl SshClient {
             format!("ConnectTimeout={}", self.config.connect_timeout.as_secs().max(1)),
             "ServerAliveInterval=15".into(),
             "LogLevel=ERROR".into(),
-        ];
-        if multiplex {
-            options.extend([
-                "ControlMaster=auto".into(),
-                format!("ControlPath={}/cm-%C", self.runtime_dir),
-                "ControlPersist=60".into(),
-            ]);
-        } else {
-            options.extend(["ControlMaster=no".into(), "ControlPath=none".into()]);
-        }
-        options
+            "ControlMaster=auto".into(),
+            format!("ControlPath={}/cm-%C", self.runtime_dir),
+            "ControlPersist=60".into(),
+        ]
     }
 }
 
@@ -140,13 +116,12 @@ impl NodeClient for SshClient {
             return NodeResponse::failure(&no_node(node));
         };
         let timeout = timeout.unwrap_or(self.config.request_timeout);
-        let argv = self.argv(entry, &entry.user, &self.identity, true);
+        let argv = self.argv(entry);
         let run = proc::Run {
-            env: ssh_env(false),
+            env: ssh_env(),
             stdin: Some(NodeRequest::new(request, args.clone()).to_line().into_bytes()),
             timeout,
             max_output: MAX_OUTPUT,
-            ..Default::default()
         };
         match limit.with(|| proc::run(&argv, run)) {
             Ok(result) => node_response(node, &result, timeout),
@@ -195,12 +170,10 @@ fn failure(code: ErrorCode, message: String) -> NodeResponse {
     NodeResponse::failure(&error(code, message))
 }
 
-/// ssh's environment: what it needs to run, and the agent only for a person's deploy request, whose key may live
-/// there; never for the hub's own calls.
-fn ssh_env(with_agent: bool) -> Vec<String> {
+/// ssh's environment: what it needs to run, and never the operator's agent.
+fn ssh_env() -> Vec<String> {
     let mut env = vec!["PATH=/usr/local/bin:/usr/bin:/bin".to_string(), "LANG=C.UTF-8".to_string()];
-    let names: &[&str] = if with_agent { &["HOME", "USER", "SSH_AUTH_SOCK"] } else { &["HOME", "USER"] };
-    for name in names {
+    for name in ["HOME", "USER"] {
         if let Some(value) = sys::env(name) {
             env.push(format!("{name}={value}"));
         }

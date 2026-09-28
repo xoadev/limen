@@ -15,7 +15,7 @@ pub enum ParamType {
     Bool,
     Enum,
     String,
-    /// Only for the nested arguments of `check` and `action`, which the script's own header validates.
+    /// Only for the nested arguments of `run`, which the script's own header validates.
     Object,
 }
 

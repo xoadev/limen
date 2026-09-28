@@ -227,7 +227,7 @@ fn node_table(host: &str, port: u16, user: &str, host_key: &str) -> Table {
     if port != 22 {
         node["port"] = value(i64::from(port));
     }
-    if user != hub::READ_USER {
+    if user != hub::NODE_USER {
         node["user"] = value(user);
     }
     node["host_key"] = value(host_key);

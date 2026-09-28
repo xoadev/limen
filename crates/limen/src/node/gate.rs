@@ -1,15 +1,12 @@
-//! `limen gate --role <role>`: the forced command (spec §3, §4). Reads one JSON request from stdin, answers it within
-//! the role and exits. A read request always gets a JSON answer on stdout, even when the configuration is broken; a
-//! deploy request streams its scripts' output as text and exits with their result.
+//! `limen gate`: the forced command (spec §3, §4). Reads one JSON request from stdin, answers it and exits. It always
+//! answers JSON on stdout, even when the configuration is broken.
 
-use super::{Answer, Node, deploy, read};
+use super::{Answer, Node, requests as answers};
 use crate::os::{fs, proc, sys};
 use limen_core::config::node::NodeConfig;
 use limen_core::params;
-use limen_core::protocol::{
-    ErrorCode, LimenError, NodeRequest, NodeResponse, PROTOCOL_VERSIONS, Result, bad_request, error,
-};
-use limen_core::requests::{self, Role};
+use limen_core::protocol::{ErrorCode, NodeRequest, NodeResponse, PROTOCOL_VERSIONS, Result, bad_request, error};
+use limen_core::requests;
 use limen_core::time::iso;
 use serde_json::{Value, json};
 use std::sync::{Mutex, MutexGuard};
@@ -20,13 +17,12 @@ const MAX_AUDIT_ARGS: usize = 4096;
 const MAX_AUDIT_NAME: usize = 64;
 /// How long a client may take to send its request.
 const STDIN_TIMEOUT: Duration = Duration::from_secs(10);
-/// How long a read request may take in all. A check gets its own timeout on top (see [allow]).
-const READ_DEADLINE: Duration = Duration::from_secs(120);
+/// How long a request may take in all. A script gets its own timeout instead (see [allow]).
+const REQUEST_TIME: Duration = Duration::from_secs(120);
 
 /// This request until its audit record is written. Whoever takes it —the request when it ends, or the watchdog when
 /// it doesn't in time— answers and writes the record; the other stays silent.
 struct Pending {
-    role: Role,
     started: Instant,
     /// The defaults until the configuration is read.
     reporting: Reporting,
@@ -50,12 +46,6 @@ impl Reporting {
     }
 }
 
-/// How a request ended, when it did.
-enum Done {
-    Answered(Answer),
-    Deployed { succeeded: bool },
-}
-
 static PENDING: Mutex<Option<Pending>> = Mutex::new(None);
 static DEADLINE: Mutex<Option<Instant>> = Mutex::new(None);
 
@@ -75,15 +65,15 @@ fn update_pending(update: impl FnOnce(&mut Pending)) {
     }
 }
 
-/// Gives a read request [more] time from now: a check, its script's timeout.
+/// Gives the request [more] time from now: a script, its own timeout.
 pub fn allow(more: Duration) {
     if let Some(deadline) = lock_deadline().as_mut() {
         *deadline = (*deadline).max(Instant::now() + more);
     }
 }
 
-/// Ends a read request that outlives its deadline: what it started is stopped, the client is told, and the audit log
-/// says so.
+/// Ends a request that outlives its deadline: what it started is stopped, the client is told, and the audit log says
+/// so.
 fn watchdog() {
     std::thread::spawn(|| {
         loop {
@@ -98,74 +88,65 @@ fn watchdog() {
             let spent = pending.started.elapsed().as_secs().max(1);
             let timeout = error(ErrorCode::Timeout, format!("the request did not finish in {spent}s"));
             send(pending.reporting.max_response, &NodeResponse::failure(&timeout));
-            audit(&pending, timeout.code.wire());
+            audit(&pending, timeout.code.wire(), None);
             std::process::exit(0);
         }
     });
 }
 
-pub fn run(role: Role, config_path: &str) -> i32 {
+pub fn run(config_path: &str) -> i32 {
     sys::chdir_root();
     sys::umask_022();
     let started = Instant::now();
     let reporting = Reporting::of(&NodeConfig::default());
-    *lock_pending() = Some(Pending { role, started, reporting, request: None });
-    if role == Role::Read {
-        *lock_deadline() = Some(started + STDIN_TIMEOUT + READ_DEADLINE);
-        watchdog();
-    }
+    *lock_pending() = Some(Pending { started, reporting, request: None });
+    *lock_deadline() = Some(started + STDIN_TIMEOUT + REQUEST_TIME);
+    watchdog();
     // Held until the answer is written.
     let mut slot = None;
-    let outcome = handle(role, config_path, &mut slot);
+    let outcome = handle(config_path, &mut slot);
     let Some(pending) = lock_pending().take() else {
         // The watchdog answered and is ending the process.
         loop {
             std::thread::park();
         }
     };
-    let (result, exit) = conclude(role, pending.reporting.max_response, outcome);
-    audit(&pending, result);
+    let max_response = pending.reporting.max_response;
+    match outcome {
+        Ok(answer) => {
+            let exit = answer.data.get("exit").and_then(Value::as_i64);
+            send(max_response, &NodeResponse::success(answer.data, answer.truncated));
+            audit(&pending, "ok", exit);
+        }
+        Err(failure) => {
+            send(max_response, &NodeResponse::failure(&failure));
+            audit(&pending, failure.code.wire(), None);
+        }
+    }
     drop(slot);
-    exit
+    0
 }
 
-/// Reads the configuration and the request, and does what it asks within [role]. A read request first takes one of
-/// the node's places into [slot].
-fn handle(role: Role, config_path: &str, slot: &mut Option<std::fs::File>) -> Result<Done> {
+/// Reads the configuration and the request, takes one of the node's places into [slot], and does what it asks. A
+/// script's run is audited when it starts too: it may change the machine, and never end.
+fn handle(config_path: &str, slot: &mut Option<std::fs::File>) -> Result<Answer> {
     let node = Node::load(config_path)?;
     update_pending(|pending| pending.reporting = Reporting::of(&node.config));
     let request = parse(sys::read_stdin(MAX_REQUEST, STDIN_TIMEOUT))?;
     update_pending(|pending| pending.request = Some(request.clone()));
     let definition = requests::find(&request.request)
         .ok_or_else(|| bad_request(format!("unknown request '{}'", shortened(&request.request))))?;
-    if definition.role != role {
-        return Err(error(
-            ErrorCode::Denied,
-            format!("'{}' is not allowed for the {} role", definition.name, role.wire()),
-        ));
-    }
     let args = params::validate(&definition.params, &request.args)?;
-    if role == Role::Deploy {
-        return Ok(Done::Deployed { succeeded: deploy::run(&node, definition.name, &args)? });
-    }
     *slot = take_slot(node.config.concurrency)?;
-    read::answer(&node, definition.name, &args).map(Done::Answered)
-}
-
-/// Tells the client how the request ended; gives the audit record's result and the exit code.
-fn conclude(role: Role, max_response: usize, outcome: Result<Done>) -> (&'static str, i32) {
-    match outcome {
-        Ok(Done::Answered(answer)) => {
-            send(max_response, &NodeResponse::success(answer.data, answer.truncated));
-            ("ok", 0)
+    if definition.name == "run" {
+        if let Some(pending) = lock_pending().as_ref() {
+            audit(pending, "started", None);
         }
-        Ok(Done::Deployed { succeeded: true }) => ("ok", 0),
-        Ok(Done::Deployed { succeeded: false }) => ("failed", 1),
-        Err(failure) => (failure.code.wire(), fail(role, max_response, &failure)),
     }
+    answers::answer(&node, definition.name, &args)
 }
 
-/// One of `limits.concurrency` places for a read request, whatever hub it comes from: a lock on `/run/limen/slot-<n>`,
+/// One of `limits.concurrency` places for a request, whatever hub it comes from: a lock on `/run/limen/slot-<n>`,
 /// held while the request runs. Where those can't be made —limen not running as root— there is no limit.
 fn take_slot(slots: usize) -> Result<Option<std::fs::File>> {
     let dir = if fs::is_directory("/run") { "/run/limen" } else { "/var/run/limen" };
@@ -190,7 +171,7 @@ fn parse(bytes: std::result::Result<Vec<u8>, String>) -> Result<NodeRequest> {
     let text = String::from_utf8_lossy(&bytes);
     let text = text.trim();
     if text.is_empty() {
-        return Err(bad_request(r#"no request on stdin; send one JSON object, e.g. {"v":1,"request":"status"}"#));
+        return Err(bad_request(r#"no request on stdin; send one JSON object, e.g. {"v":1,"request":"hello"}"#));
     }
     let request: NodeRequest = serde_json::from_str(text).map_err(|malformed| {
         bad_request(format!("malformed request: {}", malformed.to_string().lines().next().unwrap_or("")))
@@ -219,16 +200,6 @@ fn send(max_response: usize, response: &NodeResponse) {
     sys::say(&text);
 }
 
-/// Tells the client [failure]: a deploy client reads text on stderr and the exit code, a read client a JSON answer.
-fn fail(role: Role, max_response: usize, failure: &LimenError) -> i32 {
-    if role == Role::Deploy {
-        sys::log(&failure.summary());
-        return 1;
-    }
-    send(max_response, &NodeResponse::failure(failure));
-    0
-}
-
 /// A request's name as the client sent it, up to a length.
 fn shortened(name: &str) -> String {
     if name.chars().count() <= MAX_AUDIT_NAME {
@@ -238,30 +209,32 @@ fn shortened(name: &str) -> String {
     }
 }
 
-/// The node's audit log (spec §8): one JSON line per request, whatever its outcome.
-fn audit(pending: &Pending, result: &str) {
+/// The node's audit log (spec §8): one JSON line per request, whatever its outcome; a script's [exit] code when it ran.
+fn audit(pending: &Pending, result: &str, exit: Option<i64>) {
     let path = &pending.reporting.audit;
-    let line = audit_record(pending, result).to_string();
+    let line = audit_record(pending, result, exit).to_string();
     if let Err(failure) = append_rotating(path, pending.reporting.audit_max_bytes, &line) {
         sys::log(&format!("cannot write the audit log {path}: {failure}"));
     }
 }
 
-fn audit_record(pending: &Pending, result: &str) -> Value {
+fn audit_record(pending: &Pending, result: &str, exit: Option<i64>) -> Value {
     // A request's name and arguments, up to a size: a megabyte of them per request would rotate the log out.
     let request = pending.request.as_ref();
     let args = request.map_or_else(|| json!({}), |request| Value::Object(request.args.clone()));
     let size = args.to_string().len();
-    json!({
+    let mut record = json!({
         "time": iso(limen_core::time::now()),
-        "role": pending.role.wire(),
         "request": request.map(|request| shortened(&request.request)),
         "args": if size <= MAX_AUDIT_ARGS { args } else { json!({"omitted_bytes": size}) },
         "client": sys::env("SSH_CONNECTION").and_then(|connection| connection.split(' ').next().map(String::from)),
-        "user": sys::env("SUDO_USER"),
         "result": result,
         "duration_ms": pending.started.elapsed().as_millis() as u64,
-    })
+    });
+    if let Some(exit) = exit {
+        record["exit"] = json!(exit);
+    }
+    record
 }
 
 /// Appends [line] to the log at [path], moving it to `<path>.1` first once it is over [max_bytes]. One old file kept,

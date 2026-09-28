@@ -1,5 +1,5 @@
 //! The `limen` binary (spec §10): the hub (`mcp`, `serve`, `call`, …) and the node side (`gate`, `join`, `install`,
-//! `apply`, …) in one file. Exit codes: 0 ok, 1 error, 2 usage; `check` exits with Nagios' codes.
+//! `run`, …) in one file. Exit codes: 0 ok, 1 error, 2 usage; `run` exits with its script's code.
 
 mod hub;
 mod node;
@@ -13,32 +13,28 @@ use limen_core::config::node::PATH as NODE_CONFIG;
 use limen_core::durations;
 use limen_core::join::{self, JoinUrl};
 use limen_core::params::{self, Param, ParamType};
-use limen_core::protocol::{LimenError, NodeRequest, bad_request, pretty};
-use limen_core::requests::{self, Role};
-use limen_core::scripts::{Catalog, ScriptKind};
+use limen_core::protocol::{LimenError, pretty};
+use limen_core::requests;
+use limen_core::scripts::Catalog;
 use limen_core::version::{BUILD_DATE, BUILD_NUMBER, VERSION};
-use node::installer::{self, Installer, RepoChoice, Setup};
+use node::installer::Installer;
 use node::joiner::Joiner;
-use node::{Answer, Node, deploy, gate, lint, read};
+use node::{Node, gate, lint, scripts};
 use os::sys;
 use serde_json::{Map, Value};
 use std::sync::Arc;
 use std::time::Duration;
 
-/// Nagios' UNKNOWN: a check that gave no status.
-const NAGIOS_UNKNOWN: i32 = 3;
 /// What the installer is fetched from, in the lines `invite` prints.
 const INSTALL_SCRIPT: &str = "https://raw.githubusercontent.com/xoadev/limen/main/install.sh";
-/// `ssh` exits with 255 when it fails itself, rather than the command it ran.
-const SSH_FAILED: i32 = 255;
-/// How long `call` waits for a deploy request.
-const DEPLOY_TIMEOUT: Duration = Duration::from_secs(6 * 3600);
+/// ssh and the node's own work on top of a script's timeout, for `call`.
+const SCRIPT_MARGIN: Duration = Duration::from_secs(45);
 
 #[derive(Parser)]
 #[command(
     name = "limen",
-    about = "Read-only access to Linux machines for MCP clients. The hub runs `mcp` or `serve`; each node runs `gate` \
-             as an SSH forced command, set up by `join` (or `install`).",
+    about = "Access to Linux machines for MCP clients: the files each allows, and the scripts it offers. The hub runs \
+             `mcp` or `serve`; each node runs `gate` as an SSH forced command, set up by `join` (or `install`).",
     disable_version_flag = true
 )]
 struct Cli {
@@ -98,7 +94,7 @@ enum Command {
         address: String,
         host_key: String,
         /// root for OpenWrt
-        #[arg(long, default_value = hub_config::READ_USER)]
+        #[arg(long, default_value = hub_config::NODE_USER)]
         user: String,
         #[arg(long, default_value_t = 22)]
         port: u16,
@@ -113,36 +109,29 @@ enum Command {
         #[arg(long)]
         home: Option<String>,
     },
-    /// One request to a node over SSH, printed as JSON. Checks as check_<name>; deploy requests (sync, apply, action)
-    /// stream their output and take the deploy role's --user and --identity
+    /// One request to a node over SSH, printed as JSON: hello, read_file, list_dir, history, or a script by its name
     Call {
         node: String,
         request: String,
         /// key=value, repeatable
         #[arg(long = "arg")]
         args: Vec<String>,
+        #[command(flatten)]
+        filters: Filters,
         /// Hub directory with limen.toml
         #[arg(long)]
         home: Option<String>,
-        /// SSH user for deploy requests (default: limen-deploy)
-        #[arg(long)]
-        user: Option<String>,
-        /// SSH key for deploy requests (default: the hub's)
-        #[arg(long)]
-        identity: Option<String>,
     },
     /// Join this machine to a hub (as root): with the line of `limen invite`, or with --hub-key and --name when the
     /// hub is not reachable over HTTP
     Join(JoinArgs),
     /// The SSH forced command on a node: one JSON request on stdin, the answer on stdout
     Gate {
-        #[arg(long, value_parser = ["read", "deploy"])]
-        role: String,
         /// Node configuration
         #[arg(long, default_value = NODE_CONFIG)]
         config: String,
     },
-    /// Set this node up: binary, users, authorized_keys, sudoers, /etc/limen (as root)
+    /// Set this node up: binary, the limen user, authorized_keys, sudoers, /etc/limen (as root)
     Install(InstallArgs),
     /// Undo install (as root)
     Uninstall {
@@ -153,46 +142,18 @@ enum Command {
         #[arg(long)]
         dry_run: bool,
     },
-    /// Replace the token that reads this node's repository (as root)
-    Token,
-    /// Bring this node's copy of its repository to the remote branch
-    Sync {
-        #[arg(long, default_value = NODE_CONFIG)]
-        config: String,
-    },
-    /// Sync the repository, run the setup scripts in order and bring up the stacks, on this node
-    Apply {
-        /// Start at the script with this number prefix
-        #[arg(long)]
-        from: Option<String>,
-        /// Use the checkout as it is
-        #[arg(long)]
-        no_sync: bool,
-        /// List what would run
-        #[arg(long)]
-        dry_run: bool,
-        #[arg(long, default_value = NODE_CONFIG)]
-        config: String,
-    },
-    /// Run one action script, on this node
-    Action {
-        name: String,
+    /// Run one script of this node's packs, as the hub would; exits with its exit code (as root)
+    Run {
+        script: String,
         /// key=value, repeatable
         #[arg(long = "arg")]
         args: Vec<String>,
+        #[command(flatten)]
+        filters: Filters,
         #[arg(long, default_value = NODE_CONFIG)]
         config: String,
     },
-    /// Run one check script, on this node; exits 0, 1 or 2 by its status, and 3 when it gave none
-    Check {
-        name: String,
-        /// key=value, repeatable
-        #[arg(long = "arg")]
-        args: Vec<String>,
-        #[arg(long, default_value = NODE_CONFIG)]
-        config: String,
-    },
-    /// Check script names, headers and permissions without running anything
+    /// Check the packs: script names, headers and permissions, without running anything
     Lint {
         #[arg(long, default_value = NODE_CONFIG)]
         config: String,
@@ -211,8 +172,9 @@ struct JoinArgs {
     /// This machine's name on the hub, with --hub-key
     #[arg(long)]
     name: Option<String>,
-    #[command(flatten)]
-    setup: SetupArgs,
+    /// Addresses or CIDRs the hub's key may connect from, e.g. 100.64.0.0/10 (not OpenWrt)
+    #[arg(long)]
+    from: Option<String>,
     /// Where the hub reaches this machine (default: where the join request comes from)
     #[arg(long)]
     address: Option<String>,
@@ -223,46 +185,35 @@ struct JoinArgs {
 
 #[derive(Args)]
 struct InstallArgs {
-    /// Public key of the hub (read role); without it there is no hub yet, and a join adds one later
+    /// The hub's public key; without it there is no hub yet, and a join adds one later
     #[arg(long)]
-    read_key: Option<String>,
-    #[command(flatten)]
-    setup: SetupArgs,
+    hub_key: Option<String>,
+    /// Addresses or CIDRs the hub's key may connect from, e.g. 100.64.0.0/10 (not OpenWrt)
+    #[arg(long)]
+    from: Option<String>,
     /// Say what would change and change nothing
     #[arg(long)]
     dry_run: bool,
 }
 
-/// What `install` and `join` set up besides the hub's key.
+/// What limen does to a script's output, once redacted.
 #[derive(Args)]
-struct SetupArgs {
-    /// Public key of CI or a person (deploy role); without it, no deploy role
+struct Filters {
+    /// Only the lines holding this text, case-insensitive
     #[arg(long)]
-    deploy_key: Option<String>,
-    /// Addresses or CIDRs the keys may connect from, e.g. 100.64.0.0/10 (not OpenWrt)
+    grep: Option<String>,
+    /// Only the last lines, this many
     #[arg(long)]
-    from: Option<String>,
-    /// Git repository with this machine's scripts, stacks and node.toml (https:// asks for a token)
-    #[arg(long)]
-    repo: Option<String>,
-    /// Branch of --repo
-    #[arg(long, default_value = "main")]
-    branch: String,
-    /// This machine's folder in --repo (default: nodes/<its name>)
-    #[arg(long)]
-    path: Option<String>,
+    tail: Option<u32>,
 }
 
-impl SetupArgs {
-    fn setup(&self) -> Setup {
-        Setup {
-            deploy_key: self.deploy_key.clone(),
-            from: self.from.clone(),
-            repo: self.repo.as_ref().map(|url| RepoChoice {
-                url: url.clone(),
-                branch: self.branch.clone(),
-                path: self.path.clone(),
-            }),
+impl Filters {
+    fn add_to(&self, args: &mut Map<String, Value>) {
+        if let Some(grep) = &self.grep {
+            args.insert("grep".into(), grep.as_str().into());
+        }
+        if let Some(tail) = self.tail {
+            args.insert("tail".into(), tail.into());
         }
     }
 }
@@ -291,18 +242,11 @@ impl Stop {
         sys::log(&text);
         code
     }
-
-    fn into_limen_error(self) -> LimenError {
-        match self {
-            Stop::Usage(message) | Stop::Message(message) => bad_request(message),
-            Stop::Limen(error) => error,
-        }
-    }
 }
 
 type Exit = Result<i32, Stop>;
 
-/// How `join`, `install`, `uninstall` and `token` stop: their own message, after the command's name.
+/// How `join`, `install` and `uninstall` stop: their own message, after the command's name.
 fn failed(command: &'static str) -> impl FnOnce(String) -> Stop {
     move |message| Stop::Message(format!("{command}: {message}"))
 }
@@ -356,18 +300,14 @@ fn run(command: Command) -> Exit {
             trust(&name, &address, &host_key, &user, port, home.as_deref())
         }
         Command::Forget { name, home } => forget(&name, home.as_deref()),
-        Command::Call { node, request, args, home, user, identity } => {
-            call(&node, &request, &args, home.as_deref(), user.as_deref(), identity.as_deref())
-        }
+        Command::Call { node, request, args, filters, home } => call(&node, &request, &args, &filters, home.as_deref()),
         Command::Join(args) => join_hub(&args),
-        Command::Gate { role, config } => Ok(gate::run(Role::parse(&role).expect("clap checked it"), &config)),
-        Command::Install(args) => install(&args),
+        Command::Gate { config } => Ok(gate::run(&config)),
+        Command::Install(args) => Installer::new(args.dry_run)
+            .install(args.hub_key.as_deref(), args.from.as_deref(), true)
+            .map_err(failed("install")),
         Command::Uninstall { purge, dry_run } => Installer::new(dry_run).uninstall(purge).map_err(failed("uninstall")),
-        Command::Token => Installer::new(false).token().map_err(failed("token")),
-        Command::Sync { config } => Ok(exit_code(deploy::sync(&Node::load(&config)?))),
-        Command::Apply { from, no_sync, dry_run, config } => apply(from.as_deref(), !no_sync, dry_run, &config),
-        Command::Action { name, args, config } => action(&name, &args, &config),
-        Command::Check { name, args, config } => check(&name, &args, &config),
+        Command::Run { script, args, filters, config } => run_script(&script, &args, &filters, &config),
         Command::Lint { config } => Ok(lint::run(&Node::load(&config)?)),
         Command::Version => version(),
     }
@@ -479,91 +419,42 @@ fn forget(name: &str, home: Option<&str>) -> Exit {
     Ok(0)
 }
 
-fn call(
-    node: &str,
-    request: &str,
-    pairs: &[String],
-    home: Option<&str>,
-    user: Option<&str>,
-    identity: Option<&str>,
-) -> Exit {
+fn call(node: &str, request: &str, pairs: &[String], filters: &Filters, home: Option<&str>) -> Exit {
     let live = LiveHub::new(Arc::new(Hub::at(home)));
     if live.config()?.node(node).is_none() {
         return Err(Stop::Usage(format!("no node named '{node}'")));
     }
-    let (name, args) = request_and_args(&live, node, request, pairs)?;
-    if requests::find(name).map(|definition| definition.role) == Some(Role::Deploy) {
-        let user = user.map_or_else(|| installer::user_of(Role::Deploy), String::from);
-        return call_deploy(&live, node, name, args, &user, identity);
-    }
-    if user.is_some() || identity.is_some() {
-        return Err(Stop::Usage("--user and --identity are only for deploy requests".into()));
-    }
-    let response = live.call(node, name, &args, None);
+    let (name, args, timeout) = match requests::find(request) {
+        Some(definition) if definition.name != "run" => {
+            let mut args = parse_args(pairs, &definition.params)?;
+            filters.add_to(&mut args);
+            (definition.name, args, None)
+        }
+        _ => {
+            let (params, timeout) = script_params(&live, node, request);
+            let mut args = Map::new();
+            filters.add_to(&mut args);
+            args.insert("script".into(), request.into());
+            args.insert("args".into(), Value::Object(parse_args(pairs, &params)?));
+            ("run", args, timeout)
+        }
+    };
+    let response = live.call(node, name, &args, timeout);
     sys::say(&pretty(&response));
     Ok(exit_code(response.ok))
 }
 
-/// The request `call` sends for [request], and its arguments: `check_<name>` is `check` with that script, and
-/// `action` takes its script's name from `--arg name=…`.
-fn request_and_args(
-    live: &LiveHub,
-    node: &str,
-    request: &str,
-    pairs: &[String],
-) -> Result<(&'static str, Map<String, Value>), Stop> {
-    if let Some(check) = request.strip_prefix("check_") {
-        let params = script_params(live, node, ScriptKind::Check, check);
-        return Ok(("check", script_args(check, parse_args(pairs, &params)?)));
-    }
-    if request == "action" {
-        let action = pairs
-            .iter()
-            .find_map(|pair| pair.strip_prefix("name="))
-            .ok_or_else(|| Stop::Usage("action needs --arg name=<action>".into()))?;
-        let params = script_params(live, node, ScriptKind::Action, action);
-        let own: Vec<String> = pairs.iter().filter(|pair| !pair.starts_with("name=")).cloned().collect();
-        return Ok(("action", script_args(action, parse_args(&own, &params)?)));
-    }
-    let definition = requests::find(request).ok_or_else(|| Stop::Usage(format!("unknown request '{request}'")))?;
-    Ok((definition.name, parse_args(pairs, &definition.params)?))
-}
-
-/// The parameters [name]'s header declares, from the node's catalog, so a script's arguments are typed as it says:
-/// `--arg tag=20` stays a string. Empty when the node doesn't tell.
-fn script_params(live: &LiveHub, node: &str, kind: ScriptKind, name: &str) -> Vec<Param> {
+/// The parameters and the timeout [name]'s header declares, from the node's catalog, so a script's arguments are
+/// typed as it says —`--arg tag=20` stays a string— and `call` waits as long as it may take. Nothing when the node
+/// doesn't tell.
+fn script_params(live: &LiveHub, node: &str, name: &str) -> (Vec<Param>, Option<Duration>) {
     let hello = live.call(node, "hello", &Map::new(), None);
     let catalog: Option<Catalog> =
         hello.data.and_then(|data| serde_json::from_value(data.get("catalog")?.clone()).ok());
-    let scripts = catalog.map(|catalog| match kind {
-        ScriptKind::Check => catalog.checks,
-        ScriptKind::Action => catalog.actions,
-        ScriptKind::Setup => catalog.setup,
-    });
-    scripts
-        .and_then(|scripts| scripts.into_iter().find(|script| script.name == name))
-        .map(|script| script.params)
+    catalog
+        .and_then(|catalog| catalog.scripts.into_iter().find(|script| script.name == name))
+        .map(|script| (script.params, Some(Duration::from_secs(script.timeout_seconds) + SCRIPT_MARGIN)))
         .unwrap_or_default()
-}
-
-/// A deploy request streams its scripts' output as it comes, and exits with their result.
-fn call_deploy(
-    live: &LiveHub,
-    node: &str,
-    name: &str,
-    args: Map<String, Value>,
-    user: &str,
-    identity: Option<&str>,
-) -> Exit {
-    let line = NodeRequest::new(name, args).to_line();
-    let mut print = |fd: i32, bytes: &[u8]| {
-        if fd == 1 { sys::out_bytes(bytes) } else { sys::err(&String::from_utf8_lossy(bytes)) }
-    };
-    let finished = live.ssh()?.stream(node, user, identity, &line, DEPLOY_TIMEOUT, &mut print)?;
-    if finished.exit_code == SSH_FAILED {
-        sys::log(&format!("cannot reach {node}"));
-    }
-    Ok(finished.exit_code)
 }
 
 fn join_hub(args: &JoinArgs) -> Exit {
@@ -578,7 +469,7 @@ fn join_hub(args: &JoinArgs) -> Exit {
 fn join_with_line(line: &str, args: &JoinArgs) -> Exit {
     let url = JoinUrl::parse(line)?;
     Joiner { installer: Installer::new(false) }
-        .join(&url, &args.setup.setup(), args.address.as_deref(), args.ssh_port)
+        .join(&url, args.from.as_deref(), args.address.as_deref(), args.ssh_port)
         .map_err(failed("join"))
 }
 
@@ -586,71 +477,34 @@ fn join_with_line(line: &str, args: &JoinArgs) -> Exit {
 fn join_with_key(hub_key: &str, args: &JoinArgs) -> Exit {
     let name = args.name.as_deref().ok_or_else(|| Stop::Usage("--hub-key needs --name".into()))?;
     Joiner { installer: Installer::new(false) }
-        .with_key(hub_key, name, &args.setup.setup(), args.ssh_port)
+        .with_key(hub_key, name, args.from.as_deref(), args.ssh_port)
         .map_err(failed("join"))
 }
 
-fn install(args: &InstallArgs) -> Exit {
-    let node = sys::hostname().to_lowercase();
-    Installer::new(args.dry_run)
-        .install(args.read_key.as_deref(), &args.setup.setup(), &node, true)
-        .map_err(failed("install"))
-}
-
-fn apply(from: Option<&str>, sync_first: bool, dry_run: bool, config: &str) -> Exit {
-    if from.is_some_and(|prefix| !is("^[0-9]{1,4}$", prefix)) {
-        return Err(Stop::Usage("--from takes the number prefix, e.g. 20".into()));
-    }
+/// Runs a script here as the gate would, prints what the hub would get, and exits with the script's code.
+fn run_script(script: &str, pairs: &[String], filters: &Filters, config: &str) -> Exit {
     sys::chdir_root();
-    Ok(exit_code(deploy::apply(&Node::load(config)?, from, dry_run, sync_first)))
-}
-
-fn action(name: &str, pairs: &[String], config: &str) -> Exit {
-    sys::chdir_root();
+    sys::umask_022();
     let node = Node::load(config)?;
-    let (_, spec) = node::scripts::find(&node, ScriptKind::Action, name)?;
-    Ok(exit_code(deploy::action(&node, name, &parse_args(pairs, &spec.params)?)?))
-}
-
-/// Runs a check here and exits with Nagios' code for its status.
-fn check(name: &str, pairs: &[String], config: &str) -> Exit {
-    sys::chdir_root();
-    let node = Node::load(config)?;
-    match run_check(&node, name, pairs) {
-        Ok(answer) => {
-            sys::say(&pretty(&answer.data));
-            Ok(nagios_code(answer.data.get("status").and_then(Value::as_str)))
-        }
-        Err(error) => {
-            // Not found, a timeout, bad arguments: no answer from the check is Nagios' UNKNOWN, not a warning.
-            sys::log(&format!("check: {}", error.summary()));
-            Ok(NAGIOS_UNKNOWN)
-        }
+    let (_, spec) = scripts::find(&node, script)?;
+    let mut args = Map::new();
+    filters.add_to(&mut args);
+    args.insert("script".into(), script.into());
+    args.insert("args".into(), Value::Object(parse_args(pairs, &spec.params)?));
+    let args = params::validate(&requests::named("run").params, &args)?;
+    let answer = scripts::run(&node, &args)?;
+    let text = |key: &str| answer.data.get(key).and_then(Value::as_str).unwrap_or_default().to_string();
+    let (stdout, stderr) = (text("stdout"), text("stderr"));
+    if !stdout.is_empty() {
+        sys::say(&stdout);
     }
-}
-
-fn run_check(node: &Node, name: &str, pairs: &[String]) -> Result<Answer, LimenError> {
-    let (_, spec) = node::scripts::find(node, ScriptKind::Check, name)?;
-    let args = parse_args(pairs, &spec.params).map_err(Stop::into_limen_error)?;
-    let body = script_args(name, args);
-    read::check(node, &params::validate(&requests::named("check").params, &body)?)
-}
-
-fn nagios_code(status: Option<&str>) -> i32 {
-    match status {
-        Some("ok") => 0,
-        Some("warn") => 1,
-        Some("fail") => 2,
-        _ => NAGIOS_UNKNOWN,
+    if !stderr.is_empty() {
+        sys::log(&stderr);
     }
-}
-
-/// The arguments of `check` and `action`: the script's name and its own arguments.
-fn script_args(name: &str, args: Map<String, Value>) -> Map<String, Value> {
-    let mut body = Map::new();
-    body.insert("name".into(), name.into());
-    body.insert("args".into(), Value::Object(args));
-    body
+    if answer.truncated {
+        sys::log("[truncated: a limit cut this output]");
+    }
+    Ok(answer.data.get("exit").and_then(Value::as_i64).map_or(1, |exit| exit as i32))
 }
 
 /// `--arg key=value`, typed by [params] where it names one; otherwise a number, a boolean or a string.

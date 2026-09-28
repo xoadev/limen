@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
 
-pub const READ_USER: &str = "limen-read";
+pub const NODE_USER: &str = "limen";
 pub const NODE_NAME: &str = "^[a-z0-9][a-z0-9_-]{0,31}$";
 pub const HOST_KEY: &str =
     r"^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp(256|384|521)|sk-ssh-ed25519@openssh\.com) [A-Za-z0-9+/]+=*$";
@@ -143,7 +143,7 @@ fn node_entry(name: String, node: Node) -> ConfigResult<NodeEntry> {
         port @ 1..=65535 => port as u16,
         _ => return fail(&key("port"), "out of range"),
     };
-    let user = node.user.unwrap_or_else(|| READ_USER.into());
+    let user = node.user.unwrap_or_else(|| NODE_USER.into());
     if !is(USER, &user) {
         return fail(&key("user"), "not a user name");
     }
@@ -200,7 +200,7 @@ host_key = "ecdsa-sha2-nistp256 AAAAE2VjZHNh="
         assert_eq!(config.connect_timeout, Duration::from_secs(3));
         assert_eq!(config.nodes.iter().map(|node| node.name.as_str()).collect::<Vec<_>>(), ["nas", "router"]);
         assert_eq!(config.node("nas").unwrap().port, 22);
-        assert_eq!(config.node("nas").unwrap().user, "limen-read");
+        assert_eq!(config.node("nas").unwrap().user, "limen");
         assert_eq!(config.node("router").unwrap().user, "reader");
         // Only the local machine unless told otherwise.
         assert_eq!(config.listen, "127.0.0.1:7341");

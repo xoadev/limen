@@ -1,4 +1,4 @@
-//! Masks secrets in text going out of the node: files, logs, check output, process arguments (spec §7.1). A pattern
+//! Masks secrets in text going out of the node: files, scripts' output, the audit log (spec §7.1). A pattern
 //! with a group named `secret` replaces only that group, so `password=hunter2` stays readable as
 //! `password=[redacted]`; without it the whole match goes.
 //!
@@ -20,15 +20,30 @@ const UCI_SECRET: &str =
 const SPACE: &str = r"[\t\n\x0B\x0C\r ]";
 const NOT_SPACE: &str = r"[^\t\n\x0B\x0C\r ]";
 
-pub fn built_in() -> Vec<String> {
-    // A secret's name, then `=` or `:`: `key = value`, `key: value`, `--key=value`, `"key": "value"`.
-    let assignment = format!(r#"(?i){SECRET_NAME}["']?{SPACE}*[:=]{SPACE}*"#);
-    vec![
-        // A quoted value is masked to its closing quote (or the end of the line), spaces included; a bare one to the
-        // next space or separator.
+/// The value assigned to a name [name] matches: `key = value`, `key: value`, `--key=value`, `"key": "value"`. A quoted
+/// value is masked to its closing quote (or the end of the line), spaces included; a bare one to the next space or
+/// separator.
+fn assignments(name: &str) -> [String; 3] {
+    let assignment = format!(r#"(?i){name}["']?{SPACE}*[:=]{SPACE}*"#);
+    [
         format!(r#"{assignment}"(?<secret>[^"\n]*)"#),
         format!(r#"{assignment}'(?<secret>[^'\n]*)"#),
         format!(r#"{assignment}(?<secret>[^\t\n\x0B\x0C\r "',;&]+)"#),
+    ]
+}
+
+/// The patterns of `redact.names`: the value assigned to any of [names], a whole name and not part of a longer one.
+pub fn of_names(names: &[String]) -> Vec<String> {
+    if names.is_empty() {
+        return vec![];
+    }
+    let escaped: Vec<String> = names.iter().map(|name| regex::escape(name)).collect();
+    assignments(&format!("(?:(?m:^)|[^A-Za-z0-9_])(?:{})", escaped.join("|"))).to_vec()
+}
+
+pub fn built_in() -> Vec<String> {
+    let mut patterns = assignments(SECRET_NAME).to_vec();
+    patterns.extend([
         // --password value: a flag and its value, apart. The character before it is matched, not looked behind.
         format!(
             r#"(?i)(?:^|[^A-Za-z0-9_-])--?{SECRET_NAME}{SPACE}+(?<secret>[^\t\n\x0B\x0C\r "'-][^\t\n\x0B\x0C\r "']*)"#
@@ -46,7 +61,8 @@ pub fn built_in() -> Vec<String> {
         // A line of base64 alone, as a key's body is written: a window of lines that starts inside a key has no
         // markers to find it by.
         r"(?m)^[A-Za-z0-9+/]{64,}={0,2}\r?$".into(),
-    ]
+    ]);
+    patterns
 }
 
 /// Compiled on the first text it redacts: most requests redact nothing, and every request is a process of its own.
@@ -57,10 +73,12 @@ pub struct Redactor {
 }
 
 impl Redactor {
-    /// The built-in patterns and [extra], the operator's `redact.patterns`, which reading the configuration already
-    /// checked: one that doesn't compile is left out rather than stop every answer.
-    pub fn new(extra: &[String]) -> Self {
-        Self { extra: extra.to_vec(), patterns: OnceLock::new() }
+    /// The built-in patterns, the operator's `redact.names` and `redact.patterns`, which reading the configuration
+    /// already checked: one that doesn't compile is left out rather than stop every answer.
+    pub fn new(names: &[String], patterns: &[String]) -> Self {
+        let mut extra = of_names(names);
+        extra.extend_from_slice(patterns);
+        Self { extra, patterns: OnceLock::new() }
     }
 
     fn patterns(&self) -> &[Regex] {
@@ -177,7 +195,17 @@ mod tests {
 
     #[test]
     fn extra_patterns_with_and_without_group() {
-        let redactor = Redactor::new(&["sk-[A-Za-z0-9]{8,}".into(), r"pin (?<secret>\d{4})".into()]);
+        let redactor = Redactor::new(&[], &["sk-[A-Za-z0-9]{8,}".into(), r"pin (?<secret>\d{4})".into()]);
         assert_eq!(redactor.redact("key sk-abcdefgh123 and pin 1234"), "key [redacted] and pin [redacted]");
+    }
+
+    #[test]
+    fn the_operators_names() {
+        let redactor = Redactor::new(&["MQTT_PASS".into(), "ha.key".into()], &[]);
+        assert_eq!(redactor.redact("MQTT_PASS=abc MQTT_USER=ana"), "MQTT_PASS=[redacted] MQTT_USER=ana");
+        assert_eq!(redactor.redact(r#"{"mqtt_pass": "a b"}"#), r#"{"mqtt_pass": "[redacted]"}"#);
+        assert_eq!(redactor.redact("ha.key: x1"), "ha.key: [redacted]");
+        // A whole name: not the end of a longer one, and a dot is a dot.
+        assert_eq!(redactor.redact("OLD_MQTT_PASS=abc haXkey=1"), "OLD_MQTT_PASS=abc haXkey=1");
     }
 }

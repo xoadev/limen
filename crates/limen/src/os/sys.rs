@@ -1,7 +1,7 @@
 //! Process-level facts and the standard streams.
 
 use rustix::event::{PollFd, PollFlags, Timespec, poll};
-use std::io::{BufRead, IsTerminal, Write};
+use std::io::Write;
 use std::os::fd::AsFd;
 use std::time::{Duration, Instant};
 
@@ -83,41 +83,6 @@ pub fn read_stdin(max: usize, timeout: Duration) -> Result<Vec<u8>, String> {
         }
     }
     Ok(out)
-}
-
-/// Clock ticks per second, the unit of `/proc/<pid>/stat` times.
-pub fn ticks_per_second() -> u64 {
-    rustix::param::clock_ticks_per_second()
-}
-
-pub fn stdin_is_terminal() -> bool {
-    std::io::stdin().is_terminal()
-}
-
-/// One line from stdin, without echoing it when stdin is a terminal: for a token typed at a prompt.
-pub fn read_secret() -> Option<String> {
-    use rustix::termios::{LocalModes, OptionalActions, tcgetattr, tcsetattr};
-    let stdin = std::io::stdin();
-    let saved = tcgetattr(&stdin).ok();
-    if let Some(mut quiet) = saved.clone() {
-        quiet.local_modes.remove(LocalModes::ECHO);
-        tcsetattr(&stdin, OptionalActions::Now, &quiet).ok();
-    }
-    let line = read_line();
-    if let Some(saved) = saved {
-        tcsetattr(&stdin, OptionalActions::Now, &saved).ok();
-        err("\n");
-    }
-    line
-}
-
-/// One line from stdin, as typed.
-pub fn read_line() -> Option<String> {
-    let mut line = String::new();
-    match std::io::stdin().lock().read_line(&mut line) {
-        Ok(0) | Err(_) => None,
-        Ok(_) => Some(line.trim_end_matches(['\n', '\r']).to_string()),
-    }
 }
 
 pub fn chdir_root() {

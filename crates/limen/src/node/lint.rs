@@ -1,10 +1,8 @@
-//! `limen lint` (spec §10): every script directory checked without running anything. Exit 1 when something is wrong.
+//! `limen lint` (spec §10): every pack checked without running anything. Exit 1 when something is wrong.
 
 use super::Node;
 use super::scripts::{self, ScriptEntry};
 use crate::os::sys;
-use limen_core::scripts::ScriptKind;
-use std::collections::BTreeMap;
 
 /// A line of the report: a script that would run, a file that is not a script, or a problem.
 enum Finding {
@@ -24,38 +22,26 @@ impl Finding {
 }
 
 pub fn run(node: &Node) -> i32 {
-    let problems: usize = ScriptKind::ALL.into_iter().map(|kind| lint_directory(node, kind)).sum();
+    let entries = scripts::discover(node);
+    if node.config.packs.is_empty() {
+        sys::say("no packs in scripts.packs: this node offers no scripts");
+    }
+    let mut problems = 0;
+    for pack in &node.config.packs {
+        let in_pack: Vec<&ScriptEntry> = entries.iter().filter(|entry| &entry.pack == pack).collect();
+        sys::say(&format!("{pack}: {} file(s)", in_pack.iter().filter(|entry| !entry.file.is_empty()).count()));
+        for finding in in_pack.into_iter().filter_map(entry_finding) {
+            problems += usize::from(matches!(finding, Finding::Failed(_)));
+            sys::out(&finding.line());
+        }
+    }
+    for (name, named) in scripts::by_name(&entries).into_iter().filter(|(_, named)| named.len() > 1) {
+        problems += 1;
+        sys::out(&Finding::Failed(scripts::same_name_problem(name, &named)).line());
+    }
     let verdict = if problems == 0 { "lint: OK\n".to_string() } else { format!("lint: {problems} problem(s)\n") };
     sys::out(&verdict);
     i32::from(problems != 0)
-}
-
-/// Reports the directory of [kind] file by file; how many problems it holds.
-fn lint_directory(node: &Node, kind: ScriptKind) -> usize {
-    let entries = scripts::discover(node, kind);
-    sys::say(&format!("{}: {} file(s)", node.config.directory(kind), entries.len()));
-    let findings = same_names(&entries).into_iter().chain(entries.iter().filter_map(entry_finding));
-    let mut problems = 0;
-    for finding in findings {
-        problems += usize::from(matches!(finding, Finding::Failed(_)));
-        sys::out(&finding.line());
-    }
-    problems
-}
-
-/// disk.sh and disk.py are both `disk`: which one runs would depend on the order of the directory.
-fn same_names(entries: &[ScriptEntry]) -> Vec<Finding> {
-    let mut files_by_name: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
-    for entry in entries {
-        if let Some(spec) = &entry.spec {
-            files_by_name.entry(spec.name.as_str()).or_default().push(entry.file.as_str());
-        }
-    }
-    files_by_name
-        .into_iter()
-        .filter(|(_, files)| files.len() > 1)
-        .map(|(name, files)| Finding::Failed(scripts::same_name_problem(name, &files)))
-        .collect()
 }
 
 fn entry_finding(entry: &ScriptEntry) -> Option<Finding> {

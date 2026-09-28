@@ -1,6 +1,6 @@
 //! Files: what the gate reads and what `install` writes.
 
-use limen_core::system::procfs::{self, Account};
+use limen_core::etc::{self, Account};
 use limen_core::trust::FileStat;
 use rustix::fs::{AtFlags, Mode, OFlags};
 use rustix::io::Errno;
@@ -498,22 +498,16 @@ pub fn remove(path: &str) -> bool {
 
 /// Users and groups from `/etc/passwd` and `/etc/group`, read each time: the same on every libc.
 pub fn accounts() -> Vec<Account> {
-    read_text("/etc/passwd").map(|passwd| procfs::accounts(&passwd)).unwrap_or_default()
+    read_text("/etc/passwd").map(|passwd| etc::accounts(&passwd)).unwrap_or_default()
 }
 
 /// gid → name, from `/etc/group`.
 pub fn groups() -> std::collections::BTreeMap<u32, String> {
-    read_text("/etc/group").map(|group| procfs::groups(&group)).unwrap_or_default()
+    read_text("/etc/group").map(|group| etc::groups(&group)).unwrap_or_default()
 }
 
 pub fn account(name: &str) -> Option<Account> {
     accounts().into_iter().find(|account| account.name == name)
-}
-
-/// Free and total bytes of the filesystem holding [path].
-pub fn space(path: &str) -> Option<(u64, u64)> {
-    let stats = rustix::fs::statvfs(path).ok()?;
-    Some((stats.f_bavail * stats.f_frsize, stats.f_blocks * stats.f_frsize))
 }
 
 /// Where a symlink points, unresolved.

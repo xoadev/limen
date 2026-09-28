@@ -1,8 +1,6 @@
-//! Configuration files (spec §7): the node's, the hub's and a node's `node.toml`, each a `#[derive(Deserialize)]`
-//! with `deny_unknown_fields`, so a typo fails instead of being ignored.
+//! Configuration files (spec §7): the node's and the hub's, each a `#[derive(Deserialize)]` with
+//! `deny_unknown_fields`, so a typo fails instead of being ignored.
 
-pub mod expectations;
-pub mod github;
 pub mod hub;
 pub mod node;
 

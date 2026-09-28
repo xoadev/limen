@@ -1,11 +1,11 @@
-//! The operator's scripts (spec §6): what a file's name and `#:` header say about it. The header is parsed, never
-//! run: learning what an action does must not run it.
+//! The scripts of a node's packs (spec §6, docs/scripts.md): what a file's name and `#:` header say about it. The
+//! header is parsed, never run: learning what a script does must not run it.
 
 use crate::config;
 use crate::durations;
 use crate::own_regex;
 use crate::params::{self, DEFAULT_STRING_PATTERN, PARAM_NAME, Param, ParamType};
-use crate::requests::SCRIPT_NAME;
+use crate::requests::{RESERVED_ARGS, SCRIPT_NAME};
 use indexmap::IndexMap;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -13,38 +13,13 @@ use serde_json::Value;
 use std::sync::LazyLock;
 use std::time::Duration;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum ScriptKind {
-    Check,
-    Action,
-    Setup,
-}
-
-impl ScriptKind {
-    pub const ALL: [ScriptKind; 3] = [ScriptKind::Check, ScriptKind::Action, ScriptKind::Setup];
-
-    pub fn default_timeout(self) -> Duration {
-        match self {
-            ScriptKind::Check => Duration::from_secs(60),
-            ScriptKind::Action | ScriptKind::Setup => Duration::from_secs(3600),
-        }
-    }
-
-    pub fn name(self) -> &'static str {
-        match self {
-            ScriptKind::Check => "check",
-            ScriptKind::Action => "action",
-            ScriptKind::Setup => "setup",
-        }
-    }
-}
+const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
+const MAX_TIMEOUT: Duration = Duration::from_secs(3600);
 
 /// What a script says about itself in its header.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScriptSpec {
     pub name: String,
-    pub kind: ScriptKind,
     pub description: String,
     pub timeout_seconds: u64,
     #[serde(default)]
@@ -55,19 +30,12 @@ pub struct ScriptSpec {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Catalog {
     #[serde(default)]
-    pub checks: Vec<ScriptSpec>,
-    #[serde(default)]
-    pub actions: Vec<ScriptSpec>,
-    #[serde(default)]
-    pub setup: Vec<ScriptSpec>,
+    pub scripts: Vec<ScriptSpec>,
     #[serde(default)]
     pub problems: Vec<String>,
 }
 
 static SCRIPT_NAME_REGEX: LazyLock<Regex> = LazyLock::new(|| own_regex(SCRIPT_NAME));
-
-/// A setup script runs in the order of its numeric prefix (spec §6).
-static SETUP_NAME_REGEX: LazyLock<Regex> = LazyLock::new(|| own_regex("^[0-9]{1,4}-.+$"));
 
 static PARAM_NAME_REGEX: LazyLock<Regex> = LazyLock::new(|| own_regex(PARAM_NAME));
 
@@ -80,15 +48,12 @@ pub fn is_param_name(name: &str) -> bool {
 }
 
 /// The script name of a file: its name without the extension, or None when that is not a script's name.
-pub fn name_of(file: &str, kind: ScriptKind) -> Option<String> {
+pub fn name_of(file: &str) -> Option<String> {
     if file.starts_with('.') {
         return None;
     }
     let base = file.rsplit_once('.').map_or(file, |(base, _extension)| base);
-    if !is_script_name(base) || (kind == ScriptKind::Setup && !SETUP_NAME_REGEX.is_match(base)) {
-        return None;
-    }
-    Some(base.into())
+    is_script_name(base).then(|| base.into())
 }
 
 /// The `#:` lines of the leading comment block, without the marker: a TOML document.
@@ -127,24 +92,34 @@ struct Arg {
     required: Option<bool>,
 }
 
-pub fn parse(name: &str, kind: ScriptKind, text: &str) -> Result<ScriptSpec, String> {
-    let header_text = extract(text).ok_or_else(|| format!("{name}: no `#:` header"))?;
-    let header: Header = config::from_str(&header_text).map_err(|error| format!("{name}: header: {error}"))?;
+/// The script [name] from its [text]; None when it has no header, which makes it a helper of its pack and not a script.
+pub fn parse(name: &str, text: &str) -> Option<Result<ScriptSpec, String>> {
+    extract(text).map(|header| spec(name, &header))
+}
+
+fn spec(name: &str, header_text: &str) -> Result<ScriptSpec, String> {
+    let header: Header = config::from_str(header_text).map_err(|error| format!("{name}: header: {error}"))?;
     let description = header.description.ok_or(format!("{name}: the header has no description"))?;
     let timeout = match header.timeout {
         Some(timeout) => {
             durations::parse(&timeout).ok_or(format!("{name}: timeout '{timeout}' is not a duration like 30s or 5m"))?
         }
-        None => kind.default_timeout(),
+        None => DEFAULT_TIMEOUT,
     };
+    if timeout > MAX_TIMEOUT {
+        return Err(format!("{name}: timeout is at most 1h"));
+    }
     let params =
         header.args.into_iter().map(|(arg_name, arg)| param(name, &arg_name, arg)).collect::<Result<_, _>>()?;
-    Ok(ScriptSpec { name: name.into(), kind, description, timeout_seconds: timeout.as_secs().max(1), params })
+    Ok(ScriptSpec { name: name.into(), description, timeout_seconds: timeout.as_secs().max(1), params })
 }
 
 fn param(script: &str, name: &str, arg: Arg) -> Result<Param, String> {
     if !is_param_name(name) {
         return Err(format!("{script}: argument name '{name}' must match {PARAM_NAME}"));
+    }
+    if RESERVED_ARGS.contains(&name) {
+        return Err(format!("{script}: argument name '{name}' is limen's own"));
     }
     arg.into_param(name).map_err(|why| format!("{script}: argument '{name}': {why}"))
 }
@@ -249,7 +224,7 @@ set -euo pipefail
 
     #[test]
     fn parses_the_header() {
-        let spec = parse("backup-space", ScriptKind::Check, SCRIPT).unwrap();
+        let spec = parse("backup-space", SCRIPT).unwrap().unwrap();
         assert_eq!(spec.description, "Free space on the backup volume");
         assert_eq!(spec.timeout_seconds, 30);
         let threshold = spec.params.iter().find(|param| param.name == "threshold").unwrap();
@@ -261,16 +236,21 @@ set -euo pipefail
     }
 
     #[test]
-    fn default_timeout_by_kind() {
+    fn a_minute_by_default_an_hour_at_most() {
         let text = "#!/bin/sh\n#: description = \"x\"\n";
-        assert_eq!(parse("a", ScriptKind::Check, text).unwrap().timeout_seconds, 60);
-        assert_eq!(parse("a", ScriptKind::Action, text).unwrap().timeout_seconds, 3600);
+        assert_eq!(parse("a", text).unwrap().unwrap().timeout_seconds, 60);
+        let long = "#: description = \"x\"\n#: timeout = \"2h\"\n";
+        assert!(parse("a", long).unwrap().unwrap_err().contains("at most 1h"));
+    }
+
+    #[test]
+    fn a_file_without_a_header_is_a_helper() {
+        assert!(parse("lib", "#!/bin/sh\necho hi\n").is_none());
     }
 
     #[test]
     fn rejects_broken_headers() {
         for (text, expected) in [
-            ("#!/bin/sh\necho hi", "no `#:` header"),
             ("#: timeout = \"1s\"", "no description"),
             ("#: description = \"x\"\n#: colour = 1", "unknown field `colour`"),
             ("#: description = \"x\"\n#: [args.n]\n#: type = \"string\"\n#: range = [1, 2]", "range does not apply"),
@@ -280,20 +260,19 @@ set -euo pipefail
             ("#: description = \"x\"\n#: [args.n]\n#: type = \"enum\"", "enum without values"),
             ("#: description = \"x\"\n#: [args.n]\n#: type = \"int\"\n#: default = \"x\"", "the default does not fit"),
             ("#: description = \"x\"\n#: [args.Bad]\n#: type = \"int\"", "argument name 'Bad'"),
+            ("#: description = \"x\"\n#: [args.grep]\n#: type = \"int\"", "'grep' is limen's own"),
         ] {
-            let error = parse("s", ScriptKind::Check, text).unwrap_err();
+            let error = parse("s", text).unwrap().unwrap_err();
             assert!(error.contains(expected), "{error} should contain {expected}");
         }
     }
 
     #[test]
     fn names() {
-        assert_eq!(name_of("disk.sh", ScriptKind::Check).as_deref(), Some("disk"));
-        assert_eq!(name_of("backup-space", ScriptKind::Check).as_deref(), Some("backup-space"));
-        assert_eq!(name_of("10-base.sh", ScriptKind::Setup).as_deref(), Some("10-base"));
-        assert_eq!(name_of("Disk.sh", ScriptKind::Check), None);
-        assert_eq!(name_of(".hidden", ScriptKind::Check), None);
-        assert_eq!(name_of("base.sh", ScriptKind::Setup), None);
+        assert_eq!(name_of("disk.sh").as_deref(), Some("disk"));
+        assert_eq!(name_of("backup-space").as_deref(), Some("backup-space"));
+        assert_eq!(name_of("Disk.sh"), None);
+        assert_eq!(name_of(".hidden"), None);
         assert_eq!(env_name("threshold"), "LIMEN_ARG_THRESHOLD");
     }
 }

@@ -3,7 +3,7 @@
 //! installed with it, and the hub is told this node's host key, signed with the line's secret. With `--hub-key` there
 //! is no hub to talk to: the node is installed and prints the `limen trust` line for the hub.
 
-use super::installer::{Installer, Outcome, Setup};
+use super::installer::{Installer, Outcome};
 use crate::os::{http, sys};
 use limen_core::config::hub::{self, is};
 use limen_core::join::{self, Arrival, Invitation, JoinUrl, Welcome};
@@ -14,29 +14,32 @@ pub struct Joiner {
 }
 
 impl Joiner {
-    pub fn join(&self, url: &JoinUrl, setup: &Setup, address: Option<&str>, ssh_port: u16) -> Outcome<i32> {
+    pub fn join(&self, url: &JoinUrl, from: Option<&str>, address: Option<&str>, ssh_port: u16) -> Outcome<i32> {
         let invitation = fetch_invitation(url)?;
         let fingerprint = verify_invitation(url, &invitation)?;
         sys::say(&format!("Joining the hub at {} as '{}' (hub key {fingerprint})", url.base, invitation.name));
-        self.installer.install(Some(&invitation.hub_key), setup, &invitation.name, false)?;
+        self.installer.install(Some(&invitation.hub_key), from, false)?;
         let host_key = self.installer.host_key().ok_or("cannot read this machine's SSH host key")?;
-        let arrival = Arrival::new(&join::without_comment(&host_key), &self.installer.read_user(), ssh_port, address)
+        let arrival = Arrival::new(&join::without_comment(&host_key), &self.installer.node_user(), ssh_port, address)
             .signed(&url.secret);
         let welcome = arrive(url, &arrival)?;
         Ok(announce_welcome(&welcome, ssh_port))
     }
 
-    pub fn with_key(&self, hub_key: &str, name: &str, setup: &Setup, ssh_port: u16) -> Outcome<i32> {
+    pub fn with_key(&self, hub_key: &str, name: &str, from: Option<&str>, ssh_port: u16) -> Outcome<i32> {
         join::fingerprint(hub_key).map_err(|failure| format!("--hub-key: {}", failure.message))?;
-        self.installer.install(Some(hub_key), setup, name, false)?;
+        if !is(hub::NODE_NAME, name) {
+            return Err(format!("--name '{name}' is not a node name"));
+        }
+        self.installer.install(Some(hub_key), from, false)?;
         let host_key = self
             .installer
             .host_key()
             .map(|key| join::without_comment(&key))
             .ok_or("cannot read this machine's SSH host key")?;
         let mut trust_options = String::new();
-        if self.installer.read_user() != hub::READ_USER {
-            trust_options.push_str(&format!(" --user {}", self.installer.read_user()));
+        if self.installer.node_user() != hub::NODE_USER {
+            trust_options.push_str(&format!(" --user {}", self.installer.node_user()));
         }
         if ssh_port != 22 {
             trust_options.push_str(&format!(" --port {ssh_port}"));
@@ -54,7 +57,7 @@ fn fetch_invitation(url: &JoinUrl) -> Outcome<Invitation> {
         return Err(hub_error(&body).unwrap_or(format!("the hub answered HTTP {status}")));
     }
     let invitation: Invitation = serde_json::from_str(&body).map_err(|_| "the hub's answer is not an invitation")?;
-    // The name becomes the repository folder in this node's limen.toml: from a hub, it is checked like any input.
+    // What this machine prints, and what the hub files it under: from a hub, it is checked like any input.
     if !is(hub::NODE_NAME, &invitation.name) {
         return Err(format!("the hub named this machine '{}', which is not a node name", invitation.name));
     }
