@@ -1,7 +1,8 @@
 //! `state` (spec §6.1): the repository commit on the node against the remote, and every service `node.toml` expects
 //! against what runs. What `apply` checks at the end, and what an agent asks first after a deploy.
 
-use super::system::{self, Init, ProcdState};
+use super::init::{self, Init};
+use super::procd::{self, ProcdState};
 use super::{Answer, Node, repo};
 use crate::os::{fs, proc};
 use limen_core::config::expectations::Expectations;
@@ -239,7 +240,7 @@ fn field(container: &Map<String, Value>, key: &str) -> Option<String> {
 }
 
 fn unit_service(node: &Node, name: &str) -> ServiceState {
-    if system::init() != Init::Systemd {
+    if init::detect() != Init::Systemd {
         return ServiceState::error("unit", name, "no systemd on this node");
     }
     let properties = node
@@ -259,10 +260,10 @@ fn unit_service(node: &Node, name: &str) -> ServiceState {
 }
 
 fn procd_service(node: &Node, name: &str) -> ServiceState {
-    if system::init() != Init::Procd {
+    if init::detect() != Init::Procd {
         return ServiceState::error("procd", name, "no procd on this node");
     }
-    let service = system::procd_services(node, Some(name)).ok().and_then(|mut services| services.remove(name));
+    let service = procd::services(node, Some(name)).ok().and_then(|mut services| services.remove(name));
     let failed = service.as_ref().is_some_and(|service| service.state == ProcdState::Failed);
     let active = match &service {
         None => "missing",

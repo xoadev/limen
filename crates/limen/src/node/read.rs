@@ -1,13 +1,14 @@
 //! The read requests (spec §5). Each takes validated arguments and answers JSON.
 
+use super::init::{self, LogFilter};
 use super::scripts as node_scripts;
-use super::system::{self, IdNames, Init, LogFilter};
+use super::system::{self, IdNames};
 use super::{Answer, MINUTE, Node, internal};
 use crate::os::{fs, proc, sys};
 use limen_core::durations;
 use limen_core::params::{ArgsExt, full_match};
 use limen_core::protocol::{ErrorCode, LimenError, PROTOCOL_VERSIONS, Result, bad_request, error};
-use limen_core::requests::{CONTAINER, UNIT};
+use limen_core::requests::CONTAINER;
 use limen_core::scripts::ScriptKind;
 use limen_core::system::parsers;
 use limen_core::time::{iso, parse_iso};
@@ -41,7 +42,7 @@ pub fn hello(node: &Node) -> Answer {
         "os": fs::read_following("/etc/os-release").and_then(|os_release| parsers::os_name(&os_release)),
         "kernel": kernel,
         "arch": arch,
-        "init": system::init().wire(),
+        "init": init::detect().wire(),
     });
     if let Some(board) = system::board() {
         hello["board"] = json!(node.redactor.redact(&board));
@@ -89,7 +90,7 @@ pub fn status(node: &Node) -> Answer {
 /// another program, and takes tens of milliseconds.
 fn ask_systemd_and_docker(node: &Node) -> (Result<Value>, Option<Result<Value>>) {
     std::thread::scope(|scope| {
-        let failed = scope.spawn(|| system::failed_services(node).map(|names| json!(names)));
+        let failed = scope.spawn(|| init::detect().system().failed(node).map(|names| json!(names)));
         let containers = scope.spawn(|| proc::which("docker").map(|_| containers_needing_attention(node)));
         (failed.join().expect("no panic"), containers.join().expect("no panic"))
     })
@@ -124,70 +125,13 @@ fn read_memory() -> Result<Value> {
 }
 
 pub fn services(node: &Node, args: &Args) -> Result<Answer> {
-    match system::init() {
-        Init::Systemd => systemd_units(node, args),
-        Init::Procd => system::procd_units(node, args.string("state"), args.string("pattern")),
-        Init::None => Err(system::no_init()),
-    }
-    .map(Answer::of)
-}
-
-fn systemd_units(node: &Node, args: &Args) -> Result<Value> {
-    let mut argv = owned(&["systemctl", "list-units", "--no-legend", "--plain", "--no-pager"]);
-    if let Some(unit_type) = args.string("type").filter(|unit_type| *unit_type != "all") {
-        argv.push(format!("--type={unit_type}"));
-    }
-    match args.string("state") {
-        None => {}
-        Some("all") => argv.push("--all".into()),
-        Some("inactive") => argv.extend(owned(&["--all", "--state=inactive"])),
-        Some(state) => argv.push(format!("--state={state}")),
-    }
-    if let Some(pattern) = args.string("pattern") {
-        argv.extend(owned(&["--", pattern]));
-    }
-    Ok(parsers::units(&node.exec_ok(&borrowed(&argv))?, &node.redactor))
+    init::detect().system().units(node, args).map(Answer::of)
 }
 
 pub fn service(node: &Node, args: &Args) -> Result<Answer> {
     let name = args.string("name").unwrap_or_default();
     let lines = usize_arg(args, "lines", 20, 0)?;
-    match system::init() {
-        Init::Systemd => systemd_service(node, name, lines),
-        Init::Procd => system::procd_service(node, name.trim_end_matches(".service"), lines),
-        Init::None => Err(system::no_init()),
-    }
-    .map(Answer::of)
-}
-
-/// A unit (a service when [name] says no type) and its last [lines] in the journal.
-fn systemd_service(node: &Node, name: &str, lines: usize) -> Result<Value> {
-    let unit = if name.contains('.') { name.to_string() } else { format!("{name}.service") };
-    let properties = parsers::key_values(&node.exec_ok(&[
-        "systemctl",
-        "show",
-        "--no-pager",
-        "--property=Id,Description,LoadState,ActiveState,SubState,Result,UnitFileState,FragmentPath,MainPID,\
-         ExecMainStatus,NRestarts,MemoryCurrent,ActiveEnterTimestamp,StateChangeTimestamp,Type,Restart",
-        "--",
-        &unit,
-    ])?);
-    if properties.get("LoadState").map(String::as_str) == Some("not-found") {
-        return Err(error(ErrorCode::NotFound, format!("no unit named {unit}")));
-    }
-    let journal = unit_journal(node, &unit, lines)?;
-    let mut service = parsers::unit(&properties, &node.redactor);
-    service["journal"] = json!(journal);
-    Ok(service)
-}
-
-fn unit_journal(node: &Node, unit: &str, lines: usize) -> Result<Vec<Value>> {
-    if lines == 0 {
-        return Ok(vec![]);
-    }
-    let count = lines.to_string();
-    let journal = node.exec_ok(&["journalctl", "-u", unit, "-n", &count, "-o", "json", "--no-pager", "-q"])?;
-    Ok(parsers::journal(&journal, &node.redactor))
+    init::detect().system().service(node, name, lines).map(Answer::of)
 }
 
 pub fn containers(node: &Node, args: &Args) -> Result<Answer> {
@@ -281,65 +225,10 @@ pub fn logs(node: &Node, args: &Args) -> Result<Answer> {
     Ok(if clamped { Answer::cut(answer.data, true) } else { answer })
 }
 
-/// `source = unit` or `journal`: systemd's journal, or OpenWrt's logread.
-fn system_logs(node: &Node, source: &str, name: Option<&str>, lines: usize, filter: &LogFilter) -> Result<Answer> {
-    match (source, name) {
-        ("journal", Some(_)) => return Err(bad_request("source journal takes no name")),
-        ("unit", None) => return Err(bad_request("source unit needs a name")),
-        _ => {}
-    }
-    match system::init() {
-        Init::None => Err(error(ErrorCode::Unavailable, "no journal or logread on this node")),
-        Init::Procd => {
-            let program = name.map(|unit| unit.trim_end_matches(".service"));
-            let entries = system::logread(node, lines, &LogFilter { source: program, ..*filter })?;
-            Ok(Answer::of(json!(entries)))
-        }
-        Init::Systemd => journal(node, lines, &LogFilter { source: name, ..*filter }),
-    }
-}
-
-/// The journal, of the unit [filter] names as its source, or of the whole system.
-fn journal(node: &Node, lines: usize, filter: &LogFilter) -> Result<Answer> {
-    let argv = journalctl_argv(node, lines, filter)?;
-    let result = node.exec(&borrowed(&argv), MINUTE)?;
-    // journalctl --grep exits 1 when nothing matches: that is an empty answer, not an error.
-    let output = result.out();
-    if result.exit_code != 0 && output.trim().is_empty() && !result.err().trim().is_empty() {
-        return Err(internal(format!("journalctl: {}", result.failure_reason())));
-    }
-    let entries = parsers::journal(&output, &node.redactor);
-    Ok(Answer::cut(json!(last_matching_messages(entries, filter.grep, lines)), result.truncated))
-}
-
-fn journalctl_argv(node: &Node, lines: usize, filter: &LogFilter) -> Result<Vec<String>> {
-    let mut argv = owned(&["journalctl", "-o", "json", "--no-pager", "-q", "-n"]);
-    argv.push(scan_window(node, lines, filter.grep).to_string());
-    if let Some(unit) = filter.source {
-        if !matches_whole(UNIT, unit) {
-            return Err(bad_request(format!("'{unit}' is not a unit name")));
-        }
-        argv.extend(owned(&["-u", unit]));
-    }
-    if let Some(since) = filter.since {
-        argv.push(format!("--since={}", journal_time(since)));
-    }
-    if let Some(until) = filter.until {
-        argv.push(format!("--until={}", journal_time(until)));
-    }
-    if let Some(priority) = filter.priority {
-        argv.push(format!("--priority={priority}"));
-    }
-    if let Some(grep) = filter.grep {
-        argv.extend([format!("--grep={}", pcre_literal(grep)), "--case-sensitive=false".into()]);
-    }
-    Ok(argv)
-}
-
 /// How many lines to read for the last [lines] that match [grep]. With grep the program only narrows the search: the
 /// lines are matched again once redacted, and those that matched only what redaction hid must not take the place of
 /// the rest, so the window is `scan_lines`, not `lines`.
-fn scan_window(node: &Node, lines: usize, grep: Option<&str>) -> usize {
+pub(super) fn scan_window(node: &Node, lines: usize, grep: Option<&str>) -> usize {
     if grep.is_none() { lines } else { node.config.scan_lines }
 }
 
@@ -358,6 +247,16 @@ pub fn last_matching<T>(entries: Vec<T>, grep: Option<&str>, lines: usize, text:
 /// [last_matching] of log rows, by their `message`.
 pub fn last_matching_messages(rows: Vec<Value>, grep: Option<&str>, lines: usize) -> Vec<Value> {
     last_matching(rows, grep, lines, |row| row["message"].as_str().unwrap_or(""))
+}
+
+/// `source = unit` or `journal`: the init system's log (systemd's journal, OpenWrt's logread).
+fn system_logs(node: &Node, source: &str, name: Option<&str>, lines: usize, filter: &LogFilter) -> Result<Answer> {
+    match (source, name) {
+        ("journal", Some(_)) => return Err(bad_request("source journal takes no name")),
+        ("unit", None) => return Err(bad_request("source unit needs a name")),
+        _ => {}
+    }
+    init::detect().system().log(node, lines, &LogFilter { source: name, ..*filter })
 }
 
 /// `source = container`: what the container wrote to stdout and stderr, in the order it wrote it.
@@ -682,35 +581,18 @@ fn instant(node: &Node, text: &str) -> Result<i64> {
     parse_iso(text).ok_or_else(|| bad_request(format!("'{text}' is not a time")))
 }
 
-fn journal_time(epoch: i64) -> String {
-    format!("{} UTC", iso(epoch).replace('T', " ").trim_end_matches('Z'))
-}
-
-/// [text] as a PCRE pattern that matches only itself: every non-alphanumeric character escaped.
-pub fn pcre_literal(text: &str) -> String {
-    text.chars()
-        .map(|character| {
-            if character.is_alphanumeric() || character == ' ' {
-                character.to_string()
-            } else {
-                format!("\\{character}")
-            }
-        })
-        .collect()
-}
-
 /// Whether all of [text] matches [pattern].
-fn matches_whole(pattern: &str, text: &str) -> bool {
+pub(super) fn matches_whole(pattern: &str, text: &str) -> bool {
     full_match(pattern).is_ok_and(|regex| regex.is_match(text))
 }
 
 /// [argv] with every argument owned, to add the ones built with `format!`.
-fn owned(argv: &[&str]) -> Vec<String> {
+pub(super) fn owned(argv: &[&str]) -> Vec<String> {
     argv.iter().map(ToString::to_string).collect()
 }
 
 /// [argv] as [Node::exec] takes it.
-fn borrowed(argv: &[String]) -> Vec<&str> {
+pub(super) fn borrowed(argv: &[String]) -> Vec<&str> {
     argv.iter().map(String::as_str).collect()
 }
 
@@ -940,10 +822,5 @@ mod tests {
         assert_eq!(entries.iter().map(|entry| entry.file.as_str()).collect::<Vec<_>>(), ["README.md"]);
         assert!(entries[0].ignored);
         assert!(node_scripts::catalog(&node).problems.is_empty());
-    }
-
-    #[test]
-    fn a_literal_for_journalctl_grep() {
-        assert_eq!(pcre_literal("a.b (c)"), "a\\.b \\(c\\)");
     }
 }

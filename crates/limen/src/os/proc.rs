@@ -7,7 +7,7 @@ use rustix::process::{Pid, Signal, kill_process_group};
 use std::io::{ErrorKind, Read, Write};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 const CHUNK: usize = 64 * 1024;
@@ -97,7 +97,7 @@ static RUNNING: Mutex<Vec<Pid>> = Mutex::new(Vec::new());
 
 // A poisoned list is still the list of what to kill.
 fn lock_running() -> MutexGuard<'static, Vec<Pid>> {
-    RUNNING.lock().unwrap_or_else(PoisonError::into_inner)
+    RUNNING.lock().expect("nothing panics holding the running process groups")
 }
 
 /// Kills every process group still running: a request out of time leaves nothing behind.

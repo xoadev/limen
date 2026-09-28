@@ -2,14 +2,17 @@
 
 pub mod deploy;
 pub mod gate;
+pub mod init;
 pub mod installer;
 pub mod joiner;
 pub mod lint;
+pub mod procd;
 pub mod read;
 pub mod repo;
 pub mod scripts;
 pub mod state;
 pub mod system;
+pub mod systemd;
 
 use crate::os::{fs, proc, sys};
 use limen_core::config::node::NodeConfig;

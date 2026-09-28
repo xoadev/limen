@@ -12,7 +12,7 @@ use limen_core::protocol::{
 use limen_core::requests::{self, Role};
 use limen_core::time::iso;
 use serde_json::{Value, json};
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 const MAX_REQUEST: usize = 1024 * 1024;
@@ -61,11 +61,11 @@ static DEADLINE: Mutex<Option<Instant>> = Mutex::new(None);
 
 // A panic elsewhere must not stop the gate from answering and writing its audit record: a poisoned lock is still used.
 fn lock_pending() -> MutexGuard<'static, Option<Pending>> {
-    PENDING.lock().unwrap_or_else(PoisonError::into_inner)
+    PENDING.lock().expect("nothing panics holding the pending request")
 }
 
 fn lock_deadline() -> MutexGuard<'static, Option<Instant>> {
-    DEADLINE.lock().unwrap_or_else(PoisonError::into_inner)
+    DEADLINE.lock().expect("nothing panics holding the deadline")
 }
 
 /// Updates the request's record, unless the watchdog has taken it.

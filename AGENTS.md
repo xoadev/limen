@@ -24,7 +24,7 @@ next session, another agent or a person can't read it.
 | `rustfmt.toml`, `clippy.toml`, `[workspace.lints]` | The layout and the lints `make lint` applies (see [Code](#code)) |
 | `.claude/settings.json` | Claude Code's hooks for this repository: an edited Rust file is formatted at once |
 | `crates/limen-core/` | Pure rules: protocol, request schemas, argument validation, configuration, TOML reading, script headers, path policy, redaction, the join's formats, parsers of what system programs print. No processes, files or network |
-| `crates/limen/` | The `limen` binary: `os/` (processes, files), `node/` (gate, requests, platforms, repository, scripts, install, join), `hub/` (SSH client, MCP server, transports, the hub's directory) |
+| `crates/limen/` | The `limen` binary: `os/` (processes, files), `node/` (gate, requests, the init systems behind the `InitSystem` trait —`systemd`, `procd`—, repository, scripts, install, join), `hub/` (SSH client, MCP server, HTTP server, transports, the hub's directory) |
 | `install.sh` | The installer a user pipes into `sh` on a new machine. POSIX `sh` (OpenWrt has no bash); `make e2e` runs it under dash and ash |
 | `tools/` | Scripts the `Makefile` calls: `cargo.sh` builds, `lint.sh`, `e2e.sh`, `docker.sh` |
 | `etc/` | `Dockerfile` of the hub image; `e2e/` the Debian node image of `make e2e` (OpenWrt's is the official one) |
@@ -90,13 +90,15 @@ clippy: the workspace lints in `Cargo.toml` and `clippy.toml`, where every warni
   environment `sys::env_setting`, argument rules `limen_core::params`, masking `Redactor`, errors `protocol::error`
   and `internal`, fixed patterns `limen_core::own_regex`.
 - **Small types with one responsibility, traits at the seams.** What talks to the outside sits behind a trait a
-  test can fake (`NodeClient` for the nodes, `server::Handler` for HTTP); rules are plain functions over data in
+  test can fake (`NodeClient` for the nodes, `server::Handler` for HTTP), and what varies by platform behind one
+  that a new platform implements (`InitSystem` for systemd and procd); rules are plain functions over data in
   `limen-core`. Code depends on those traits and types, not on the concrete I/O behind them.
 - **Comments for what the code can't say**: why, a platform constraint, a rule of the spec, a decision with an
   alternative, context without which the code would mislead. Never a narration of the line below; a name that
   needs a comment needs a better name.
 - **No `unwrap` outside tests** (`unwrap_used`): `expect("…")` says why it can't fail, and whatever can fail returns
-  an error. A silenced lint says why: `#[allow(clippy::…, reason = "…")]` (`allow_attributes_without_reason`).
+  an error. A lock is `lock().expect("nothing panics holding …")`: release builds abort on a panic, so no lock is
+  ever found poisoned. A silenced lint says why: `#[allow(clippy::…, reason = "…")]` (`allow_attributes_without_reason`).
 
 ## Mandatory loop
 
