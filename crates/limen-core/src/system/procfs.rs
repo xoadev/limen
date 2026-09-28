@@ -46,35 +46,37 @@ pub struct ProcSample {
 
 /// `/etc/passwd`.
 pub fn accounts(text: &str) -> Vec<Account> {
-    text.lines()
-        .filter(|l| !l.starts_with('#'))
-        .filter_map(|line| {
-            let f: Vec<&str> = line.split(':').collect();
-            if f.len() < 7 {
-                return None;
-            }
-            Some(Account {
-                name: f[0].into(),
-                uid: f[2].parse().ok()?,
-                gid: f[3].parse().unwrap_or(0),
-                home: f[5].into(),
-                shell: f[6].into(),
-            })
-        })
-        .collect()
+    text.lines().filter(|line| !line.starts_with('#')).filter_map(account).collect()
+}
+
+fn account(line: &str) -> Option<Account> {
+    let fields: Vec<&str> = line.split(':').collect();
+    let [name, _password, uid, gid, _gecos, home, shell, ..] = fields[..] else {
+        return None;
+    };
+    Some(Account {
+        name: name.into(),
+        uid: uid.parse().ok()?,
+        gid: gid.parse().unwrap_or(0),
+        home: home.into(),
+        shell: shell.into(),
+    })
 }
 
 /// `/etc/group`: gid → name.
 pub fn groups(text: &str) -> BTreeMap<u32, String> {
     text.lines()
         .filter_map(|line| {
-            let f: Vec<&str> = line.split(':').collect();
-            (f.len() >= 3).then(|| f[2].parse().ok().map(|gid| (gid, f[0].to_string())))?
+            let fields: Vec<&str> = line.split(':').collect();
+            let [name, _password, gid, ..] = fields[..] else {
+                return None;
+            };
+            Some((gid.parse().ok()?, name.to_string()))
         })
         .collect()
 }
 
-const PSEUDO: &[&str] = &[
+const PSEUDO_FILESYSTEMS: &[&str] = &[
     "proc",
     "sysfs",
     "devtmpfs",
@@ -109,54 +111,61 @@ pub fn mounts(text: &str) -> Vec<Mount> {
     let mut points = HashSet::new();
     let mut devices = HashSet::new();
     text.lines()
-        .filter_map(|line| {
-            let f: Vec<&str> = line.split(' ').collect();
-            if f.len() < 3 {
-                return None;
-            }
-            let m = Mount { device: unescape(f[0]), point: unescape(f[1]), kind: f[2].into() };
-            if PSEUDO.contains(&m.kind.as_str()) || (m.kind == "overlay" && m.point != "/" && m.point != "/overlay") {
-                return None;
-            }
+        .filter_map(mount)
+        .filter(holds_data)
+        .filter(|mount| {
             // Both sets learn from every real mount, so a device seen at a hidden mount point still hides its binds.
-            let new_point = points.insert(m.point.clone());
-            let new_device = m.kind == "overlay" || devices.insert(m.device.clone());
-            (new_point && new_device).then_some(m)
+            let new_point = points.insert(mount.point.clone());
+            let new_device = mount.kind == "overlay" || devices.insert(mount.device.clone());
+            new_point && new_device
         })
         .collect()
 }
 
+fn mount(line: &str) -> Option<Mount> {
+    let fields: Vec<&str> = line.split(' ').collect();
+    let [device, point, kind, ..] = fields[..] else {
+        return None;
+    };
+    Some(Mount { device: unescape(device), point: unescape(point), kind: kind.into() })
+}
+
+fn holds_data(mount: &Mount) -> bool {
+    let container_layer = mount.kind == "overlay" && mount.point != "/" && mount.point != "/overlay";
+    !PSEUDO_FILESYSTEMS.contains(&mount.kind.as_str()) && !container_layer
+}
+
 /// `\040` and the other octal escapes of `/proc/mounts`.
-fn unescape(s: &str) -> String {
-    static OCTAL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\\([0-7]{3})").unwrap());
+fn unescape(text: &str) -> String {
+    static OCTAL: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"\\([0-7]{3})").expect("the octal escape pattern is a valid regex"));
     OCTAL
-        .replace_all(s, |c: &regex::Captures| {
-            char::from_u32(u32::from_str_radix(&c[1], 8).unwrap_or(0)).map(String::from).unwrap_or_default()
+        .replace_all(text, |escape: &regex::Captures| {
+            char::from_u32(u32::from_str_radix(&escape[1], 8).unwrap_or(0)).map(String::from).unwrap_or_default()
         })
         .into_owned()
 }
 
 /// `/proc/net/tcp`, `tcp6`, `udp` or `udp6` ([protocol] is the file name).
 pub fn sockets(text: &str, protocol: &str) -> Vec<NetSocket> {
-    text.lines()
-        .skip(1)
-        .filter_map(|line| {
-            let f: Vec<&str> = line.split_whitespace().collect();
-            if f.len() < 10 {
-                return None;
-            }
-            let (hex_address, hex_port) = f[1].split_once(':')?;
-            // TCP listens in state 0A; a bound UDP socket shows 07 (closed: no peer).
-            let listening = if protocol.starts_with("tcp") { f[3] == "0A" } else { f[3] == "07" };
-            Some(NetSocket {
-                protocol: protocol.into(),
-                address: address(hex_address)?,
-                port: u16::from_str_radix(hex_port, 16).ok()?,
-                listening,
-                inode: f[9].parse().unwrap_or(0),
-            })
-        })
-        .collect()
+    text.lines().skip(1).filter_map(|line| socket(line, protocol)).collect()
+}
+
+fn socket(line: &str, protocol: &str) -> Option<NetSocket> {
+    let fields: Vec<&str> = line.split_whitespace().collect();
+    let [_slot, local, _remote, state, _queues, _timer, _retransmits, _uid, _timeout, inode, ..] = fields[..] else {
+        return None;
+    };
+    let (hex_address, hex_port) = local.split_once(':')?;
+    // TCP listens in state 0A; a bound UDP socket shows 07 (closed: no peer).
+    let listening = if protocol.starts_with("tcp") { state == "0A" } else { state == "07" };
+    Some(NetSocket {
+        protocol: protocol.into(),
+        address: address(hex_address)?,
+        port: u16::from_str_radix(hex_port, 16).ok()?,
+        listening,
+        inode: inode.parse().unwrap_or(0),
+    })
 }
 
 /// The kernel prints addresses as 32-bit words in host (little-endian) order.
@@ -164,89 +173,95 @@ pub fn address(hex: &str) -> Option<String> {
     if hex.len() % 8 != 0 || !hex.is_ascii() {
         return None;
     }
-    let bytes: Vec<u8> = hex
-        .as_bytes()
-        .chunks(8)
-        .map(|word| {
-            let b: Vec<u8> = word
-                .chunks(2)
-                .map(|h| u8::from_str_radix(std::str::from_utf8(h).unwrap_or("x"), 16))
-                .collect::<Result<_, _>>()
-                .ok()?;
-            Some(b.into_iter().rev().collect::<Vec<u8>>())
-        })
-        .collect::<Option<Vec<_>>>()?
-        .concat();
+    let bytes: Vec<u8> = hex.as_bytes().chunks(8).map(word_bytes).collect::<Option<Vec<_>>>()?.concat();
     match bytes.len() {
         4 => Some(bytes.iter().map(u8::to_string).collect::<Vec<_>>().join(".")),
         16 => {
-            let groups: Vec<u16> = bytes.chunks(2).map(|p| u16::from(p[0]) << 8 | u16::from(p[1])).collect();
+            let groups: Vec<u16> = bytes.chunks(2).map(|pair| u16::from_be_bytes([pair[0], pair[1]])).collect();
             Some(ipv6(&groups))
         }
         _ => None,
     }
 }
 
+/// One word's eight hex digits, in host order, as its four bytes in network order.
+fn word_bytes(word: &[u8]) -> Option<Vec<u8>> {
+    let mut bytes = word
+        .chunks(2)
+        .map(|digits| u8::from_str_radix(std::str::from_utf8(digits).ok()?, 16).ok())
+        .collect::<Option<Vec<u8>>>()?;
+    bytes.reverse();
+    Some(bytes)
+}
+
 fn ipv6(groups: &[u16]) -> String {
-    // The longest run of zero groups, if longer than one, becomes `::`.
-    let (mut best_start, mut best_len, mut i) = (None, 0, 0);
-    while i < groups.len() {
-        if groups[i] == 0 {
-            let start = i;
-            while i < groups.len() && groups[i] == 0 {
-                i += 1;
-            }
-            if i - start > best_len && i - start > 1 {
-                best_start = Some(start);
-                best_len = i - start;
-            }
-        } else {
-            i += 1;
-        }
-    }
-    let hex: Vec<String> = groups.iter().map(|g| format!("{g:x}")).collect();
-    match best_start {
+    let hex: Vec<String> = groups.iter().map(|group| format!("{group:x}")).collect();
+    match longest_zero_run(groups) {
         None => hex.join(":"),
-        Some(s) => format!("{}::{}", hex[..s].join(":"), hex[s + best_len..].join(":")),
+        Some((start, length)) => format!("{}::{}", hex[..start].join(":"), hex[start + length..].join(":")),
     }
 }
 
+/// Where the longest run of zero groups starts and how long it is, if longer than one: what becomes `::`. The first
+/// of two equal runs wins.
+fn longest_zero_run(groups: &[u16]) -> Option<(usize, usize)> {
+    let mut longest = None;
+    let mut longest_length = 1;
+    let mut start = 0;
+    while start < groups.len() {
+        let length = groups[start..].iter().take_while(|group| **group == 0).count();
+        if length > longest_length {
+            longest = Some((start, length));
+            longest_length = length;
+        }
+        start += length.max(1);
+    }
+    longest
+}
+
+// The fields of `/proc/<pid>/stat` after the command, which is field 2 of `man proc_pid_stat`: field N is index N - 3.
+const UTIME: usize = 11;
+const STIME: usize = 12;
+const STARTTIME: usize = 19;
+
 /// `/proc/<pid>/stat`, `status` and `cmdline` of one process; None when it is unreadable.
 pub fn sample(pid: u32, stat: &str, status: &str, cmdline: &str) -> Option<ProcSample> {
+    // The command is between the first `(` and the last `)`: it can have both.
     let open = stat.find('(')?;
     let close = stat.rfind(')')?;
     if close < open {
         return None;
     }
     let comm = &stat[open + 1..close];
-    // After the command: state is field 3 of the man page, index 0 here.
-    let f: Vec<&str> = stat.get(close + 2..)?.split(' ').collect();
-    if f.len() < 20 {
+    let fields: Vec<&str> = stat.get(close + 2..)?.split(' ').collect();
+    if fields.len() <= STARTTIME {
         return None;
     }
-    let status_field = |key: &str| {
-        status.lines().find(|l| l.starts_with(key)).and_then(|l| l.split_whitespace().nth(1)).map(String::from)
-    };
     let command = cmdline.trim_end_matches('\0').replace('\0', " ");
     Some(ProcSample {
         pid,
         comm: comm.into(),
-        uid: status_field("Uid:").and_then(|u| u.parse().ok()),
-        utime_ticks: f[11].parse().unwrap_or(0),
-        stime_ticks: f[12].parse().unwrap_or(0),
-        start_ticks: f[19].parse().unwrap_or(0),
-        rss_kb: status_field("VmRSS:").and_then(|r| r.parse().ok()).unwrap_or(0),
+        uid: status_value(status, "Uid:").and_then(|uid| uid.parse().ok()),
+        utime_ticks: fields[UTIME].parse().unwrap_or(0),
+        stime_ticks: fields[STIME].parse().unwrap_or(0),
+        start_ticks: fields[STARTTIME].parse().unwrap_or(0),
+        rss_kb: status_value(status, "VmRSS:").and_then(|rss| rss.parse().ok()).unwrap_or(0),
         cmdline: if command.is_empty() { format!("[{comm}]") } else { command },
     })
 }
 
+/// The first value of a `/proc/<pid>/status` line: `Uid:\t1000\t1000…` gives `1000`.
+fn status_value<'a>(status: &'a str, key: &str) -> Option<&'a str> {
+    status.lines().find(|line| line.starts_with(key)).and_then(|line| line.split_whitespace().nth(1))
+}
+
 /// Average CPU use over the life of the process, as `ps` computes `%CPU`.
-pub fn cpu_percent(p: &ProcSample, uptime_seconds: f64, ticks_per_second: u64) -> f64 {
-    let alive = uptime_seconds - p.start_ticks as f64 / ticks_per_second as f64;
+pub fn cpu_percent(process: &ProcSample, uptime_seconds: f64, ticks_per_second: u64) -> f64 {
+    let alive = uptime_seconds - process.start_ticks as f64 / ticks_per_second as f64;
     if alive <= 0.0 {
         return 0.0;
     }
-    let used = (p.utime_ticks + p.stime_ticks) as f64 / ticks_per_second as f64;
+    let used = (process.utime_ticks + process.stime_ticks) as f64 / ticks_per_second as f64;
     (used / alive * 1000.0).trunc() / 10.0
 }
 
@@ -264,19 +279,22 @@ const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Au
 /// One `logread` line (OpenWrt): `Sat Sep 26 17:00:00 2026 daemon.info dnsmasq[1234]: message`. The time is the one
 /// logread prints, UTC when it runs with `TZ=UTC`.
 pub fn logread_line(line: &str) -> Option<LogreadEntry> {
-    // weekday month day time year facility.level source[pid]: message. ASCII classes: this runs on every line.
+    // ASCII classes: this runs on every line.
     static LINE: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"^[A-Za-z]{3} ([A-Za-z]{3}) +([0-9]{1,2}) ([0-9:]{8}) ([0-9]{4}) ([a-z0-9]+)\.([a-z]+) ([^\[:]+?)(?:\[([0-9]+)\])?: ?(.*)$")
-            .unwrap()
+        Regex::new(concat!(
+            r"^[A-Za-z]{3} (?<month>[A-Za-z]{3}) +(?<day>[0-9]{1,2}) (?<time>[0-9:]{8}) (?<year>[0-9]{4}) ",
+            r"[a-z0-9]+\.(?<level>[a-z]+) (?<source>[^\[:]+?)(?:\[(?<pid>[0-9]+)\])?: ?(?<message>.*)$",
+        ))
+        .expect("the logread line pattern is a valid regex")
     });
-    let g = LINE.captures(line)?;
-    let month = MONTHS.iter().position(|m| *m == &g[1])? + 1;
+    let fields = LINE.captures(line)?;
+    let month = MONTHS.iter().position(|name| *name == &fields["month"])? + 1;
     Some(LogreadEntry {
-        time: format!("{}-{month:02}-{:0>2}T{}Z", &g[4], &g[2], &g[3]),
-        priority: if &g[6] == "warn" { "warning".into() } else { g[6].into() },
-        source: g[7].trim().into(),
-        pid: g.get(8).and_then(|p| p.as_str().parse().ok()),
-        message: g[9].into(),
+        time: format!("{}-{month:02}-{:0>2}T{}Z", &fields["year"], &fields["day"], &fields["time"]),
+        priority: if &fields["level"] == "warn" { "warning".into() } else { fields["level"].into() },
+        source: fields["source"].trim().into(),
+        pid: fields.name("pid").and_then(|pid| pid.as_str().parse().ok()),
+        message: fields["message"].into(),
     })
 }
 
@@ -286,12 +304,12 @@ mod tests {
 
     #[test]
     fn accounts_and_groups() {
-        let a = accounts(
+        let users = accounts(
             "root:x:0:0:root:/root:/bin/bash\n# comment\nbroken\nlimen-read:x:998:998::/var/lib/limen:/bin/sh\n",
         );
-        assert_eq!(a.len(), 2);
-        assert_eq!(a[1].name, "limen-read");
-        assert_eq!(a[1].uid, 998);
+        assert_eq!(users.len(), 2);
+        assert_eq!(users[1].name, "limen-read");
+        assert_eq!(users[1].uid, 998);
         assert_eq!(groups("root:x:0:\ndocker:x:999:ana\n")[&999], "docker");
     }
 
@@ -300,8 +318,8 @@ mod tests {
         let text = "sysfs /sys sysfs rw 0 0\n/dev/sda1 / ext4 rw 0 0\n/dev/sda1 /var/lib/docker ext4 rw 0 0\n\
                     overlay /var/lib/docker/overlay2/x/merged overlay rw 0 0\n/dev/sdb1 /mnt/My\\040Disk ext4 rw 0 0\n\
                     overlayfs:/overlay / overlay rw 0 0\n";
-        let m = mounts(text);
-        assert_eq!(m.iter().map(|m| m.point.as_str()).collect::<Vec<_>>(), ["/", "/mnt/My Disk"]);
+        let points: Vec<String> = mounts(text).into_iter().map(|mount| mount.point).collect();
+        assert_eq!(points, ["/", "/mnt/My Disk"]);
     }
 
     #[test]
@@ -309,12 +327,12 @@ mod tests {
         let tcp = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n\
                    0: 00000000:0016 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 12345 1 0\n\
                    1: 0100007F:1F90 0100007F:D431 01 00000000:00000000 00:00000000 00000000     0        0 0 1 0\n";
-        let s = sockets(tcp, "tcp");
-        assert_eq!(s[0].address, "0.0.0.0");
-        assert_eq!(s[0].port, 22);
-        assert!(s[0].listening);
-        assert_eq!(s[0].inode, 12345);
-        assert!(!s[1].listening);
+        let parsed = sockets(tcp, "tcp");
+        assert_eq!(parsed[0].address, "0.0.0.0");
+        assert_eq!(parsed[0].port, 22);
+        assert!(parsed[0].listening);
+        assert_eq!(parsed[0].inode, 12345);
+        assert!(!parsed[1].listening);
         assert_eq!(address("0100007F").as_deref(), Some("127.0.0.1"));
         assert_eq!(address("00000000000000000000000001000000").as_deref(), Some("::1"));
         assert_eq!(address("0000000000000000FFFF00000100007F").as_deref(), Some("::ffff:7f00:1"));
@@ -323,28 +341,28 @@ mod tests {
     #[test]
     fn process_samples() {
         let stat = "1234 (my (odd) app) S 1 1234 1234 0 -1 4194560 100 0 0 0 250 50 0 0 20 0 1 0 1000 1000000 500 18446744073709551615";
-        let p =
+        let process =
             sample(1234, stat, "Name:\tx\nUid:\t1000\t1000\t1000\t1000\nVmRSS:\t  2048 kB\n", "/usr/bin/app\0--flag\0")
                 .unwrap();
-        assert_eq!(p.comm, "my (odd) app");
-        assert_eq!(p.uid, Some(1000));
-        assert_eq!(p.utime_ticks, 250);
-        assert_eq!(p.start_ticks, 1000);
-        assert_eq!(p.rss_kb, 2048);
-        assert_eq!(p.cmdline, "/usr/bin/app --flag");
-        assert_eq!(cpu_percent(&p, 40.0, 100), 10.0);
-        assert_eq!(sample(1, "1 (k) S 0", "", "").map(|p| p.pid), None);
+        assert_eq!(process.comm, "my (odd) app");
+        assert_eq!(process.uid, Some(1000));
+        assert_eq!(process.utime_ticks, 250);
+        assert_eq!(process.start_ticks, 1000);
+        assert_eq!(process.rss_kb, 2048);
+        assert_eq!(process.cmdline, "/usr/bin/app --flag");
+        assert_eq!(cpu_percent(&process, 40.0, 100), 10.0);
+        assert_eq!(sample(1, "1 (k) S 0", "", "").map(|process| process.pid), None);
     }
 
     #[test]
     fn logread_lines() {
-        let e =
+        let entry =
             logread_line("Sat Sep 26 17:00:00 2026 daemon.info dnsmasq[1234]: DHCPACK(br-lan) 192.168.1.20").unwrap();
-        assert_eq!(e.time, "2026-09-26T17:00:00Z");
-        assert_eq!(e.priority, "info");
-        assert_eq!(e.source, "dnsmasq");
-        assert_eq!(e.pid, Some(1234));
-        assert_eq!(e.message, "DHCPACK(br-lan) 192.168.1.20");
+        assert_eq!(entry.time, "2026-09-26T17:00:00Z");
+        assert_eq!(entry.priority, "info");
+        assert_eq!(entry.source, "dnsmasq");
+        assert_eq!(entry.pid, Some(1234));
+        assert_eq!(entry.message, "DHCPACK(br-lan) 192.168.1.20");
         assert_eq!(logread_line("Sat Sep  6 07:00:00 2026 kern.warn kernel: x").unwrap().time, "2026-09-06T07:00:00Z");
         assert!(logread_line("garbage").is_none());
     }

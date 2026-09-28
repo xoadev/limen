@@ -6,12 +6,18 @@ use rustix::io::Errno;
 use rustix::process::{Pid, Signal, kill_process_group};
 use std::io::{ErrorKind, Read, Write};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
-use std::process::{Child, Command, ExitStatus, Stdio};
-use std::sync::Mutex;
+use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 const CHUNK: usize = 64 * 1024;
+/// How long a child told to stop has before its group is killed.
 const KILL_GRACE: Duration = Duration::from_secs(2);
+const REAP_INTERVAL: Duration = Duration::from_millis(20);
+/// How long output is still read after the child exits.
+const DRAIN_AFTER_EXIT: Duration = Duration::from_millis(200);
+/// How long one wait on the pipes lasts, so the timeout and the child's exit are looked at between waits.
+const POLL_WAIT: Timespec = Timespec { tv_sec: 0, tv_nsec: 50_000_000 };
 
 /// What a command the gate runs sees: a fixed PATH, C locale with UTF-8, UTC, no pagers or colours.
 pub const SYSTEM_ENV: &[&str] = &[
@@ -27,11 +33,13 @@ pub const SYSTEM_ENV: &[&str] = &[
 
 /// What root's programs and scripts get: [SYSTEM_ENV] and root's home.
 pub fn root_env() -> Vec<String> {
-    SYSTEM_ENV.iter().map(|s| s.to_string()).chain(["HOME=/root".to_string()]).collect()
+    let mut env = system_env();
+    env.push("HOME=/root".into());
+    env
 }
 
 pub fn system_env() -> Vec<String> {
-    SYSTEM_ENV.iter().map(|s| s.to_string()).collect()
+    SYSTEM_ENV.iter().map(|variable| (*variable).to_string()).collect()
 }
 
 #[derive(Debug, Clone)]
@@ -82,71 +90,88 @@ impl Default for Run<'_> {
 /// The process groups running now, for [stop_all].
 static RUNNING: Mutex<Vec<Pid>> = Mutex::new(Vec::new());
 
+// A poisoned list is still the list of what to kill.
+fn lock_running() -> MutexGuard<'static, Vec<Pid>> {
+    RUNNING.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
 /// Kills every process group still running: a request out of time leaves nothing behind.
 pub fn stop_all() {
-    for pid in RUNNING.lock().unwrap_or_else(|e| e.into_inner()).iter() {
+    for pid in lock_running().iter() {
         kill_process_group(*pid, Signal::KILL).ok();
     }
 }
 
 /// Runs [argv] to completion. `argv[0]` is an absolute path (see [which]).
-pub fn run(argv: &[String], mut opts: Run) -> Result<ProcResult, String> {
+pub fn run(argv: &[String], mut options: Run) -> Result<ProcResult, String> {
     let program = argv
         .first()
-        .filter(|p| p.starts_with('/'))
+        .filter(|program| program.starts_with('/'))
         .ok_or_else(|| format!("argv[0] must be an absolute path: {argv:?}"))?;
-    let mut command = Command::new(program);
-    command
-        .args(&argv[1..])
-        .env_clear()
-        .envs(opts.env.iter().filter_map(|kv| kv.split_once('=')))
-        .stdin(if opts.stdin.is_some() { Stdio::piped() } else { Stdio::null() })
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        // Its own process group, so a timeout reaches what a script started too.
-        .process_group(0);
-    let mut child = command.spawn().map_err(|e| format!("cannot run {program}: {e}"))?;
+    let mut child = spawn(program, &argv[1..], &options.env, options.stdin.is_some())?;
     let mut running = Running {
         pid: Pid::from_raw(child.id() as i32),
-        out: Vec::new(),
-        err: Vec::new(),
+        stdout: Vec::new(),
+        stderr: Vec::new(),
         truncated: false,
         timed_out: false,
-        max_output: opts.max_output,
+        max_output: options.max_output,
     };
-    let pid = running.pid;
-    let running_now = |add: bool| {
-        let mut list = RUNNING.lock().unwrap_or_else(|e| e.into_inner());
-        match pid {
-            Some(pid) if add => list.push(pid),
-            Some(pid) => list.retain(|p| *p != pid),
-            None => {}
-        }
-    };
-    running_now(true);
-    let status = running.await_child(&mut child, opts.stdin.take(), opts.timeout, &mut opts.on_chunk);
-    running_now(false);
-    let (exit_code, signal) = match status {
-        Some(s) => match s.code() {
-            Some(code) => (code, None),
-            None => (-1, s.signal()),
-        },
-        None => (-1, None),
-    };
+    track(running.pid);
+    let status = running.await_child(&mut child, options.stdin.take(), options.timeout, &mut options.on_chunk);
+    untrack(running.pid);
+    let (exit_code, signal) = exit_code_and_signal(status);
     Ok(ProcResult {
         exit_code,
         signal,
-        stdout: running.out,
-        stderr: running.err,
+        stdout: running.stdout,
+        stderr: running.stderr,
         timed_out: running.timed_out,
         truncated: running.truncated,
     })
 }
 
+/// [program] with [args] and exactly [env], its output on pipes and its stdin a pipe only [with_stdin].
+fn spawn(program: &str, args: &[String], env: &[String], with_stdin: bool) -> Result<Child, String> {
+    Command::new(program)
+        .args(args)
+        .env_clear()
+        .envs(env.iter().filter_map(|variable| variable.split_once('=')))
+        .stdin(if with_stdin { Stdio::piped() } else { Stdio::null() })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        // Its own process group, so a timeout reaches what a script started too.
+        .process_group(0)
+        .spawn()
+        .map_err(|error| format!("cannot run {program}: {error}"))
+}
+
+fn track(pid: Option<Pid>) {
+    if let Some(pid) = pid {
+        lock_running().push(pid);
+    }
+}
+
+fn untrack(pid: Option<Pid>) {
+    if let Some(pid) = pid {
+        lock_running().retain(|running| *running != pid);
+    }
+}
+
+/// The exit code, or -1 and the signal that ended the process; -1 alone when its end is unknown.
+fn exit_code_and_signal(status: Option<ExitStatus>) -> (i32, Option<i32>) {
+    let Some(status) = status else { return (-1, None) };
+    match status.code() {
+        Some(code) => (code, None),
+        None => (-1, status.signal()),
+    }
+}
+
+/// A child being run, and what it has written so far.
 struct Running {
     pid: Option<Pid>,
-    out: Vec<u8>,
-    err: Vec<u8>,
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
     truncated: bool,
     timed_out: bool,
     max_output: usize,
@@ -160,6 +185,64 @@ enum End {
     Stderr,
 }
 
+/// This process's ends of the child's pipes while they are open, and the input still to write.
+struct Pipes {
+    stdin: Option<ChildStdin>,
+    stdout: Option<ChildStdout>,
+    stderr: Option<ChildStderr>,
+    input: Vec<u8>,
+    written: usize,
+}
+
+impl Pipes {
+    fn take(child: &mut Child, input: Option<Vec<u8>>) -> Self {
+        let input = input.unwrap_or_default();
+        // Written as the child reads, never blocking: a child that doesn't read must not stop us reading its output.
+        let stdin = child.stdin.take().filter(|_| !input.is_empty());
+        if let Some(stdin) = &stdin {
+            rustix::io::ioctl_fionbio(stdin, true).ok();
+        }
+        Pipes { stdin, stdout: child.stdout.take(), stderr: child.stderr.take(), input, written: 0 }
+    }
+
+    fn output_open(&self) -> bool {
+        self.stdout.is_some() || self.stderr.is_some()
+    }
+
+    /// The ends ready within [wait].
+    fn poll(&self, wait: &Timespec) -> rustix::io::Result<Vec<End>> {
+        let mut ends = Vec::with_capacity(3);
+        let mut fds = Vec::with_capacity(3);
+        if let Some(stdout) = &self.stdout {
+            ends.push(End::Stdout);
+            fds.push(PollFd::new(stdout, PollFlags::IN));
+        }
+        if let Some(stderr) = &self.stderr {
+            ends.push(End::Stderr);
+            fds.push(PollFd::new(stderr, PollFlags::IN));
+        }
+        if let Some(stdin) = &self.stdin {
+            ends.push(End::Stdin);
+            fds.push(PollFd::new(stdin, PollFlags::OUT));
+        }
+        poll(&mut fds, Some(wait))?;
+        Ok(ends.into_iter().zip(&fds).filter(|(_, fd)| !fd.revents().is_empty()).map(|(end, _)| end).collect())
+    }
+
+    /// Writes what the child's stdin takes now, and closes it once all the input is written.
+    fn feed(&mut self) {
+        // The child may close its stdin early: EPIPE is an answer, not a crash (SIGPIPE is ignored).
+        match self.stdin.as_mut().map(|stdin| stdin.write(&self.input[self.written..])) {
+            Some(Ok(n)) => self.written += n,
+            Some(Err(error)) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::Interrupted) => {}
+            _ => self.written = self.input.len(),
+        }
+        if self.written >= self.input.len() {
+            self.stdin = None;
+        }
+    }
+}
+
 impl Running {
     fn await_child(
         &mut self,
@@ -169,120 +252,81 @@ impl Running {
         on_chunk: &mut Option<OnChunk>,
     ) -> Option<ExitStatus> {
         let start = Instant::now();
-        let (mut stdout, mut stderr) = (child.stdout.take(), child.stderr.take());
-        let input = input.unwrap_or_default();
-        // Written as the child reads, never blocking: a child that doesn't read must not stop us reading its output.
-        let mut stdin = child.stdin.take().filter(|_| !input.is_empty());
-        if let Some(s) = &stdin {
-            rustix::io::ioctl_fionbio(s, true).ok();
-        }
-        let mut written = 0;
+        let mut pipes = Pipes::take(child, input);
         let mut status = None;
         // After the child exits, what a grandchild keeps open must not hold the answer: drain what is there and stop.
         let mut exited_at: Option<Instant> = None;
         let mut buffer = vec![0u8; CHUNK];
-        let tick = Timespec { tv_sec: 0, tv_nsec: 50_000_000 };
-        while stdout.is_some() || stderr.is_some() {
+        while pipes.output_open() {
             if status.is_none() {
                 status = child.try_wait().ok().flatten();
             }
-            if status.is_some() {
-                let since = *exited_at.get_or_insert_with(Instant::now);
-                if since.elapsed() > Duration::from_millis(200) {
-                    break;
-                }
+            if status.is_some() && exited_at.get_or_insert_with(Instant::now).elapsed() > DRAIN_AFTER_EXIT {
+                break;
             }
             if start.elapsed() > timeout {
                 self.timed_out = true;
                 self.signal(Signal::TERM);
                 break;
             }
-            let mut ends = Vec::with_capacity(3);
-            let mut fds = Vec::with_capacity(3);
-            if let Some(o) = &stdout {
-                ends.push(End::Stdout);
-                fds.push(PollFd::new(o, PollFlags::IN));
-            }
-            if let Some(e) = &stderr {
-                ends.push(End::Stderr);
-                fds.push(PollFd::new(e, PollFlags::IN));
-            }
-            if let Some(i) = &stdin {
-                ends.push(End::Stdin);
-                fds.push(PollFd::new(i, PollFlags::OUT));
-            }
-            match poll(&mut fds, Some(&tick)) {
-                Ok(_) => {}
+            let ready = match pipes.poll(&POLL_WAIT) {
+                Ok(ready) => ready,
                 Err(Errno::INTR) => continue,
                 Err(_) => {
                     self.signal(Signal::TERM);
                     break;
                 }
-            }
-            let ready: Vec<End> =
-                ends.into_iter().zip(&fds).filter(|(_, fd)| !fd.revents().is_empty()).map(|(e, _)| e).collect();
-            drop(fds);
+            };
             for end in ready {
-                match end {
-                    End::Stdin => {
-                        // The child may close its stdin early: EPIPE is an answer, not a crash (SIGPIPE is ignored).
-                        match stdin.as_mut().map(|s| s.write(&input[written..])) {
-                            Some(Ok(n)) => written += n,
-                            Some(Err(e)) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::Interrupted) => {}
-                            _ => written = input.len(),
-                        }
-                        if written >= input.len() {
-                            stdin = None;
-                        }
-                    }
-                    End::Stdout => {
-                        if let Some(n) = read_some(&mut stdout, &mut buffer) {
-                            self.accept(end, &buffer[..n], on_chunk);
-                        }
-                    }
-                    End::Stderr => {
-                        if let Some(n) = read_some(&mut stderr, &mut buffer) {
-                            self.accept(end, &buffer[..n], on_chunk);
-                        }
-                    }
-                }
+                self.transfer(&mut pipes, end, &mut buffer, on_chunk);
             }
             if self.truncated {
                 self.signal(Signal::TERM);
                 break;
             }
         }
-        drop((stdout, stderr, stdin));
-        if status.is_none() {
-            // The pipes closed or the child was told to stop: give it the grace period, then kill the group.
-            let deadline = Instant::now() + KILL_GRACE;
-            while status.is_none() && Instant::now() < deadline {
-                status = child.try_wait().ok().flatten();
-                if status.is_none() {
-                    std::thread::sleep(Duration::from_millis(20));
-                }
-            }
-            if status.is_none() {
-                self.signal(Signal::KILL);
-                status = child.wait().ok();
-            }
+        drop(pipes);
+        status.or_else(|| self.reap(child))
+    }
+
+    /// Moves what [end] is ready for: input into the child, or its output into this run.
+    fn transfer(&mut self, pipes: &mut Pipes, end: End, buffer: &mut [u8], on_chunk: &mut Option<OnChunk>) {
+        let read = match end {
+            End::Stdin => return pipes.feed(),
+            End::Stdout => read_some(&mut pipes.stdout, buffer),
+            End::Stderr => read_some(&mut pipes.stderr, buffer),
+        };
+        if let Some(n) = read {
+            self.accept(end, &buffer[..n], on_chunk);
         }
-        status
+    }
+
+    /// The pipes closed or the child was told to stop: it gets [KILL_GRACE] to exit, then its group is killed.
+    fn reap(&self, child: &mut Child) -> Option<ExitStatus> {
+        let deadline = Instant::now() + KILL_GRACE;
+        while Instant::now() < deadline {
+            if let Some(status) = child.try_wait().ok().flatten() {
+                return Some(status);
+            }
+            std::thread::sleep(REAP_INTERVAL);
+        }
+        self.signal(Signal::KILL);
+        child.wait().ok()
     }
 
     fn accept(&mut self, end: End, bytes: &[u8], on_chunk: &mut Option<OnChunk>) {
         let fd = if matches!(end, End::Stdout) { 1 } else { 2 };
-        if let Some(f) = on_chunk {
-            f(fd, bytes);
+        if let Some(stream) = on_chunk {
+            stream(fd, bytes);
             return;
         }
-        let room = self.max_output.saturating_sub(self.out.len() + self.err.len());
-        let target = if fd == 1 { &mut self.out } else { &mut self.err };
+        let room = self.max_output.saturating_sub(self.stdout.len() + self.stderr.len());
+        let kept = if fd == 1 { &mut self.stdout } else { &mut self.stderr };
         if bytes.len() > room {
-            target.extend_from_slice(&bytes[..room]);
+            kept.extend_from_slice(&bytes[..room]);
             self.truncated = true;
         } else {
-            target.extend_from_slice(bytes);
+            kept.extend_from_slice(bytes);
         }
     }
 
@@ -298,7 +342,7 @@ impl Running {
 fn read_some(pipe: &mut Option<impl Read>, buffer: &mut [u8]) -> Option<usize> {
     match pipe.as_mut()?.read(buffer) {
         Ok(n) if n > 0 => Some(n),
-        Err(e) if e.kind() == ErrorKind::Interrupted => None,
+        Err(error) if error.kind() == ErrorKind::Interrupted => None,
         _ => {
             *pipe = None;
             None
@@ -315,7 +359,7 @@ pub fn which(name: &str) -> Option<String> {
         .trim_start_matches("PATH=")
         .split(':')
         .map(|dir| format!("{dir}/{name}"))
-        .find(|p| crate::os::fs::is_executable(p))
+        .find(|candidate| crate::os::fs::is_executable(candidate))
 }
 
 #[cfg(test)]
@@ -328,39 +372,41 @@ mod tests {
 
     #[test]
     fn separates_streams_and_feeds_stdin() {
-        let r = run(&sh("cat; echo err >&2; exit 3"), Run { stdin: Some(b"hello\n".to_vec()), ..Default::default() })
-            .unwrap();
-        assert_eq!(r.exit_code, 3);
-        assert_eq!(r.out(), "hello\n");
-        assert_eq!(r.err(), "err\n");
+        let result =
+            run(&sh("cat; echo err >&2; exit 3"), Run { stdin: Some(b"hello\n".to_vec()), ..Default::default() })
+                .unwrap();
+        assert_eq!(result.exit_code, 3);
+        assert_eq!(result.out(), "hello\n");
+        assert_eq!(result.err(), "err\n");
     }
 
     #[test]
     fn the_environment_is_exactly_the_one_given() {
-        let r = run(&sh("env"), Run { env: vec!["ONLY=this".into()], ..Default::default() }).unwrap();
-        assert!(r.out().contains("ONLY=this"));
-        assert!(!r.out().contains("HOME="));
+        let result = run(&sh("env"), Run { env: vec!["ONLY=this".into()], ..Default::default() }).unwrap();
+        assert!(result.out().contains("ONLY=this"));
+        assert!(!result.out().contains("HOME="));
     }
 
     #[test]
     fn arguments_never_reach_a_shell() {
-        let r = run(&["/bin/echo".into(), "a; echo injected".into(), "$(id)".into()], Run::default()).unwrap();
-        assert_eq!(r.out(), "a; echo injected $(id)\n");
+        let result = run(&["/bin/echo".into(), "a; echo injected".into(), "$(id)".into()], Run::default()).unwrap();
+        assert_eq!(result.out(), "a; echo injected $(id)\n");
     }
 
     #[test]
     fn a_timeout_stops_the_whole_group() {
         let start = Instant::now();
-        let r = run(&sh("sleep 30 & echo $!; sleep 30"), Run { timeout: Duration::from_secs(1), ..Default::default() })
-            .unwrap();
-        assert!(r.timed_out);
+        let result =
+            run(&sh("sleep 30 & echo $!; sleep 30"), Run { timeout: Duration::from_secs(1), ..Default::default() })
+                .unwrap();
+        assert!(result.timed_out);
         assert!(start.elapsed() < Duration::from_secs(10));
         // The grandchild too, not only the shell that started it: gone, or a zombie waiting for its new parent.
-        let grandchild = r.out().trim().to_string();
+        let grandchild = result.out().trim().to_string();
         let alive = || {
             std::fs::read_to_string(format!("/proc/{grandchild}/stat"))
                 .ok()
-                .and_then(|s| s.rsplit_once(") ").and_then(|(_, rest)| rest.chars().next()))
+                .and_then(|stat| stat.rsplit_once(") ").and_then(|(_, rest)| rest.chars().next()))
                 .is_some_and(|state| state != 'Z')
         };
         let deadline = Instant::now() + Duration::from_secs(2);
@@ -372,38 +418,40 @@ mod tests {
 
     #[test]
     fn output_over_the_cap_is_cut() {
-        let r = run(
+        let result = run(
             &sh("while :; do echo xxxxxxxxxxxxxxxx; done"),
             Run { max_output: 10_000, timeout: Duration::from_secs(10), ..Default::default() },
         )
         .unwrap();
-        assert!(r.truncated);
-        assert!(!r.timed_out);
-        assert!(r.stdout.len() <= 10_000);
+        assert!(result.truncated);
+        assert!(!result.timed_out);
+        assert!(result.stdout.len() <= 10_000);
     }
 
     #[test]
     fn streams_when_asked() {
         let mut chunks = Vec::new();
         let mut collect = |fd: i32, bytes: &[u8]| chunks.push((fd, String::from_utf8_lossy(bytes).into_owned()));
-        let r = run(&sh("echo one; echo two >&2"), Run { on_chunk: Some(&mut collect), ..Default::default() }).unwrap();
-        assert_eq!(r.exit_code, 0);
-        assert!(r.stdout.is_empty());
+        let result =
+            run(&sh("echo one; echo two >&2"), Run { on_chunk: Some(&mut collect), ..Default::default() }).unwrap();
+        assert_eq!(result.exit_code, 0);
+        assert!(result.stdout.is_empty());
         chunks.sort();
         assert_eq!(chunks, [(1, "one\n".to_string()), (2, "two\n".to_string())]);
     }
 
     #[test]
     fn a_child_that_ignores_stdin_does_not_kill_us() {
-        let r = run(&["/bin/true".into()], Run { stdin: Some(vec![b'x'; 1_000_000]), ..Default::default() }).unwrap();
-        assert_eq!(r.exit_code, 0);
+        let result =
+            run(&["/bin/true".into()], Run { stdin: Some(vec![b'x'; 1_000_000]), ..Default::default() }).unwrap();
+        assert_eq!(result.exit_code, 0);
     }
 
     #[test]
     fn stdin_is_dev_null_every_time() {
         for i in 0..50 {
-            let r = run(&sh("read x; echo eof:$?"), Run::default()).unwrap();
-            assert_eq!(r.out(), "eof:1\n", "run {i}: exit {}", r.exit_code);
+            let result = run(&sh("read x; echo eof:$?"), Run::default()).unwrap();
+            assert_eq!(result.out(), "eof:1\n", "run {i}: exit {}", result.exit_code);
         }
     }
 

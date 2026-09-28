@@ -3,6 +3,7 @@
 //! key, signed with the secret.
 
 use crate::config::hub::{self, is};
+use crate::config::own_regex;
 use crate::protocol::{Result, bad_request};
 use base64::Engine;
 use base64::engine::general_purpose::{STANDARD, STANDARD_NO_PAD};
@@ -15,10 +16,11 @@ use toml_edit::{DocumentMut, Item, Table, value};
 
 /// `SHA256:<base64>` of the key blob, as `ssh-keygen -lf` prints it: what a person can check with standard tools.
 pub fn fingerprint(public_key: &str) -> Result<String> {
-    let re = Regex::new(r"^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp(256|384|521)) ([A-Za-z0-9+/]+=*)( .*)?$").unwrap();
-    let blob =
-        re.captures(public_key.trim()).map(|c| c[3].to_string()).ok_or_else(|| bad_request("not an SSH public key"))?;
-    let bytes = STANDARD.decode(blob).map_err(|_| bad_request("not an SSH public key"))?;
+    static PUBLIC_KEY: LazyLock<Regex> =
+        LazyLock::new(|| own_regex(r"^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp(256|384|521)) ([A-Za-z0-9+/]+=*)( .*)?$"));
+    let not_a_key = || bad_request("not an SSH public key");
+    let blob = PUBLIC_KEY.captures(public_key.trim()).map(|captures| captures[3].to_string()).ok_or_else(not_a_key)?;
+    let bytes = STANDARD.decode(blob).map_err(|_| not_a_key())?;
     Ok(format!("SHA256:{}", STANDARD_NO_PAD.encode(Sha256::digest(&bytes))))
 }
 
@@ -32,12 +34,13 @@ pub fn sha256(bytes: &[u8]) -> Vec<u8> {
 }
 
 pub fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
-/// Whether [a] and [b] are equal, in a time that doesn't tell where they differ.
-pub fn constant_time_eq(a: &str, b: &str) -> bool {
-    a.len() == b.len() && a.bytes().zip(b.bytes()).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+/// Whether [one] and [other] are equal, in a time that doesn't tell where they differ.
+pub fn constant_time_eq(one: &str, other: &str) -> bool {
+    one.len() == other.len()
+        && one.bytes().zip(other.bytes()).fold(0u8, |differences, (x, y)| differences | (x ^ y)) == 0
 }
 
 pub fn hmac_sha256(key: &[u8], message: &[u8]) -> Vec<u8> {
@@ -62,15 +65,19 @@ impl JoinUrl {
     pub fn parse(text: &str) -> Result<JoinUrl> {
         // An address and not a name: the static binary is not the place to resolve them.
         static LINE: LazyLock<Regex> = LazyLock::new(|| {
-            Regex::new(
-            r"^(http://(?:\d{1,3}(?:\.\d{1,3}){3}|\[[0-9a-fA-F:]+\]):\d{1,5})/join/([a-z2-7]{26})#(SHA256:[A-Za-z0-9+/]{43})\.([a-z2-7]{26})$",
+            own_regex(
+                r"^(http://(?:\d{1,3}(?:\.\d{1,3}){3}|\[[0-9a-fA-F:]+\]):\d{1,5})/join/([a-z2-7]{26})#(SHA256:[A-Za-z0-9+/]{43})\.([a-z2-7]{26})$",
             )
-            .unwrap()
         });
-        let c = LINE.captures(text.trim()).ok_or_else(|| {
+        let parts = LINE.captures(text.trim()).ok_or_else(|| {
             bad_request("not a join line from `limen invite`: expected http://<address>:<port>/join/<code>#SHA256:<fingerprint>.<secret>")
         })?;
-        Ok(JoinUrl { base: c[1].into(), code: c[2].into(), fingerprint: c[3].into(), secret: c[4].into() })
+        Ok(JoinUrl {
+            base: parts[1].into(),
+            code: parts[2].into(),
+            fingerprint: parts[3].into(),
+            secret: parts[4].into(),
+        })
     }
 
     /// The host and port to connect to: `100.64.0.2:7341`, or `[fd00::1]:7341`.
@@ -80,8 +87,8 @@ impl JoinUrl {
 }
 
 impl std::fmt::Display for JoinUrl {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}/join/{}#{}.{}", self.base, self.code, self.fingerprint, self.secret)
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{}/join/{}#{}.{}", self.base, self.code, self.fingerprint, self.secret)
     }
 }
 
@@ -180,6 +187,21 @@ pub struct PendingInvite {
 /// the configuration enforces, and written as values, which can't be more than values.
 pub fn upsert_node(text: &str, name: &str, host: &str, port: u16, user: &str, host_key: &str) -> Result<String> {
     let key = without_comment(host_key);
+    check_node(name, host, port, user, &key)?;
+    let mut doc = document(text)?;
+    let nodes = doc.entry("nodes").or_insert_with(|| {
+        // `[nodes.nas]` and no `[nodes]` of its own.
+        let mut implicit = Table::new();
+        implicit.set_implicit(true);
+        Item::Table(implicit)
+    });
+    let nodes = nodes.as_table_like_mut().ok_or_else(|| bad_request("`nodes` in limen.toml is not a table"))?;
+    nodes.insert(name, Item::Table(node_table(host, port, user, &key)));
+    Ok(doc.to_string())
+}
+
+/// What a joining node says about itself, against the patterns the hub's configuration enforces.
+fn check_node(name: &str, host: &str, port: u16, user: &str, host_key: &str) -> Result<()> {
     if !is(hub::NODE_NAME, name) {
         return Err(bad_request(format!("'{name}' is not a node name")));
     }
@@ -192,10 +214,14 @@ pub fn upsert_node(text: &str, name: &str, host: &str, port: u16, user: &str, ho
     if !is(hub::USER, user) {
         return Err(bad_request("the user is not a user name"));
     }
-    if !is(hub::HOST_KEY, &key) {
+    if !is(hub::HOST_KEY, host_key) {
         return Err(bad_request("the host key is not '<type> <base64>'"));
     }
-    let mut doc = document(text)?;
+    Ok(())
+}
+
+/// `[nodes.<name>]`, leaving out the port and user when they are the defaults.
+fn node_table(host: &str, port: u16, user: &str, host_key: &str) -> Table {
     let mut node = Table::new();
     node["host"] = value(host);
     if port != 22 {
@@ -204,16 +230,8 @@ pub fn upsert_node(text: &str, name: &str, host: &str, port: u16, user: &str, ho
     if user != hub::READ_USER {
         node["user"] = value(user);
     }
-    node["host_key"] = value(key);
-    let nodes = doc.entry("nodes").or_insert_with(|| {
-        // `[nodes.nas]` and no `[nodes]` of its own.
-        let mut t = Table::new();
-        t.set_implicit(true);
-        Item::Table(t)
-    });
-    let nodes = nodes.as_table_like_mut().ok_or_else(|| bad_request("`nodes` in limen.toml is not a table"))?;
-    nodes.insert(name, Item::Table(node));
-    Ok(doc.to_string())
+    node["host_key"] = value(host_key);
+    node
 }
 
 /// The hub's limen.toml without node [name]; None when it had no such node.
@@ -224,7 +242,7 @@ pub fn remove_node(text: &str, name: &str) -> Result<Option<String>> {
 }
 
 fn document(text: &str) -> Result<DocumentMut> {
-    text.parse().map_err(|e| bad_request(format!("the hub's limen.toml is not TOML: {e}")))
+    text.parse().map_err(|error| bad_request(format!("the hub's limen.toml is not TOML: {error}")))
 }
 
 #[cfg(test)]
@@ -277,21 +295,21 @@ mod tests {
 
     #[test]
     fn an_invitation_is_signed_over_name_and_key() {
-        let i = Invitation::new("nas", KEY).signed("s");
-        assert!(i.is_signed_with("s") && !i.is_signed_with("t"));
-        let renamed = Invitation { name: "backup".into(), ..i.clone() };
+        let invitation = Invitation::new("nas", KEY).signed("s");
+        assert!(invitation.is_signed_with("s") && !invitation.is_signed_with("t"));
+        let renamed = Invitation { name: "backup".into(), ..invitation.clone() };
         assert!(!renamed.is_signed_with("s"));
         assert!(!Invitation::new("nas", KEY).is_signed_with("s"));
     }
 
     #[test]
     fn an_arrival_is_signed_over_every_field() {
-        let a = Arrival::new("ssh-ed25519 AAAA", "limen-read", 22, Some("10.0.0.7")).signed("s");
-        assert_eq!(a.proof, a.proof_with("s"));
-        assert_ne!(a.proof, a.proof_with("t"));
-        let mut moved = a.clone();
+        let arrival = Arrival::new("ssh-ed25519 AAAA", "limen-read", 22, Some("10.0.0.7")).signed("s");
+        assert_eq!(arrival.proof, arrival.proof_with("s"));
+        assert_ne!(arrival.proof, arrival.proof_with("t"));
+        let mut moved = arrival.clone();
         moved.address = Some("10.0.0.66".into());
-        assert_ne!(moved.proof_with("s"), a.proof);
+        assert_ne!(moved.proof_with("s"), arrival.proof);
     }
 
     const KEY: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIA6gEiSLgluUCGAAsH0PgwdjMmtbI2Ow7steqWQs2UQy";

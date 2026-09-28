@@ -5,10 +5,15 @@ use super::system::{self, Init, ProcdState};
 use super::{Answer, Node, repo};
 use crate::os::{fs, proc};
 use limen_core::config::expectations::Expectations;
+use limen_core::config::node::RepoConfig;
 use limen_core::protocol::{ErrorCode, Result, error};
+use limen_core::redactor::Redactor;
 use limen_core::system::parsers;
 use serde_json::{Map, Value, json};
 use std::time::Duration;
+
+const COMPOSE_FILES: [&str; 4] = ["compose.yaml", "compose.yml", "docker-compose.yml", "docker-compose.yaml"];
+const COMPOSE_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// One expected service and what the node says about it.
 pub struct ServiceState {
@@ -18,57 +23,42 @@ pub struct ServiceState {
     pub detail: Map<String, Value>,
 }
 
+impl ServiceState {
+    /// A service the node couldn't ask about, or that isn't there: not running, and why.
+    fn error(kind: &'static str, name: &str, message: &str) -> Self {
+        let mut detail = Map::new();
+        detail.insert("error".into(), json!(message));
+        ServiceState { kind, name: name.into(), running: false, detail }
+    }
+
+    fn into_json(self) -> Value {
+        let mut object = Map::new();
+        object.insert("kind".into(), json!(self.kind));
+        object.insert("name".into(), json!(self.name));
+        object.insert("running".into(), json!(self.running));
+        object.extend(self.detail);
+        Value::Object(object)
+    }
+}
+
 pub fn answer(node: &Node) -> Answer {
-    let mut problems: Vec<String> = Vec::new();
-    let repo_json = match &node.config.repo {
-        None => Value::Null,
-        Some(repo) => {
-            let deployed = repo::deployed(repo);
-            let remote = repo::remote(repo);
-            let mut o = json!({
-                "url": repo.display_url(),
-                "branch": repo.branch,
-                "path": repo.path,
-                "deployed": deployed.as_ref().map(|c| json!({"commit": c.hash, "date": c.date, "subject": c.subject})),
-            });
-            match &remote {
-                Ok(r) => {
-                    o["remote"] = json!(r);
-                    o["up_to_date"] = json!(deployed.as_ref().map(|c| &c.hash) == Some(r));
-                }
-                Err(e) => o["remote_error"] = json!(node.redactor.redact(&e.message)),
-            }
-            // git's own words, which can hold a URL with its credentials.
-            o["last_sync"] = repo::last_sync(repo)
-                .and_then(|s| serde_json::from_str(&node.redactor.redact(&s.to_string())).ok())
-                .unwrap_or(Value::Null);
-            match (&deployed, &remote) {
-                (None, _) => problems.push("the repository is not checked out: run sync or apply".into()),
-                (Some(d), Ok(r)) if &d.hash != r => problems.push(format!("the node is behind {}", repo.branch)),
-                _ => {}
-            }
-            o
-        }
-    };
-    let services = services(node).unwrap_or_else(|e| {
-        problems.push(e.message);
+    let repo_state = node.config.repo.as_ref().map(RepoState::of);
+    let mut problems: Vec<String> = repo_state.as_ref().and_then(RepoState::problem).into_iter().collect();
+    let services = services(node).unwrap_or_else(|failure| {
+        problems.push(failure.message);
         vec![]
     });
-    for s in services.iter().filter(|s| !s.running) {
-        problems.push(format!("{} {} is not running", s.kind, s.name));
-    }
-    let services: Vec<Value> = services
-        .into_iter()
-        .map(|s| {
-            let mut o = Map::new();
-            o.insert("kind".into(), json!(s.kind));
-            o.insert("name".into(), json!(s.name));
-            o.insert("running".into(), json!(s.running));
-            o.extend(s.detail);
-            Value::Object(o)
-        })
-        .collect();
-    Answer::of(json!({"repo": repo_json, "services": services, "problems": problems}))
+    problems.extend(
+        services
+            .iter()
+            .filter(|service| !service.running)
+            .map(|service| format!("{} {} is not running", service.kind, service.name)),
+    );
+    Answer::of(json!({
+        "repo": repo_state.map_or(Value::Null, |state| state.to_json(&node.redactor)),
+        "services": services.into_iter().map(ServiceState::into_json).collect::<Vec<_>>(),
+        "problems": problems,
+    }))
 }
 
 pub fn expectations(node: &Node) -> Result<Expectations> {
@@ -76,104 +66,149 @@ pub fn expectations(node: &Node) -> Result<Expectations> {
     if !fs::exists(&path) {
         return Ok(Expectations::default());
     }
-    let text = node.trusted_text(&path).map_err(|e| error(ErrorCode::Internal, format!("{path}: {}", e.message)))?;
-    Expectations::parse(&text).map_err(|e| error(ErrorCode::Internal, format!("{path}: {e}")))
+    let text = node
+        .trusted_text(&path)
+        .map_err(|failure| error(ErrorCode::Internal, format!("{path}: {}", failure.message)))?;
+    Expectations::parse(&text).map_err(|problem| error(ErrorCode::Internal, format!("{path}: {problem}")))
 }
 
 pub fn services(node: &Node) -> Result<Vec<ServiceState>> {
     let expected = expectations(node)?;
-    let mut out: Vec<ServiceState> = expected.compose.iter().map(|n| compose(node, n)).collect();
-    out.extend(expected.units.iter().map(|n| unit(node, n)));
-    out.extend(expected.procd.iter().map(|n| procd(node, n)));
-    Ok(out)
+    let stacks = expected.compose.iter().map(|name| compose_service(node, name));
+    let units = expected.units.iter().map(|name| unit_service(node, name));
+    let procd = expected.procd.iter().map(|name| procd_service(node, name));
+    Ok(stacks.chain(units).chain(procd).collect())
 }
 
 /// `stacks/<name>/compose.yaml` of the node's folder: the file limen brings up and then asks about.
 pub fn compose_file(node: &Node, name: &str) -> Result<String> {
-    let dir = node.config.stacks().ok_or_else(|| error(ErrorCode::Unavailable, "stacks need [repo] in limen.toml"))?;
-    ["compose.yaml", "compose.yml", "docker-compose.yml", "docker-compose.yaml"]
+    let stacks =
+        node.config.stacks().ok_or_else(|| error(ErrorCode::Unavailable, "stacks need [repo] in limen.toml"))?;
+    let file = COMPOSE_FILES
         .iter()
-        .map(|f| format!("{dir}/{name}/{f}"))
-        .find(|p| fs::exists(p))
-        .ok_or_else(|| error(ErrorCode::NotFound, format!("no compose file in {dir}/{name}")))
-        .and_then(|file| {
-            node.trusted_text(&file).map_err(|e| error(ErrorCode::Internal, format!("{file}: {}", e.message)))?;
-            Ok(file)
-        })
+        .map(|file_name| format!("{stacks}/{name}/{file_name}"))
+        .find(|path| fs::exists(path))
+        .ok_or_else(|| error(ErrorCode::NotFound, format!("no compose file in {stacks}/{name}")))?;
+    // Read only to refuse a file someone other than root could have written: Compose runs what it says as root.
+    node.trusted_text(&file).map_err(|failure| error(ErrorCode::Internal, format!("{file}: {}", failure.message)))?;
+    Ok(file)
 }
 
-fn missing(kind: &'static str, name: &str, reason: &str) -> ServiceState {
-    let mut detail = Map::new();
-    detail.insert("error".into(), json!(reason));
-    ServiceState { kind, name: name.into(), running: false, detail }
+/// The checkout and the remote branch, asked once: reported as `repo`, and among the problems when they differ.
+struct RepoState<'a> {
+    config: &'a RepoConfig,
+    deployed: Option<repo::Commit>,
+    remote: Result<String>,
+    last_sync: Option<Value>,
 }
 
-fn compose(node: &Node, name: &str) -> ServiceState {
-    let file = match compose_file(node, name) {
-        Ok(f) => f,
-        Err(e) => return missing("compose", name, &e.message),
-    };
-    if proc::which("docker").is_none() {
-        return missing("compose", name, "docker is not installed");
-    }
-    let minute = Duration::from_secs(60);
-    let declared: Vec<String> =
-        match node.exec(&["docker", "compose", "-p", name, "-f", &file, "config", "--services"], minute) {
-            Ok(r) if r.exit_code == 0 => {
-                r.out().lines().map(str::trim).filter(|l| !l.is_empty()).map(String::from).collect()
-            }
-            _ => return missing("compose", name, "docker compose config failed"),
-        };
-    let ps = match node.exec(&["docker", "compose", "-p", name, "-f", &file, "ps", "--all", "--format", "json"], minute)
-    {
-        Ok(r) if r.exit_code == 0 => r.out(),
-        Ok(r) => {
-            return missing(
-                "compose",
-                name,
-                &format!("docker compose ps: {}", r.err().trim().lines().last().unwrap_or("")),
-            );
+impl<'a> RepoState<'a> {
+    fn of(config: &'a RepoConfig) -> Self {
+        RepoState {
+            config,
+            deployed: repo::deployed(config),
+            remote: repo::remote(config),
+            last_sync: repo::last_sync(config),
         }
-        Err(e) => return missing("compose", name, &e.message),
+    }
+
+    fn problem(&self) -> Option<String> {
+        match (&self.deployed, &self.remote) {
+            (None, _) => Some("the repository is not checked out: run sync or apply".into()),
+            (Some(commit), Ok(remote)) if &commit.hash != remote => {
+                Some(format!("the node is behind {}", self.config.branch))
+            }
+            _ => None,
+        }
+    }
+
+    fn to_json(&self, redactor: &Redactor) -> Value {
+        let deployed = self
+            .deployed
+            .as_ref()
+            .map(|commit| json!({"commit": commit.hash, "date": commit.date, "subject": commit.subject}));
+        let mut state = json!({
+            "url": self.config.display_url(),
+            "branch": self.config.branch,
+            "path": self.config.path,
+            "deployed": deployed,
+        });
+        match &self.remote {
+            Ok(remote) => {
+                state["remote"] = json!(remote);
+                state["up_to_date"] = json!(self.deployed.as_ref().map(|commit| &commit.hash) == Some(remote));
+            }
+            Err(failure) => state["remote_error"] = json!(redactor.redact(&failure.message)),
+        }
+        // git's own words, which can hold a URL with its credentials.
+        state["last_sync"] = self
+            .last_sync
+            .as_ref()
+            .and_then(|record| serde_json::from_str(&redactor.redact(&record.to_string())).ok())
+            .unwrap_or(Value::Null);
+        state
+    }
+}
+
+fn compose_service(node: &Node, name: &str) -> ServiceState {
+    match ask_compose(node, name) {
+        Ok((running, detail)) => ServiceState { kind: "compose", name: name.into(), running, detail },
+        Err(message) => ServiceState::error("compose", name, &message),
+    }
+}
+
+/// Whether a stack runs and what its containers say, or why Compose couldn't tell.
+fn ask_compose(node: &Node, name: &str) -> std::result::Result<(bool, Map<String, Value>), String> {
+    let file = compose_file(node, name).map_err(|failure| failure.message)?;
+    if proc::which("docker").is_none() {
+        return Err("docker is not installed".into());
+    }
+    let declared = match compose(node, name, &file, &["config", "--services"]) {
+        Ok(result) if result.exit_code == 0 => {
+            result.out().lines().map(str::trim).filter(|line| !line.is_empty()).map(String::from).collect::<Vec<_>>()
+        }
+        _ => return Err("docker compose config failed".into()),
     };
-    let containers = compose_containers(&ps);
-    let (running, detail) = stack_state(&declared, &containers);
-    ServiceState { kind: "compose", name: name.into(), running, detail }
+    let listed = match compose(node, name, &file, &["ps", "--all", "--format", "json"]) {
+        Ok(result) if result.exit_code == 0 => result.out(),
+        Ok(result) => return Err(format!("docker compose ps: {}", result.err().trim().lines().last().unwrap_or(""))),
+        Err(failure) => return Err(failure.message),
+    };
+    Ok(stack_state(&declared, &compose_containers(&listed)))
+}
+
+fn compose(node: &Node, stack: &str, file: &str, args: &[&str]) -> Result<proc::ProcResult> {
+    let argv: Vec<&str> =
+        ["docker", "compose", "-p", stack, "-f", file].into_iter().chain(args.iter().copied()).collect();
+    node.exec(&argv, COMPOSE_TIMEOUT)
 }
 
 /// `docker compose ps --format json`: one JSON array from older Compose, one object per line from newer ones.
-fn compose_containers(out: &str) -> Vec<Map<String, Value>> {
-    let out = out.trim();
-    if out.starts_with('[') {
-        serde_json::from_str(out).unwrap_or_default()
+fn compose_containers(listed: &str) -> Vec<Map<String, Value>> {
+    let listed = listed.trim();
+    if listed.starts_with('[') {
+        serde_json::from_str(listed).unwrap_or_default()
     } else {
-        out.lines().filter_map(|l| serde_json::from_str(l).ok()).collect()
+        listed.lines().filter_map(|line| serde_json::from_str(line).ok()).collect()
     }
 }
 
 /// Whether a stack runs: every declared service has a container, and each runs and isn't unhealthy, or exited with 0
 /// (a one-shot job that finished is not a stack that is down).
 fn stack_state(declared: &[String], containers: &[Map<String, Value>]) -> (bool, Map<String, Value>) {
-    let field = |c: &Map<String, Value>, k: &str| -> Option<String> {
-        c.get(k).and_then(|v| v.as_str().map(String::from).or_else(|| v.as_i64().map(|n| n.to_string())))
-    };
-    let missing: Vec<&String> =
-        declared.iter().filter(|s| !containers.iter().any(|c| field(c, "Service").as_ref() == Some(*s))).collect();
-    let finished = |c: &Map<String, Value>| {
-        field(c, "State").as_deref() == Some("exited") && field(c, "ExitCode").as_deref() == Some("0")
-    };
-    let down = containers.iter().any(|c| {
-        (field(c, "State").as_deref() != Some("running") && !finished(c))
-            || field(c, "Health").as_deref() == Some("unhealthy")
-    });
+    let missing: Vec<&String> = declared
+        .iter()
+        .filter(|service| !containers.iter().any(|container| field(container, "Service").as_ref() == Some(*service)))
+        .collect();
+    let any_down = containers.iter().any(is_down);
     let rows: Vec<Value> = containers
         .iter()
-        .map(|c| {
+        .map(|container| {
             json!({
-                "service": field(c, "Service"),
-                "state": field(c, "State"),
-                "health": field(c, "Health").filter(|h| !h.is_empty()),
-                "image": field(c, "Image"),
+                "service": field(container, "Service"),
+                "state": field(container, "State"),
+                "health": field(container, "Health").filter(|health| !health.is_empty()),
+                "image": field(container, "Image"),
             })
         })
         .collect();
@@ -182,49 +217,68 @@ fn stack_state(declared: &[String], containers: &[Map<String, Value>]) -> (bool,
     if !missing.is_empty() {
         detail.insert("missing".into(), json!(missing));
     }
-    (missing.is_empty() && !down, detail)
+    (missing.is_empty() && !any_down, detail)
 }
 
-fn unit(node: &Node, name: &str) -> ServiceState {
+fn is_down(container: &Map<String, Value>) -> bool {
+    let finished_well =
+        field(container, "State").as_deref() == Some("exited") && field(container, "ExitCode").as_deref() == Some("0");
+    (field(container, "State").as_deref() != Some("running") && !finished_well)
+        || field(container, "Health").as_deref() == Some("unhealthy")
+}
+
+/// A field of a container as text: Compose gives most as strings and `ExitCode` as a number.
+fn field(container: &Map<String, Value>, key: &str) -> Option<String> {
+    container
+        .get(key)
+        .and_then(|value| value.as_str().map(String::from).or_else(|| value.as_i64().map(|number| number.to_string())))
+}
+
+fn unit_service(node: &Node, name: &str) -> ServiceState {
     if system::init() != Init::Systemd {
-        return missing("unit", name, "no systemd on this node");
+        return ServiceState::error("unit", name, "no systemd on this node");
     }
-    let props = node
+    let properties = node
         .exec_ok(&["systemctl", "show", "--no-pager", "--property=LoadState,ActiveState,SubState", "--", name])
-        .map(|o| parsers::key_values(&o))
+        .map(|output| parsers::key_values(&output))
         .unwrap_or_default();
     let mut detail = Map::new();
-    for (key, prop) in [("load", "LoadState"), ("active", "ActiveState"), ("sub", "SubState")] {
-        detail.insert(key.into(), json!(props.get(prop)));
+    for (key, property) in [("load", "LoadState"), ("active", "ActiveState"), ("sub", "SubState")] {
+        detail.insert(key.into(), json!(properties.get(property)));
     }
     ServiceState {
         kind: "unit",
         name: name.into(),
-        running: props.get("ActiveState").map(String::as_str) == Some("active"),
+        running: properties.get("ActiveState").map(String::as_str) == Some("active"),
         detail,
     }
 }
 
-fn procd(node: &Node, name: &str) -> ServiceState {
+fn procd_service(node: &Node, name: &str) -> ServiceState {
     if system::init() != Init::Procd {
-        return missing("procd", name, "no procd on this node");
+        return ServiceState::error("procd", name, "no procd on this node");
     }
-    let s = system::procd_services(node, Some(name)).ok().and_then(|mut all| all.remove(name));
-    let mut detail = Map::new();
-    let active = match &s {
+    let service = system::procd_services(node, Some(name)).ok().and_then(|mut services| services.remove(name));
+    let failed = service.as_ref().is_some_and(|service| service.state == ProcdState::Failed);
+    let active = match &service {
         None => "missing",
-        Some(s) if s.state == ProcdState::Failed => "failed",
+        Some(_) if failed => "failed",
         Some(_) => "active",
     };
-    detail.insert("active".into(), json!(active));
-    let instances: Map<String, Value> = s
+    let instances: Map<String, Value> = service
         .as_ref()
-        .map(|s| {
-            s.instances.iter().map(|(k, v)| (k.clone(), v.get("running").cloned().unwrap_or(Value::Null))).collect()
+        .map(|service| {
+            service
+                .instances
+                .iter()
+                .map(|(instance, info)| (instance.clone(), info.get("running").cloned().unwrap_or(Value::Null)))
+                .collect()
         })
         .unwrap_or_default();
+    let mut detail = Map::new();
+    detail.insert("active".into(), json!(active));
     detail.insert("instances".into(), Value::Object(instances));
-    ServiceState { kind: "procd", name: name.into(), running: s.is_some_and(|s| s.state != ProcdState::Failed), detail }
+    ServiceState { kind: "procd", name: name.into(), running: service.is_some() && !failed, detail }
 }
 
 #[cfg(test)]
@@ -234,9 +288,9 @@ mod tests {
     #[test]
     fn a_stack_runs_when_every_service_does_or_finished_well() {
         let declared = vec!["web".to_string(), "migrate".to_string()];
-        let ps = r#"{"Service":"web","State":"running","Health":"healthy","Image":"nginx"}
+        let listed = r#"{"Service":"web","State":"running","Health":"healthy","Image":"nginx"}
 {"Service":"migrate","State":"exited","ExitCode":0,"Image":"app"}"#;
-        assert!(stack_state(&declared, &compose_containers(ps)).0);
+        assert!(stack_state(&declared, &compose_containers(listed)).0);
         let failed = r#"[{"Service":"web","State":"running"},{"Service":"migrate","State":"exited","ExitCode":1}]"#;
         assert!(!stack_state(&declared, &compose_containers(failed)).0);
         let (running, detail) = stack_state(&declared, &compose_containers(r#"{"Service":"web","State":"running"}"#));

@@ -18,60 +18,69 @@ pub struct Response {
 
 /// [method] [path] on [authority] (`100.64.0.2:7341`, `[fd00::1]:7341`), with [body] as JSON when given.
 pub fn request(authority: &str, method: &str, path: &str, body: Option<&str>) -> Result<Response, String> {
-    let address = authority
-        .to_socket_addrs()
-        .map_err(|e| e.to_string())?
-        .next()
-        .ok_or_else(|| format!("no address in {authority}"))?;
-    let mut stream = TcpStream::connect_timeout(&address, TIMEOUT).map_err(|e| e.to_string())?;
-    stream.set_read_timeout(Some(TIMEOUT)).ok();
-    stream.set_write_timeout(Some(TIMEOUT)).ok();
+    let mut stream = connect(authority)?;
     let body = body.unwrap_or("");
     let message = format!(
         "{method} {path} HTTP/1.1\r\nHost: {authority}\r\nConnection: close\r\nContent-Type: application/json\r\n\
          Content-Length: {}\r\n\r\n{body}",
         body.len()
     );
-    stream.write_all(message.as_bytes()).map_err(|e| e.to_string())?;
+    stream.write_all(message.as_bytes()).map_err(|error| error.to_string())?;
     let mut raw = Vec::new();
-    stream.take(MAX_ANSWER).read_to_end(&mut raw).map_err(|e| e.to_string())?;
+    stream.take(MAX_ANSWER).read_to_end(&mut raw).map_err(|error| error.to_string())?;
     parse(&raw)
+}
+
+fn connect(authority: &str) -> Result<TcpStream, String> {
+    let address = authority
+        .to_socket_addrs()
+        .map_err(|error| error.to_string())?
+        .next()
+        .ok_or_else(|| format!("no address in {authority}"))?;
+    let stream = TcpStream::connect_timeout(&address, TIMEOUT).map_err(|error| error.to_string())?;
+    stream.set_read_timeout(Some(TIMEOUT)).ok();
+    stream.set_write_timeout(Some(TIMEOUT)).ok();
+    Ok(stream)
 }
 
 /// An HTTP/1.1 answer: its status and its body, by `Content-Length`, chunked, or up to the connection's end.
 pub fn parse(raw: &[u8]) -> Result<Response, String> {
-    let split = raw.windows(4).position(|w| w == b"\r\n\r\n").ok_or("the hub's answer has no headers")?;
+    let split = raw.windows(4).position(|window| window == b"\r\n\r\n").ok_or("the hub's answer has no headers")?;
     let head = String::from_utf8_lossy(&raw[..split]);
     let mut lines = head.lines();
-    let status = lines
-        .next()
-        .and_then(|l| l.split(' ').nth(1))
-        .and_then(|s| s.parse().ok())
-        .ok_or("the hub's answer is not HTTP")?;
-    let header = |name: &str| {
-        lines
-            .clone()
-            .find_map(|l| l.split_once(':').filter(|(k, _)| k.eq_ignore_ascii_case(name)).map(|(_, v)| v.trim()))
-    };
-    let rest = &raw[split + 4..];
-    let body = if header("Transfer-Encoding").is_some_and(|t| t.eq_ignore_ascii_case("chunked")) {
-        dechunk(rest)?
-    } else if let Some(length) = header("Content-Length").and_then(|l| l.parse::<usize>().ok()) {
-        rest.get(..length).ok_or("the hub's answer is shorter than it says")?.to_vec()
-    } else {
-        rest.to_vec()
-    };
+    let status = lines.next().and_then(status_code).ok_or("the hub's answer is not HTTP")?;
+    let headers: Vec<&str> = lines.collect();
+    let body = decode_body(&headers, &raw[split + 4..])?;
     Ok(Response { status, body: String::from_utf8_lossy(&body).into_owned() })
+}
+
+/// `200` of `HTTP/1.1 200 OK`.
+fn status_code(status_line: &str) -> Option<u16> {
+    status_line.split(' ').nth(1)?.parse().ok()
+}
+
+/// The value of header [name], whatever its case.
+fn header<'a>(headers: &[&'a str], name: &str) -> Option<&'a str> {
+    headers.iter().find_map(|line| {
+        line.split_once(':').filter(|(key, _)| key.eq_ignore_ascii_case(name)).map(|(_, value)| value.trim())
+    })
+}
+
+fn decode_body(headers: &[&str], rest: &[u8]) -> Result<Vec<u8>, String> {
+    if header(headers, "Transfer-Encoding").is_some_and(|encoding| encoding.eq_ignore_ascii_case("chunked")) {
+        return dechunk(rest);
+    }
+    match header(headers, "Content-Length").and_then(|length| length.parse::<usize>().ok()) {
+        Some(length) => Ok(rest.get(..length).ok_or("the hub's answer is shorter than it says")?.to_vec()),
+        None => Ok(rest.to_vec()),
+    }
 }
 
 fn dechunk(mut rest: &[u8]) -> Result<Vec<u8>, String> {
     let mut body = Vec::new();
     loop {
-        let end = rest.windows(2).position(|w| w == b"\r\n").ok_or("a chunk without its size")?;
-        let size = std::str::from_utf8(&rest[..end])
-            .ok()
-            .and_then(|s| usize::from_str_radix(s.split(';').next()?.trim(), 16).ok());
-        let size = size.ok_or("a chunk size that is not a number")?;
+        let end = rest.windows(2).position(|window| window == b"\r\n").ok_or("a chunk without its size")?;
+        let size = chunk_size(&rest[..end]).ok_or("a chunk size that is not a number")?;
         if size == 0 {
             return Ok(body);
         }
@@ -79,6 +88,12 @@ fn dechunk(mut rest: &[u8]) -> Result<Vec<u8>, String> {
         body.extend_from_slice(chunk);
         rest = rest.get(end + 4 + size..).unwrap_or_default();
     }
+}
+
+/// A chunk's size line: hexadecimal, maybe followed by `;` and extensions.
+fn chunk_size(line: &[u8]) -> Option<usize> {
+    let line = std::str::from_utf8(line).ok()?;
+    usize::from_str_radix(line.split(';').next()?.trim(), 16).ok()
 }
 
 #[cfg(test)]

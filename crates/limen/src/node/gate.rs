@@ -12,7 +12,7 @@ use limen_core::protocol::{
 use limen_core::requests::{self, Role};
 use limen_core::time::iso;
 use serde_json::{Value, json};
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 const MAX_REQUEST: usize = 1024 * 1024;
@@ -28,10 +28,26 @@ const READ_DEADLINE: Duration = Duration::from_secs(120);
 struct Pending {
     role: Role,
     started: Instant,
+    /// The defaults until the configuration is read.
+    reporting: Reporting,
+    request: Option<NodeRequest>,
+}
+
+/// Where a request's audit record goes and how large its answer may be.
+struct Reporting {
     audit: String,
     audit_max_bytes: u64,
     max_response: usize,
-    request: Option<NodeRequest>,
+}
+
+impl Reporting {
+    fn of(config: &NodeConfig) -> Self {
+        Self {
+            audit: config.audit.clone(),
+            audit_max_bytes: config.audit_max_bytes,
+            max_response: config.max_response_bytes,
+        }
+    }
 }
 
 /// How a request ended, when it did.
@@ -43,13 +59,25 @@ enum Done {
 static PENDING: Mutex<Option<Pending>> = Mutex::new(None);
 static DEADLINE: Mutex<Option<Instant>> = Mutex::new(None);
 
-fn pending() -> std::sync::MutexGuard<'static, Option<Pending>> {
-    PENDING.lock().unwrap_or_else(|e| e.into_inner())
+// A panic elsewhere must not stop the gate from answering and writing its audit record: a poisoned lock is still used.
+fn lock_pending() -> MutexGuard<'static, Option<Pending>> {
+    PENDING.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+fn lock_deadline() -> MutexGuard<'static, Option<Instant>> {
+    DEADLINE.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Updates the request's record, unless the watchdog has taken it.
+fn update_pending(update: impl FnOnce(&mut Pending)) {
+    if let Some(pending) = lock_pending().as_mut() {
+        update(pending);
+    }
 }
 
 /// Gives a read request [more] time from now: a check, its script's timeout.
 pub fn allow(more: Duration) {
-    if let Some(deadline) = DEADLINE.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+    if let Some(deadline) = lock_deadline().as_mut() {
         *deadline = (*deadline).max(Instant::now() + more);
     }
 }
@@ -59,18 +87,18 @@ pub fn allow(more: Duration) {
 fn watchdog() {
     std::thread::spawn(|| {
         loop {
-            let Some(deadline) = *DEADLINE.lock().unwrap_or_else(|e| e.into_inner()) else { return };
+            let Some(deadline) = *lock_deadline() else { return };
             let now = Instant::now();
             if now < deadline {
                 std::thread::sleep(deadline - now);
                 continue;
             }
-            let Some(p) = pending().take() else { return };
+            let Some(pending) = lock_pending().take() else { return };
             proc::stop_all();
-            let spent = p.started.elapsed().as_secs().max(1);
-            let e = error(ErrorCode::Timeout, format!("the request did not finish in {spent}s"));
-            write(p.max_response, &NodeResponse::failure(&e));
-            audit(&p, e.code.wire());
+            let spent = pending.started.elapsed().as_secs().max(1);
+            let timeout = error(ErrorCode::Timeout, format!("the request did not finish in {spent}s"));
+            send(pending.reporting.max_response, &NodeResponse::failure(&timeout));
+            audit(&pending, timeout.code.wire());
             std::process::exit(0);
         }
     });
@@ -80,71 +108,67 @@ pub fn run(role: Role, config_path: &str) -> i32 {
     sys::chdir_root();
     sys::umask_022();
     let started = Instant::now();
-    let defaults = NodeConfig::default();
-    *pending() = Some(Pending {
-        role,
-        started,
-        audit: defaults.audit.clone(),
-        audit_max_bytes: defaults.audit_max_bytes,
-        max_response: defaults.max_response_bytes,
-        request: None,
-    });
+    let reporting = Reporting::of(&NodeConfig::default());
+    *lock_pending() = Some(Pending { role, started, reporting, request: None });
     if role == Role::Read {
-        *DEADLINE.lock().unwrap_or_else(|e| e.into_inner()) = Some(started + STDIN_TIMEOUT + READ_DEADLINE);
+        *lock_deadline() = Some(started + STDIN_TIMEOUT + READ_DEADLINE);
         watchdog();
     }
     // Held until the answer is written.
     let mut slot = None;
-    let outcome = (|| -> Result<Done> {
-        let node = Node::load(config_path)?;
-        if let Some(p) = pending().as_mut() {
-            p.audit = node.config.audit.clone();
-            p.audit_max_bytes = node.config.audit_max_bytes;
-            p.max_response = node.config.max_response_bytes;
-        }
-        let r = parse(sys::read_stdin(MAX_REQUEST, STDIN_TIMEOUT))?;
-        if let Some(p) = pending().as_mut() {
-            p.request = Some(r.clone());
-        }
-        let def = requests::find(&r.request)
-            .ok_or_else(|| bad_request(format!("unknown request '{}'", short(&r.request))))?;
-        if def.role != role {
-            return Err(error(
-                ErrorCode::Denied,
-                format!("'{}' is not allowed for the {} role", def.name, role.wire()),
-            ));
-        }
-        let args = params::validate(&def.params, &r.args)?;
-        if role == Role::Deploy {
-            return Ok(Done::Deployed { succeeded: deploy::run(&node, def.name, &args)? });
-        }
-        slot = take_slot(node.config.concurrency)?;
-        read::answer(&node, def.name, &args).map(Done::Answered)
-    })();
-    let Some(p) = pending().take() else {
+    let outcome = handle(role, config_path, &mut slot);
+    let Some(pending) = lock_pending().take() else {
         // The watchdog answered and is ending the process.
         loop {
             std::thread::park();
         }
     };
-    let (code, exit) = match outcome {
+    let (result, exit) = conclude(role, pending.reporting.max_response, outcome);
+    audit(&pending, result);
+    drop(slot);
+    exit
+}
+
+/// Reads the configuration and the request, and does what it asks within [role]. A read request first takes one of
+/// the node's places into [slot].
+fn handle(role: Role, config_path: &str, slot: &mut Option<std::fs::File>) -> Result<Done> {
+    let node = Node::load(config_path)?;
+    update_pending(|pending| pending.reporting = Reporting::of(&node.config));
+    let request = parse(sys::read_stdin(MAX_REQUEST, STDIN_TIMEOUT))?;
+    update_pending(|pending| pending.request = Some(request.clone()));
+    let definition = requests::find(&request.request)
+        .ok_or_else(|| bad_request(format!("unknown request '{}'", shortened(&request.request))))?;
+    if definition.role != role {
+        return Err(error(
+            ErrorCode::Denied,
+            format!("'{}' is not allowed for the {} role", definition.name, role.wire()),
+        ));
+    }
+    let args = params::validate(&definition.params, &request.args)?;
+    if role == Role::Deploy {
+        return Ok(Done::Deployed { succeeded: deploy::run(&node, definition.name, &args)? });
+    }
+    *slot = take_slot(node.config.concurrency)?;
+    read::answer(&node, definition.name, &args).map(Done::Answered)
+}
+
+/// Tells the client how the request ended; gives the audit record's result and the exit code.
+fn conclude(role: Role, max_response: usize, outcome: Result<Done>) -> (&'static str, i32) {
+    match outcome {
         Ok(Done::Answered(answer)) => {
-            write(p.max_response, &NodeResponse::success(answer.data, answer.truncated));
+            send(max_response, &NodeResponse::success(answer.data, answer.truncated));
             ("ok", 0)
         }
         Ok(Done::Deployed { succeeded: true }) => ("ok", 0),
         Ok(Done::Deployed { succeeded: false }) => ("failed", 1),
-        Err(e) => (e.code.wire(), fail(role, p.max_response, &e)),
-    };
-    audit(&p, code);
-    drop(slot);
-    exit
+        Err(failure) => (failure.code.wire(), fail(role, max_response, &failure)),
+    }
 }
 
 /// One of `limits.concurrency` places for a read request, whatever hub it comes from: a lock on `/run/limen/slot-<n>`,
 /// held while the request runs. Where those can't be made —limen not running as root— there is no limit.
 fn take_slot(slots: usize) -> Result<Option<std::fs::File>> {
-    let dir = if fs::stat("/run").is_some_and(|i| i.kind == fs::FileType::Directory) {
+    let dir = if fs::stat("/run").is_some_and(|info| info.kind == fs::FileType::Directory) {
         "/run/limen"
     } else {
         "/var/run/limen"
@@ -172,42 +196,45 @@ fn parse(bytes: std::result::Result<Vec<u8>, String>) -> Result<NodeRequest> {
     if text.is_empty() {
         return Err(bad_request(r#"no request on stdin; send one JSON object, e.g. {"v":1,"request":"status"}"#));
     }
-    let request: NodeRequest = serde_json::from_str(text)
-        .map_err(|e| bad_request(format!("malformed request: {}", e.to_string().lines().next().unwrap_or(""))))?;
+    let request: NodeRequest = serde_json::from_str(text).map_err(|malformed| {
+        bad_request(format!("malformed request: {}", malformed.to_string().lines().next().unwrap_or("")))
+    })?;
     if !PROTOCOL_VERSIONS.contains(&request.v) {
-        let mut e = error(
+        let mut unsupported = error(
             ErrorCode::UnsupportedVersion,
             format!("protocol version {} is not supported by limen on this node", request.v),
         );
-        e.versions = Some(PROTOCOL_VERSIONS.to_vec());
-        return Err(e);
+        unsupported.versions = Some(PROTOCOL_VERSIONS.to_vec());
+        return Err(unsupported);
     }
     Ok(request)
 }
 
-fn write(limit: usize, response: &NodeResponse) {
+/// Writes the answer on stdout; one over [max_response] becomes an error that says so.
+fn send(max_response: usize, response: &NodeResponse) {
     let mut text = serde_json::to_string(response).unwrap_or_default();
-    if text.len() > limit {
-        let e = bad_request(format!(
-            "the answer is {} bytes, over limits.max_response ({limit}); narrow the request",
+    if text.len() > max_response {
+        let too_large = bad_request(format!(
+            "the answer is {} bytes, over limits.max_response ({max_response}); narrow the request",
             text.len()
         ));
-        text = serde_json::to_string(&NodeResponse::failure(&e)).unwrap_or_default();
+        text = serde_json::to_string(&NodeResponse::failure(&too_large)).unwrap_or_default();
     }
     sys::out(&format!("{text}\n"));
 }
 
-fn fail(role: Role, max_response: usize, e: &LimenError) -> i32 {
+/// Tells the client [failure]: a deploy client reads text on stderr and the exit code, a read client a JSON answer.
+fn fail(role: Role, max_response: usize, failure: &LimenError) -> i32 {
     if role == Role::Deploy {
-        sys::err(&format!("limen: {}: {}\n", e.code.wire(), e.message));
+        sys::err(&format!("limen: {}: {}\n", failure.code.wire(), failure.message));
         return 1;
     }
-    write(max_response, &NodeResponse::failure(e));
+    send(max_response, &NodeResponse::failure(failure));
     0
 }
 
 /// A request's name as the client sent it, up to a length.
-fn short(name: &str) -> String {
+fn shortened(name: &str) -> String {
     if name.chars().count() <= MAX_AUDIT_NAME {
         name.to_string()
     } else {
@@ -216,33 +243,38 @@ fn short(name: &str) -> String {
 }
 
 /// The node's audit log (spec §8): one JSON line per request, whatever its outcome.
-fn audit(p: &Pending, code: &str) {
-    // A request's name and arguments, up to a size: a megabyte of them per request would rotate the log out.
-    let request = p.request.as_ref();
-    let args = request.map(|r| Value::Object(r.args.clone())).unwrap_or(json!({}));
-    let size = args.to_string().len();
-    let name = request.map(|r| short(&r.request));
-    let entry = json!({
-        "time": iso(limen_core::time::now()),
-        "role": p.role.wire(),
-        "request": name,
-        "args": if size <= MAX_AUDIT_ARGS { args } else { json!({"omitted_bytes": size}) },
-        "client": sys::env("SSH_CONNECTION").and_then(|c| c.split(' ').next().map(String::from)),
-        "user": sys::env("SUDO_USER"),
-        "result": code,
-        "duration_ms": p.started.elapsed().as_millis() as u64,
-    });
-    let path = &p.audit;
-    let result = (|| {
-        let dir = path.rsplit_once('/').map_or("/", |(d, _)| d);
-        fs::mkdirs(dir, 0o700)?;
-        // One old file kept, no logrotate needed: OpenWrt has none, and its /var/log lives in RAM.
-        if fs::stat(path).is_some_and(|i| i.size > p.audit_max_bytes) {
-            std::fs::rename(path, format!("{path}.1")).ok();
-        }
-        fs::append_line(path, &entry.to_string())
-    })();
-    if let Err(e) = result {
-        sys::err(&format!("limen: cannot write the audit log {path}: {e}\n"));
+fn audit(pending: &Pending, result: &str) {
+    let path = &pending.reporting.audit;
+    let line = audit_record(pending, result).to_string();
+    if let Err(failure) = append_rotating(path, pending.reporting.audit_max_bytes, &line) {
+        sys::err(&format!("limen: cannot write the audit log {path}: {failure}\n"));
     }
+}
+
+fn audit_record(pending: &Pending, result: &str) -> Value {
+    // A request's name and arguments, up to a size: a megabyte of them per request would rotate the log out.
+    let request = pending.request.as_ref();
+    let args = request.map_or_else(|| json!({}), |request| Value::Object(request.args.clone()));
+    let size = args.to_string().len();
+    json!({
+        "time": iso(limen_core::time::now()),
+        "role": pending.role.wire(),
+        "request": request.map(|request| shortened(&request.request)),
+        "args": if size <= MAX_AUDIT_ARGS { args } else { json!({"omitted_bytes": size}) },
+        "client": sys::env("SSH_CONNECTION").and_then(|connection| connection.split(' ').next().map(String::from)),
+        "user": sys::env("SUDO_USER"),
+        "result": result,
+        "duration_ms": pending.started.elapsed().as_millis() as u64,
+    })
+}
+
+/// Appends [line] to the log at [path], moving it to `<path>.1` first once it is over [max_bytes]. One old file kept,
+/// no logrotate needed: OpenWrt has none, and its /var/log lives in RAM.
+fn append_rotating(path: &str, max_bytes: u64, line: &str) -> std::result::Result<(), String> {
+    let dir = path.rsplit_once('/').map_or("/", |(dir, _)| dir);
+    fs::mkdirs(dir, 0o700)?;
+    if fs::stat(path).is_some_and(|info| info.size > max_bytes) {
+        std::fs::rename(path, format!("{path}.1")).ok();
+    }
+    fs::append_line(path, line)
 }

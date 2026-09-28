@@ -2,7 +2,7 @@
 //! invitations. Everything that reads or changes it goes through here.
 
 use super::ssh::SshClient;
-use super::{NodeClient, constant_time_eq};
+use super::{NodeClient, constant_time_eq, failure_text, internal};
 use crate::os::{fs, proc, sys};
 use limen_core::config::hub::{self, HubConfig, is};
 use limen_core::join::{self, Arrival, Invitation, PendingInvite, Welcome};
@@ -12,8 +12,11 @@ use serde_json::{Map, Value};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-/// Spec §9. The token `init` writes has 32.
+/// Spec §9. The token `init` writes has [TOKEN_LENGTH].
 pub const MIN_TOKEN: usize = 16;
+const TOKEN_LENGTH: usize = 32;
+/// An invitation's code, as [join::CODE] has it, and its secret.
+const INVITE_CODE_LENGTH: usize = 26;
 
 /// The nodes go after `[ssh]` as they join, so what is commented out comes first.
 const CONFIG_TEMPLATE: &str = r#"# limen hub (docs/spec.md §7.2). Nodes are added by `limen invite` and `limen trust`, or by hand.
@@ -37,7 +40,7 @@ pub struct Hub {
     pub config_path: String,
     pub key_path: String,
     pub token_path: String,
-    invites: String,
+    invites_dir: String,
     arrivals: Mutex<()>,
 }
 
@@ -48,7 +51,7 @@ impl Hub {
             config_path: format!("{home}/limen.toml"),
             key_path: format!("{home}/id_ed25519"),
             token_path: format!("{home}/token"),
-            invites: format!("{home}/invites"),
+            invites_dir: format!("{home}/invites"),
             home,
             arrivals: Mutex::new(()),
         }
@@ -58,7 +61,7 @@ impl Hub {
     pub fn home(option: Option<&str>) -> String {
         option
             .map(String::from)
-            .or_else(|| sys::env("LIMEN_HOME").filter(|h| !h.trim().is_empty()))
+            .or_else(|| sys::env("LIMEN_HOME").filter(|home| !home.trim().is_empty()))
             .unwrap_or_else(|| format!("{}/.limen", sys::env("HOME").unwrap_or("/root".into())))
     }
 
@@ -68,23 +71,16 @@ impl Hub {
 
     pub fn public_key(&self) -> Result<String> {
         fs::read_following(&format!("{}.pub", self.key_path))
-            .map(|k| k.trim().to_string())
+            .map(|key| key.trim().to_string())
             .ok_or_else(|| error(ErrorCode::Unavailable, "no hub key; run `limen init`"))
     }
 
     pub fn config(&self) -> Result<HubConfig> {
         let text = fs::read_following(&self.config_path)
             .ok_or_else(|| error(ErrorCode::Unavailable, format!("no {}; run `limen init`", self.config_path)))?;
-        let mut config =
-            HubConfig::parse(&text).map_err(|e| error(ErrorCode::BadRequest, format!("{}: {e}", self.config_path)))?;
-        if let Some(url) = sys::env("LIMEN_PUBLIC_URL").filter(|u| !u.trim().is_empty()) {
-            let url = url.trim_end_matches('/').to_string();
-            if !is(hub::PUBLIC_URL, &url) {
-                return Err(error(
-                    ErrorCode::BadRequest,
-                    "LIMEN_PUBLIC_URL: expected http://<address>:<port>, an address and not a name",
-                ));
-            }
+        let mut config = HubConfig::parse(&text)
+            .map_err(|cause| error(ErrorCode::BadRequest, format!("{}: {cause}", self.config_path)))?;
+        if let Some(url) = public_url_from_env()? {
             config.public_url = Some(url);
         }
         Ok(config)
@@ -93,48 +89,47 @@ impl Hub {
     /// Creates what is missing and leaves what exists: the key pair, `limen.toml` and, for `serve`, the token of the
     /// HTTP clients. Returns what it created.
     pub fn init(&self, serve: bool) -> Result<Vec<String>> {
-        let internal = |e: String| error(ErrorCode::Internal, e);
         let mut created = Vec::new();
         fs::mkdirs(&self.home, 0o700).map_err(internal)?;
         if !fs::exists(&self.key_path) {
-            let keygen = proc::which("ssh-keygen")
-                .ok_or_else(|| error(ErrorCode::Unavailable, "ssh-keygen is not installed"))?;
-            let comment = format!("limen-hub@{}", sys::hostname());
-            let argv: Vec<String> =
-                [keygen.as_str(), "-q", "-t", "ed25519", "-N", "", "-C", &comment, "-f", &self.key_path]
-                    .map(String::from)
-                    .to_vec();
-            let r = proc::run(&argv, proc::Run::default()).map_err(internal)?;
-            if r.exit_code != 0 {
-                return Err(internal(format!("ssh-keygen: {}", r.err().trim())));
-            }
+            self.generate_key()?;
             created.push(self.key_path.clone());
         }
         if !fs::exists(&self.config_path) {
             fs::write_atomic(&self.config_path, CONFIG_TEMPLATE.as_bytes(), 0o600).map_err(internal)?;
             created.push(self.config_path.clone());
         }
-        if serve && !fs::exists(&self.token_path) && sys::env("LIMEN_TOKEN").is_none_or(|t| t.trim().is_empty()) {
-            fs::write_atomic(&self.token_path, format!("{}\n", random(32)?).as_bytes(), 0o600).map_err(internal)?;
+        if serve && !fs::exists(&self.token_path) && token_from_env().is_none() {
+            let token = format!("{}\n", random(TOKEN_LENGTH)?);
+            fs::write_atomic(&self.token_path, token.as_bytes(), 0o600).map_err(internal)?;
             created.push(self.token_path.clone());
         }
         Ok(created)
     }
 
+    fn generate_key(&self) -> Result<()> {
+        let keygen =
+            proc::which("ssh-keygen").ok_or_else(|| error(ErrorCode::Unavailable, "ssh-keygen is not installed"))?;
+        let comment = format!("limen-hub@{}", sys::hostname());
+        let argv =
+            [keygen.as_str(), "-q", "-t", "ed25519", "-N", "", "-C", &comment, "-f", &self.key_path].map(String::from);
+        let result = proc::run(&argv, proc::Run::default()).map_err(internal)?;
+        if result.exit_code != 0 {
+            return Err(internal(format!("ssh-keygen: {}", result.err().trim())));
+        }
+        Ok(())
+    }
+
     /// The HTTP clients' token: `LIMEN_TOKEN`, or the one `init` wrote.
     pub fn token(&self) -> Result<String> {
-        let token = sys::env("LIMEN_TOKEN")
-            .map(|t| t.trim().to_string())
-            .filter(|t| !t.is_empty())
-            .or_else(|| fs::read_following(&self.token_path).map(|t| t.trim().to_string()).filter(|t| !t.is_empty()))
+        let token = token_from_env()
+            .or_else(|| trimmed(fs::read_following(&self.token_path)))
             .ok_or_else(|| error(ErrorCode::Unavailable, "no token: set LIMEN_TOKEN or run `limen init --serve`"))?;
-        if token.chars().count() < MIN_TOKEN {
+        let length = token.chars().count();
+        if length < MIN_TOKEN {
             return Err(error(
                 ErrorCode::BadRequest,
-                format!(
-                    "the token is {} characters long; it needs {MIN_TOKEN} characters or more",
-                    token.chars().count()
-                ),
+                format!("the token is {length} characters long; it needs {MIN_TOKEN} characters or more"),
             ));
         }
         Ok(token)
@@ -145,16 +140,15 @@ impl Hub {
         if !is(hub::NODE_NAME, name) {
             return Err(error(ErrorCode::BadRequest, format!("a node name matches {}", hub::NODE_NAME)));
         }
-        fs::mkdirs(&self.invites, 0o700).map_err(|e| error(ErrorCode::Internal, e))?;
-        let (code, secret) = (random(26)?, random(26)?);
+        fs::mkdirs(&self.invites_dir, 0o700).map_err(internal)?;
+        let (code, secret) = (random(INVITE_CODE_LENGTH)?, random(INVITE_CODE_LENGTH)?);
         let pending = PendingInvite {
             name: name.into(),
             expires_epoch: time::now() + ttl.as_secs() as i64,
             secret: secret.clone(),
         };
         let text = serde_json::to_string(&pending).expect("an invitation serializes");
-        fs::write_atomic(&format!("{}/{code}.json", self.invites), text.as_bytes(), 0o600)
-            .map_err(|e| error(ErrorCode::Internal, e))?;
+        fs::write_atomic(&self.invite_path(&code), text.as_bytes(), 0o600).map_err(internal)?;
         Ok(IssuedInvite { code, secret })
     }
 
@@ -162,13 +156,18 @@ impl Hub {
         if !is(join::CODE, code) {
             return None;
         }
-        let path = format!("{}/{code}.json", self.invites);
+        let path = self.invite_path(code);
         let invite: PendingInvite = serde_json::from_str(&fs::read_text(&path)?).ok()?;
         if invite.expires_epoch < time::now() {
             fs::remove(&path);
             return None;
         }
         Some(invite)
+    }
+
+    /// Where the invitation of [code] waits. [code] is checked against [join::CODE] before it is used from outside.
+    fn invite_path(&self, code: &str) -> String {
+        format!("{}/{code}.json", self.invites_dir)
     }
 
     pub fn invitation(&self, code: &str) -> Option<Invitation> {
@@ -180,17 +179,11 @@ impl Hub {
     /// at once, so the node's installer can say whether it worked.
     pub fn arrive(&self, code: &str, arrival: &Arrival, from: &str, client: &dyn NodeClient) -> Result<Welcome> {
         let (invite, address) = {
-            let _one_at_a_time = self.arrivals.lock().unwrap();
+            let _one_at_a_time = self.arrivals.lock().expect("nothing panics holding the arrivals");
             self.admit(code, arrival, from)?
         };
         let hello = client.call(&invite.name, "hello", &Map::new(), None);
-        let detail = if hello.ok {
-            let field = |k: &str| hello.data.as_ref().and_then(|d| d.get(k)).and_then(Value::as_str).map(String::from);
-            format!("{}, limen {}", field("os").unwrap_or("Linux".into()), field("version").unwrap_or_default())
-        } else {
-            hello.error.as_ref().map(|e| format!("{}: {}", e.code, e.message)).unwrap_or_default()
-        };
-        Ok(Welcome { name: invite.name, address, reachable: hello.ok, detail })
+        Ok(Welcome { name: invite.name, address, reachable: hello.ok, detail: hello_detail(&hello) })
     }
 
     /// Checks the arrival, writes the node and spends the invitation.
@@ -205,10 +198,10 @@ impl Hub {
         let address = arrival
             .address
             .clone()
-            .filter(|a| !a.trim().is_empty())
+            .filter(|address| !address.trim().is_empty())
             .unwrap_or_else(|| from.trim_start_matches("::ffff:").to_string());
         self.write_node(&invite.name, &address, arrival.port, &arrival.user, &arrival.host_key)?;
-        fs::remove(&format!("{}/{code}.json", self.invites));
+        fs::remove(&self.invite_path(code));
         Ok((invite, address))
     }
 
@@ -221,18 +214,54 @@ impl Hub {
     fn write_node(&self, name: &str, address: &str, port: u16, user: &str, host_key: &str) -> Result<()> {
         let text = fs::read_following(&self.config_path).unwrap_or_default();
         let updated = join::upsert_node(&text, name, address, port, user, host_key)?;
-        HubConfig::parse(&updated).map_err(|e| {
-            error(ErrorCode::BadRequest, format!("{} would not read after adding {name}: {e}", self.config_path))
+        HubConfig::parse(&updated).map_err(|cause| {
+            error(ErrorCode::BadRequest, format!("{} would not read after adding {name}: {cause}", self.config_path))
         })?;
-        fs::write_following(&self.config_path, updated.as_bytes(), 0o600).map_err(|e| error(ErrorCode::Internal, e))
+        self.write_config(&updated)
     }
 
     pub fn remove(&self, name: &str) -> Result<bool> {
         let Some(text) = fs::read_following(&self.config_path) else { return Ok(false) };
         let Some(updated) = join::remove_node(&text, name)? else { return Ok(false) };
-        fs::write_following(&self.config_path, updated.as_bytes(), 0o600).map_err(|e| error(ErrorCode::Internal, e))?;
+        self.write_config(&updated)?;
         Ok(true)
     }
+
+    fn write_config(&self, text: &str) -> Result<()> {
+        fs::write_following(&self.config_path, text.as_bytes(), 0o600).map_err(internal)
+    }
+}
+
+/// `LIMEN_PUBLIC_URL`, which overrides `[http].public_url`.
+fn public_url_from_env() -> Result<Option<String>> {
+    let Some(url) = sys::env("LIMEN_PUBLIC_URL").filter(|url| !url.trim().is_empty()) else { return Ok(None) };
+    let url = url.trim_end_matches('/').to_string();
+    if !is(hub::PUBLIC_URL, &url) {
+        return Err(error(
+            ErrorCode::BadRequest,
+            "LIMEN_PUBLIC_URL: expected http://<address>:<port>, an address and not a name",
+        ));
+    }
+    Ok(Some(url))
+}
+
+fn token_from_env() -> Option<String> {
+    trimmed(sys::env("LIMEN_TOKEN"))
+}
+
+/// [text] without the whitespace around it, unless nothing is left.
+fn trimmed(text: Option<String>) -> Option<String> {
+    text.map(|text| text.trim().to_string()).filter(|text| !text.is_empty())
+}
+
+/// What the installer of a joining node is told of the hub's first request to it: the node's OS and limen version,
+/// or why it did not answer.
+fn hello_detail(hello: &NodeResponse) -> String {
+    if !hello.ok {
+        return hello.error.as_ref().map(failure_text).unwrap_or_default();
+    }
+    let field = |name: &str| hello.data.as_ref().and_then(|data| data.get(name)).and_then(Value::as_str);
+    format!("{}, limen {}", field("os").unwrap_or("Linux"), field("version").unwrap_or_default())
 }
 
 /// [length] characters of base32 from the kernel's random source: 5 bits each.
@@ -240,35 +269,34 @@ pub fn random(length: usize) -> Result<String> {
     const ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyz234567";
     let mut bytes = vec![0u8; length];
     let filled = rustix::rand::getrandom(&mut bytes, rustix::rand::GetRandomFlags::empty())
-        .map_err(|e| error(ErrorCode::Internal, format!("no randomness: {e}")))?;
+        .map_err(|cause| internal(format!("no randomness: {cause}")))?;
     if filled != length {
-        return Err(error(ErrorCode::Internal, "the kernel gave less randomness than asked"));
+        return Err(internal("the kernel gave less randomness than asked"));
     }
-    Ok(bytes.iter().map(|b| ALPHABET[(*b % 32) as usize] as char).collect())
+    Ok(bytes.iter().map(|byte| ALPHABET[(*byte % 32) as usize] as char).collect())
 }
 
 /// A [NodeClient] that follows limen.toml: the file is read on every call and the SSH client rebuilt when it changed,
 /// so a node that joins is there for the next request, with no restart.
 pub struct LiveHub {
     pub hub: Arc<Hub>,
-    state: Mutex<Option<(String, Arc<SshClient>)>>,
+    /// The client built from limen.toml as it read then.
+    built: Mutex<Option<(String, Arc<SshClient>)>>,
 }
 
 impl LiveHub {
     pub fn new(hub: Arc<Hub>) -> Self {
-        LiveHub { hub, state: Mutex::new(None) }
+        LiveHub { hub, built: Mutex::new(None) }
     }
 
     pub fn ssh(&self) -> Result<Arc<SshClient>> {
         let text = fs::read_following(&self.hub.config_path).unwrap_or_default();
-        let mut state = self.state.lock().unwrap();
-        if let Some((seen, client)) = state.as_ref() {
-            if *seen == text {
-                return Ok(client.clone());
-            }
+        let mut built = self.built.lock().expect("nothing panics holding the SSH client");
+        if let Some((_, client)) = built.as_ref().filter(|(built_from, _)| *built_from == text) {
+            return Ok(client.clone());
         }
         let client = Arc::new(SshClient::new(self.hub.config()?, &self.hub.home)?);
-        *state = Some((text, client.clone()));
+        *built = Some((text, client.clone()));
         Ok(client)
     }
 
@@ -285,7 +313,7 @@ impl NodeClient for LiveHub {
     fn call(&self, node: &str, request: &str, args: &Map<String, Value>, timeout: Option<Duration>) -> NodeResponse {
         match self.ssh() {
             Ok(client) => client.call(node, request, args, timeout),
-            Err(e) => NodeResponse::failure(&e),
+            Err(failure) => NodeResponse::failure(&failure),
         }
     }
 }
@@ -298,20 +326,34 @@ mod tests {
     const KEY: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIA6gEiSLgluUCGAAsH0PgwdjMmtbI2Ow7steqWQs2UQy";
 
     /// A hub in a directory of its own, removed at the end.
-    struct Temp(Hub);
+    struct TempHub(Hub);
 
-    impl Drop for Temp {
-        fn drop(&mut self) {
-            std::fs::remove_dir_all(self.0.home.rsplit_once('/').unwrap().0).ok();
+    impl TempHub {
+        fn uninitialised() -> Self {
+            let dir = std::env::temp_dir().join(format!("limen-hub-{}-{}", std::process::id(), random(8).unwrap()));
+            std::fs::create_dir_all(&dir).unwrap();
+            TempHub(Hub::new(&format!("{}/hub", dir.display())))
+        }
+
+        fn initialised() -> Self {
+            let temp = Self::uninitialised();
+            temp.init(false).unwrap();
+            temp
         }
     }
 
-    fn hub() -> Temp {
-        let dir = std::env::temp_dir().join(format!("limen-hub-{}-{}", std::process::id(), random(8).unwrap()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let h = Hub::new(&format!("{}/hub", dir.display()));
-        h.init(false).unwrap();
-        Temp(h)
+    impl std::ops::Deref for TempHub {
+        type Target = Hub;
+
+        fn deref(&self) -> &Hub {
+            &self.0
+        }
+    }
+
+    impl Drop for TempHub {
+        fn drop(&mut self) {
+            std::fs::remove_dir_all(self.home.rsplit_once('/').unwrap().0).ok();
+        }
     }
 
     struct Answering;
@@ -328,71 +370,69 @@ mod tests {
 
     #[test]
     fn init_creates_what_is_missing_only() {
-        let dir = std::env::temp_dir().join(format!("limen-init-{}", random(8).unwrap()));
-        let h = Hub::new(&format!("{}/hub", dir.display()));
-        let created = h.init(true).unwrap();
-        assert_eq!(created, [h.key_path.clone(), h.config_path.clone(), h.token_path.clone()]);
-        assert!(join::fingerprint(&h.public_key().unwrap()).unwrap().starts_with("SHA256:"));
-        assert_eq!(h.token().unwrap().len(), 32);
-        assert!(h.init(true).unwrap().is_empty());
-        assert!(h.config().unwrap().nodes.is_empty());
-        std::fs::remove_dir_all(dir).ok();
+        let hub = TempHub::uninitialised();
+        let created = hub.init(true).unwrap();
+        assert_eq!(created, [hub.key_path.clone(), hub.config_path.clone(), hub.token_path.clone()]);
+        assert!(join::fingerprint(&hub.public_key().unwrap()).unwrap().starts_with("SHA256:"));
+        assert_eq!(hub.token().unwrap().len(), 32);
+        assert!(hub.init(true).unwrap().is_empty());
+        assert!(hub.config().unwrap().nodes.is_empty());
     }
 
     #[test]
     fn an_invitation_joins_once_with_the_address_it_came_from() {
-        let t = hub();
-        let issued = t.0.invite("nas", Duration::from_secs(3600)).unwrap();
-        assert_eq!(t.0.invitation(&issued.code).unwrap().name, "nas");
+        let hub = TempHub::initialised();
+        let issued = hub.invite("nas", Duration::from_secs(3600)).unwrap();
+        assert_eq!(hub.invitation(&issued.code).unwrap().name, "nas");
         let host_key = format!("{KEY} root@nas");
         let arrival = Arrival::new(&host_key, "limen-read", 22, None).signed(&issued.secret);
-        let welcome = t.0.arrive(&issued.code, &arrival, "::ffff:10.0.0.7", &Answering).unwrap();
+        let welcome = hub.arrive(&issued.code, &arrival, "::ffff:10.0.0.7", &Answering).unwrap();
         assert!(welcome.reachable);
         assert_eq!(welcome.address, "10.0.0.7");
         assert_eq!(welcome.detail, "Debian GNU/Linux 13, limen 0.1.0");
-        let node = t.0.config().unwrap().node("nas").unwrap().clone();
+        let node = hub.config().unwrap().node("nas").unwrap().clone();
         assert_eq!(node.host, "10.0.0.7");
         assert_eq!(node.host_key, KEY);
-        assert!(t.0.invitation(&issued.code).is_none());
-        assert!(t.0.arrive(&issued.code, &arrival, "10.0.0.8", &Answering).is_err());
+        assert!(hub.invitation(&issued.code).is_none());
+        assert!(hub.arrive(&issued.code, &arrival, "10.0.0.8", &Answering).is_err());
     }
 
     #[test]
     fn an_arrival_without_the_secret_takes_nobodys_place() {
         // Whoever sees the code on the wire arrives first, with their own machine: refused, and the invitation waits.
-        let t = hub();
-        let issued = t.0.invite("nas", Duration::from_secs(3600)).unwrap();
+        let hub = TempHub::initialised();
+        let issued = hub.invite("nas", Duration::from_secs(3600)).unwrap();
         for forged in [
             Arrival::new(KEY, "limen-read", 22, None),
             Arrival::new(KEY, "limen-read", 22, None).signed(&"a".repeat(26)),
         ] {
-            assert!(t.0.arrive(&issued.code, &forged, "10.0.0.66", &Answering).is_err());
+            assert!(hub.arrive(&issued.code, &forged, "10.0.0.66", &Answering).is_err());
         }
         // Nor can a real arrival be changed on the way: the proof covers every field.
         let real = Arrival::new(KEY, "limen-read", 22, Some("10.0.0.7")).signed(&issued.secret);
         let mut moved = real.clone();
         moved.address = Some("10.0.0.66".into());
-        assert!(t.0.arrive(&issued.code, &moved, "10.0.0.66", &Answering).is_err());
-        assert!(t.0.config().unwrap().nodes.is_empty());
-        assert!(t.0.invitation(&issued.code).is_some());
-        t.0.arrive(&issued.code, &real, "10.0.0.7", &Answering).unwrap();
-        assert_eq!(t.0.config().unwrap().node("nas").unwrap().host, "10.0.0.7");
+        assert!(hub.arrive(&issued.code, &moved, "10.0.0.66", &Answering).is_err());
+        assert!(hub.config().unwrap().nodes.is_empty());
+        assert!(hub.invitation(&issued.code).is_some());
+        hub.arrive(&issued.code, &real, "10.0.0.7", &Answering).unwrap();
+        assert_eq!(hub.config().unwrap().node("nas").unwrap().host, "10.0.0.7");
     }
 
     #[test]
     fn invitations_expire_and_codes_are_checked() {
-        let t = hub();
-        let issued = t.0.invite("router", Duration::ZERO).unwrap();
+        let hub = TempHub::initialised();
+        let issued = hub.invite("router", Duration::ZERO).unwrap();
         std::thread::sleep(Duration::from_millis(1100));
-        assert!(t.0.invitation(&issued.code).is_none());
-        assert!(t.0.invitation("../../etc/passwd").is_none());
-        assert!(t.0.invite("Not A Name", Duration::from_secs(60)).is_err());
+        assert!(hub.invitation(&issued.code).is_none());
+        assert!(hub.invitation("../../etc/passwd").is_none());
+        assert!(hub.invite("Not A Name", Duration::from_secs(60)).is_err());
     }
 
     #[test]
     fn an_arrival_can_only_add_the_node_it_was_invited_as() {
-        let t = hub();
-        let before = std::fs::read_to_string(&t.0.config_path).unwrap();
+        let hub = TempHub::initialised();
+        let before = std::fs::read_to_string(&hub.config_path).unwrap();
         let injections = [
             Arrival::new(
                 KEY,
@@ -418,21 +458,21 @@ mod tests {
         ];
         for arrival in injections {
             // Signed: what is tested is the hub's check of the values, not the proof.
-            let issued = t.0.invite("nas", Duration::from_secs(60)).unwrap();
+            let issued = hub.invite("nas", Duration::from_secs(60)).unwrap();
             assert!(
-                t.0.arrive(&issued.code, &arrival.clone().signed(&issued.secret), "10.0.0.7", &Answering).is_err(),
+                hub.arrive(&issued.code, &arrival.clone().signed(&issued.secret), "10.0.0.7", &Answering).is_err(),
                 "{arrival:?}"
             );
-            assert_eq!(std::fs::read_to_string(&t.0.config_path).unwrap(), before);
+            assert_eq!(std::fs::read_to_string(&hub.config_path).unwrap(), before);
         }
     }
 
     #[test]
     fn a_short_token_is_refused() {
-        let t = hub();
-        std::fs::write(&t.0.token_path, "short\n").unwrap();
-        assert_eq!(t.0.token().unwrap_err().code, ErrorCode::BadRequest);
-        std::fs::write(&t.0.token_path, format!("{}\n", "a".repeat(MIN_TOKEN))).unwrap();
-        assert_eq!(t.0.token().unwrap(), "a".repeat(MIN_TOKEN));
+        let hub = TempHub::initialised();
+        std::fs::write(&hub.token_path, "short\n").unwrap();
+        assert_eq!(hub.token().unwrap_err().code, ErrorCode::BadRequest);
+        std::fs::write(&hub.token_path, format!("{}\n", "a".repeat(MIN_TOKEN))).unwrap();
+        assert_eq!(hub.token().unwrap(), "a".repeat(MIN_TOKEN));
     }
 }

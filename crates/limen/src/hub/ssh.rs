@@ -1,14 +1,18 @@
 //! [NodeClient] over the system `ssh` (spec §7.2, §12): batch mode, the configured key only, a `known_hosts` limen
 //! writes from the pinned host keys, and connection multiplexing so a tool call does not pay a handshake.
 
-use super::NodeClient;
+use super::{NodeClient, internal};
 use crate::os::{fs, proc, sys};
 use limen_core::config::hub::{HubConfig, NodeEntry};
-use limen_core::protocol::{ErrorCode, LimenError, NodeError, NodeRequest, NodeResponse, Result, error};
+use limen_core::join;
+use limen_core::protocol::{ErrorCode, LimenError, NodeRequest, NodeResponse, Result, error};
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
 use std::sync::{Condvar, Mutex};
 use std::time::Duration;
+
+/// What ssh may print for one of the hub's own requests.
+const MAX_OUTPUT: usize = 32 << 20;
 
 /// At most N requests at once per node.
 struct Semaphore {
@@ -17,52 +21,45 @@ struct Semaphore {
 }
 
 impl Semaphore {
-    fn new(n: usize) -> Self {
-        Semaphore { free: Mutex::new(n), freed: Condvar::new() }
+    const UNPOISONED: &str = "nothing panics holding a semaphore";
+
+    fn new(permits: usize) -> Self {
+        Semaphore { free: Mutex::new(permits), freed: Condvar::new() }
     }
 
-    fn with<T>(&self, f: impl FnOnce() -> T) -> T {
-        let mut free = self.freed.wait_while(self.free.lock().unwrap(), |n| *n == 0).unwrap();
+    /// Runs [work] once a permit is free, and frees it after.
+    fn with<T>(&self, work: impl FnOnce() -> T) -> T {
+        let lock = self.free.lock().expect(Self::UNPOISONED);
+        let mut free = self.freed.wait_while(lock, |free| *free == 0).expect(Self::UNPOISONED);
         *free -= 1;
         drop(free);
-        let out = f();
-        *self.free.lock().unwrap() += 1;
+        let result = work();
+        *self.free.lock().expect(Self::UNPOISONED) += 1;
         self.freed.notify_one();
-        out
+        result
     }
 }
 
 pub struct SshClient {
     config: HubConfig,
     ssh: String,
-    runtime: String,
+    runtime_dir: String,
     known_hosts: String,
     identity: String,
-    limits: BTreeMap<String, Semaphore>,
+    per_node_limits: BTreeMap<String, Semaphore>,
 }
 
 impl SshClient {
     pub fn new(config: HubConfig, home: &str) -> Result<SshClient> {
         let ssh = proc::which("ssh").ok_or_else(|| error(ErrorCode::Unavailable, "ssh is not installed on the hub"))?;
-        let runtime = runtime_dir(home)?;
+        let runtime_dir = runtime_dir(home)?;
         // In the hub's own directory: two hubs of one user must not check their nodes against each other's keys.
         let known_hosts = format!("{home}/known_hosts");
-        let identity = if config.identity.starts_with('/') {
-            config.identity.clone()
-        } else {
-            format!("{home}/{}", config.identity)
-        };
-        if fs::stat(&identity).map(|i| i.kind) != Some(fs::FileType::File) {
-            return Err(error(
-                ErrorCode::Unavailable,
-                format!("no SSH key at {identity} ([ssh].identity in {home}/limen.toml)"),
-            ));
-        }
-        fs::write_atomic(&known_hosts, known_hosts_text(&config.nodes).as_bytes(), 0o600)
-            .map_err(|e| error(ErrorCode::Internal, e))?;
-        let limits =
-            config.nodes.iter().map(|n| (n.name.clone(), Semaphore::new(config.per_node_concurrency))).collect();
-        Ok(SshClient { config, ssh, runtime, known_hosts, identity, limits })
+        let identity = identity_file(&config, home)?;
+        fs::write_atomic(&known_hosts, known_hosts_text(&config.nodes).as_bytes(), 0o600).map_err(internal)?;
+        let per_node_limits =
+            config.nodes.iter().map(|node| (node.name.clone(), Semaphore::new(config.per_node_concurrency))).collect();
+        Ok(SshClient { config, ssh, runtime_dir, known_hosts, identity, per_node_limits })
     }
 
     pub fn config(&self) -> &HubConfig {
@@ -78,27 +75,33 @@ impl SshClient {
         key: Option<&str>,
         line: &str,
         timeout: Duration,
-        on_chunk: &mut dyn FnMut(i32, &[u8]),
+        on_chunk: proc::OnChunk<'_>,
     ) -> Result<proc::ProcResult> {
-        let entry =
-            self.config.node(node).ok_or_else(|| error(ErrorCode::BadRequest, format!("no node named '{node}'")))?;
+        let entry = self.config.node(node).ok_or_else(|| no_node(node))?;
         // Never through the multiplexed connection: on OpenWrt both roles log in as root, and a deploy request would
         // ride the socket the read key opened, landing in the read role.
         let argv = self.argv(entry, user, key.unwrap_or(&self.identity), false);
-        proc::run(
-            &argv,
-            proc::Run {
-                env: env(true),
-                stdin: Some(line.as_bytes().to_vec()),
-                timeout,
-                on_chunk: Some(on_chunk),
-                ..Default::default()
-            },
-        )
-        .map_err(|e| error(ErrorCode::Internal, e))
+        let run = proc::Run {
+            env: ssh_env(true),
+            stdin: Some(line.as_bytes().to_vec()),
+            timeout,
+            on_chunk: Some(on_chunk),
+            ..Default::default()
+        };
+        proc::run(&argv, run).map_err(internal)
     }
 
     fn argv(&self, entry: &NodeEntry, user: &str, key: &str, multiplex: bool) -> Vec<String> {
+        // `-F none`: the operator's ~/.ssh/config, with its ProxyCommand or ForwardAgent, doesn't apply to the hub.
+        let mut argv = vec![self.ssh.clone(), "-F".into(), "none".into(), "-T".into(), "-i".into(), key.into()];
+        for option in self.options(entry, multiplex) {
+            argv.extend(["-o".into(), option]);
+        }
+        argv.extend(["-p".into(), entry.port.to_string(), "-l".into(), user.into(), "--".into(), entry.host.clone()]);
+        argv
+    }
+
+    fn options(&self, entry: &NodeEntry, multiplex: bool) -> Vec<String> {
         let mut options = vec![
             // Nothing forwarded to a node, which may be hostile: not the operator's agent, not a port.
             "ForwardAgent=no".to_string(),
@@ -117,103 +120,111 @@ impl SshClient {
         if multiplex {
             options.extend([
                 "ControlMaster=auto".into(),
-                format!("ControlPath={}/cm-%C", self.runtime),
+                format!("ControlPath={}/cm-%C", self.runtime_dir),
                 "ControlPersist=60".into(),
             ]);
         } else {
             options.extend(["ControlMaster=no".into(), "ControlPath=none".into()]);
         }
-        // `-F none`: the operator's ~/.ssh/config, with its ProxyCommand or ForwardAgent, doesn't apply to the hub.
-        let mut argv = vec![self.ssh.clone(), "-F".into(), "none".into(), "-T".into(), "-i".into(), key.into()];
-        for o in options {
-            argv.extend(["-o".into(), o]);
-        }
-        argv.extend(["-p".into(), entry.port.to_string(), "-l".into(), user.into(), "--".into(), entry.host.clone()]);
-        argv
-    }
-
-    fn response(&self, node: &str, r: &proc::ProcResult, limit: Duration) -> NodeResponse {
-        if r.timed_out {
-            return failure(ErrorCode::Timeout, format!("{node} did not answer in {}s", limit.as_secs()));
-        }
-        let out = r.out();
-        let out = out.trim();
-        if r.exit_code == 255 || (out.is_empty() && r.exit_code != 0) {
-            let err = r.err();
-            let err = err.trim();
-            if err.contains("Host key verification failed") || err.contains("REMOTE HOST IDENTIFICATION HAS CHANGED") {
-                return failure(
-                    ErrorCode::HostKeyMismatch,
-                    format!("{node}'s host key does not match host_key in limen.toml"),
-                );
-            }
-            let last = err
-                .lines()
-                .last()
-                .filter(|l| !l.is_empty())
-                .map(String::from)
-                .unwrap_or(format!("ssh exit {}", r.exit_code));
-            return failure(ErrorCode::Unreachable, format!("{node}: {last}"));
-        }
-        serde_json::from_str(out.lines().last().unwrap_or("")).unwrap_or_else(|_| {
-            let seen: String = format!("{out}{}", r.err()).chars().take(300).collect();
-            failure(ErrorCode::Internal, format!("{node} answered something that is not limen's protocol: {seen}"))
-        })
+        options
     }
 }
 
 impl NodeClient for SshClient {
     fn nodes(&self) -> Result<Vec<String>> {
-        Ok(self.config.nodes.iter().map(|n| n.name.clone()).collect())
+        Ok(self.config.nodes.iter().map(|node| node.name.clone()).collect())
     }
 
     fn call(&self, node: &str, request: &str, args: &Map<String, Value>, timeout: Option<Duration>) -> NodeResponse {
-        let (Some(entry), Some(limit)) = (self.config.node(node), self.limits.get(node)) else {
-            return NodeResponse::failure(&error(ErrorCode::BadRequest, format!("no node named '{node}'")));
+        let (Some(entry), Some(limit)) = (self.config.node(node), self.per_node_limits.get(node)) else {
+            return NodeResponse::failure(&no_node(node));
         };
-        let request = NodeRequest { v: 1, request: request.into(), args: args.clone() };
-        let line = format!("{}\n", serde_json::to_string(&request).expect("a request serializes"));
         let timeout = timeout.unwrap_or(self.config.request_timeout);
         let argv = self.argv(entry, &entry.user, &self.identity, true);
-        let result = limit.with(|| {
-            proc::run(
-                &argv,
-                proc::Run {
-                    env: env(false),
-                    stdin: Some(line.into_bytes()),
-                    timeout,
-                    max_output: 32 << 20,
-                    ..Default::default()
-                },
-            )
-        });
-        match result {
-            Ok(r) => self.response(node, &r, timeout),
-            Err(e) => NodeResponse::failure(&LimenError::new(ErrorCode::Internal, e)),
+        let run = proc::Run {
+            env: ssh_env(false),
+            stdin: Some(request_line(request, args).into_bytes()),
+            timeout,
+            max_output: MAX_OUTPUT,
+            ..Default::default()
+        };
+        match limit.with(|| proc::run(&argv, run)) {
+            Ok(result) => node_response(node, &result, timeout),
+            Err(cause) => NodeResponse::failure(&internal(cause)),
         }
     }
 }
 
-fn failure(code: ErrorCode, message: String) -> NodeResponse {
-    NodeResponse {
-        ok: false,
-        data: None,
-        truncated: false,
-        error: Some(NodeError { code: code.wire().into(), message, versions: None }),
+/// A request as the gate reads it: one line of JSON on stdin.
+pub fn request_line(request: &str, args: &Map<String, Value>) -> String {
+    let request = NodeRequest { v: 1, request: request.into(), args: args.clone() };
+    format!("{}\n", serde_json::to_string(&request).expect("a request serializes"))
+}
+
+fn no_node(node: &str) -> LimenError {
+    error(ErrorCode::BadRequest, format!("no node named '{node}'"))
+}
+
+/// What ssh's run of a request means: the node's answer, the last line it printed, or why there was none.
+fn node_response(node: &str, result: &proc::ProcResult, timeout: Duration) -> NodeResponse {
+    if result.timed_out {
+        return failure(ErrorCode::Timeout, format!("{node} did not answer in {}s", timeout.as_secs()));
     }
+    let stdout = result.out();
+    let stdout = stdout.trim();
+    // 255 is ssh's own error; nothing printed and a failure is a node that never got to answer.
+    if result.exit_code == 255 || (stdout.is_empty() && result.exit_code != 0) {
+        return connection_failure(node, result);
+    }
+    serde_json::from_str(stdout.lines().last().unwrap_or("")).unwrap_or_else(|_| {
+        let seen: String = format!("{stdout}{}", result.err()).chars().take(300).collect();
+        failure(ErrorCode::Internal, format!("{node} answered something that is not limen's protocol: {seen}"))
+    })
+}
+
+/// Why ssh did not get a request to the node: a host key that doesn't match, or ssh's last word.
+fn connection_failure(node: &str, result: &proc::ProcResult) -> NodeResponse {
+    let stderr = result.err();
+    let stderr = stderr.trim();
+    if stderr.contains("Host key verification failed") || stderr.contains("REMOTE HOST IDENTIFICATION HAS CHANGED") {
+        return failure(ErrorCode::HostKeyMismatch, format!("{node}'s host key does not match host_key in limen.toml"));
+    }
+    let last_line = stderr
+        .lines()
+        .last()
+        .filter(|line| !line.is_empty())
+        .map_or_else(|| format!("ssh exit {}", result.exit_code), String::from);
+    failure(ErrorCode::Unreachable, format!("{node}: {last_line}"))
+}
+
+fn failure(code: ErrorCode, message: String) -> NodeResponse {
+    NodeResponse::failure(&error(code, message))
 }
 
 /// ssh's environment: what it needs to run, and the agent only for a person's deploy request, whose key may live
 /// there; never for the hub's own calls.
-fn env(agent: bool) -> Vec<String> {
+fn ssh_env(with_agent: bool) -> Vec<String> {
     let mut env = vec!["PATH=/usr/local/bin:/usr/bin:/bin".to_string(), "LANG=C.UTF-8".to_string()];
-    let names: &[&str] = if agent { &["HOME", "USER", "SSH_AUTH_SOCK"] } else { &["HOME", "USER"] };
+    let names: &[&str] = if with_agent { &["HOME", "USER", "SSH_AUTH_SOCK"] } else { &["HOME", "USER"] };
     for name in names {
-        if let Some(v) = sys::env(name) {
-            env.push(format!("{name}={v}"));
+        if let Some(value) = sys::env(name) {
+            env.push(format!("{name}={value}"));
         }
     }
     env
+}
+
+/// `[ssh].identity`, under the hub's directory unless absolute; an error when there is no key there.
+fn identity_file(config: &HubConfig, home: &str) -> Result<String> {
+    let identity =
+        if config.identity.starts_with('/') { config.identity.clone() } else { format!("{home}/{}", config.identity) };
+    if fs::stat(&identity).map(|info| info.kind) != Some(fs::FileType::File) {
+        return Err(error(
+            ErrorCode::Unavailable,
+            format!("no SSH key at {identity} ([ssh].identity in {home}/limen.toml)"),
+        ));
+    }
+    Ok(identity)
 }
 
 /// The name a node's key is filed under (`HostKeyAlias`): its limen name, whatever address it has today.
@@ -222,7 +233,7 @@ pub fn alias(entry: &NodeEntry) -> String {
 }
 
 pub fn known_hosts_text(nodes: &[NodeEntry]) -> String {
-    nodes.iter().map(|n| format!("{} {}\n", alias(n), n.host_key)).collect()
+    nodes.iter().map(|entry| format!("{} {}\n", alias(entry), entry.host_key)).collect()
 }
 
 /// `$XDG_RUNTIME_DIR/limen-<uid>/<hub>`, or under `/tmp` when that is too long, for the control sockets: a Unix
@@ -230,22 +241,26 @@ pub fn known_hosts_text(nodes: &[NodeEntry]) -> String {
 /// if someone else owns it, and one per hub directory, so two hubs never share a connection.
 fn runtime_dir(home: &str) -> Result<String> {
     const MAX_DIR: usize = 107 - 4 - 40 - 17;
-    let hub = &limen_core::join::hex(&limen_core::join::sha256(home.as_bytes()))[..8];
-    let user_dir = |base: &str| format!("{base}/limen-{}", sys::euid());
+    let hub_id = &join::hex(&join::sha256(home.as_bytes()))[..8];
+    let user_dir_under = |base: &str| format!("{base}/limen-{}", sys::euid());
     let user_dir = sys::env("XDG_RUNTIME_DIR")
-        .filter(|b| b.starts_with('/'))
-        .map(|b| user_dir(&b))
-        .filter(|d| d.len() + 1 + hub.len() <= MAX_DIR)
-        .unwrap_or_else(|| user_dir("/tmp"));
-    let dir = format!("{user_dir}/{hub}");
-    fs::mkdirs(&dir, 0o700).map_err(|e| error(ErrorCode::Internal, e))?;
-    for d in [&user_dir, &dir] {
-        match fs::lstat(d) {
-            Some(i) if i.kind == fs::FileType::Directory && i.uid == sys::euid() && i.mode & 0o077 == 0 => {}
-            _ => {
-                return Err(error(ErrorCode::Internal, format!("{d} must be a directory of this user with mode 0700")));
-            }
-        }
+        .filter(|base| base.starts_with('/'))
+        .map(|base| user_dir_under(&base))
+        .filter(|user_dir| user_dir.len() + 1 + hub_id.len() <= MAX_DIR)
+        .unwrap_or_else(|| user_dir_under("/tmp"));
+    let dir = format!("{user_dir}/{hub_id}");
+    fs::mkdirs(&dir, 0o700).map_err(internal)?;
+    for path in [&user_dir, &dir] {
+        require_private_dir(path)?;
     }
     Ok(dir)
+}
+
+fn require_private_dir(path: &str) -> Result<()> {
+    match fs::lstat(path) {
+        Some(info) if info.kind == fs::FileType::Directory && info.uid == sys::euid() && info.mode & 0o077 == 0 => {
+            Ok(())
+        }
+        _ => Err(internal(format!("{path} must be a directory of this user with mode 0700"))),
+    }
 }

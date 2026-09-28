@@ -2,7 +2,7 @@
 //! `..` gone— because matching the text the client sent would let a link walk out of the allowlist.
 
 use crate::glob::Glob;
-use std::sync::OnceLock;
+use std::sync::LazyLock;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Decision {
@@ -22,29 +22,23 @@ pub struct PathPolicy {
 impl PathPolicy {
     /// The patterns were checked when the configuration was read; one that isn't absolute matches nothing.
     pub fn new(allow: &[String], deny: &[String]) -> Self {
-        let globs = |list: &[String]| list.iter().filter_map(|p| Glob::new(p).ok()).collect();
+        let globs = |patterns: &[String]| patterns.iter().filter_map(|pattern| Glob::new(pattern).ok()).collect();
         Self { allow: globs(allow), deny: globs(deny), private: vec![] }
     }
 
     pub fn with_private(mut self, paths: Vec<String>) -> Self {
-        self.private = paths.into_iter().map(|p| normalize(&p)).collect();
+        self.private = paths.into_iter().map(|path| normalize(&path)).collect();
         self
     }
 
-    fn is_private(&self, resolved: &str) -> bool {
-        self.private
-            .iter()
-            .any(|p| resolved == p || resolved.strip_prefix(p.as_str()).is_some_and(|r| r.starts_with('/')))
-    }
-
     pub fn check(&self, resolved: &str) -> Decision {
-        if built_in_deny().iter().any(|g| g.matches(resolved)) || self.is_private(resolved) {
+        if self.is_never_readable(resolved) {
             return Decision::Denied(format!("{resolved} is never readable"));
         }
-        if let Some(g) = self.deny.iter().find(|g| g.matches(resolved)) {
-            return Decision::Denied(format!("{resolved} is denied by files.deny ({g})"));
+        if let Some(glob) = self.denied_by(resolved) {
+            return Decision::Denied(format!("{resolved} is denied by files.deny ({glob})"));
         }
-        if !self.allow.iter().any(|g| g.matches(resolved)) {
+        if !self.allow.iter().any(|glob| glob.matches(resolved)) {
             return Decision::Denied(format!("{resolved} is not in files.allow"));
         }
         Decision::Allowed
@@ -56,34 +50,46 @@ impl PathPolicy {
 
     /// A directory that is not allowed itself but on the way to something that is: listable, to find it.
     pub fn leads_to(&self, dir: &str) -> bool {
-        !built_in_deny().iter().any(|g| g.matches(dir))
-            && !self.is_private(dir)
-            && !self.deny.iter().any(|g| g.matches(dir))
-            && self.allow.iter().any(|g| g.may_match_below(dir))
+        !self.is_never_readable(dir)
+            && self.denied_by(dir).is_none()
+            && self.allow.iter().any(|glob| glob.may_match_below(dir))
     }
+
+    /// Whatever the configuration allows: the built-in denylist and limen's own files.
+    fn is_never_readable(&self, resolved: &str) -> bool {
+        built_in_deny().iter().any(|glob| glob.matches(resolved))
+            || self.private.iter().any(|private| is_at_or_below(resolved, private))
+    }
+
+    fn denied_by(&self, resolved: &str) -> Option<&Glob> {
+        self.deny.iter().find(|glob| glob.matches(resolved))
+    }
+}
+
+fn is_at_or_below(path: &str, dir: &str) -> bool {
+    path == dir || path.strip_prefix(dir).is_some_and(|below| below.starts_with('/'))
 }
 
 /// An absolute path with `.` and `..` resolved as text, for a path that doesn't exist and so has no realpath.
 pub fn normalize(path: &str) -> String {
-    let mut out: Vec<&str> = Vec::new();
+    let mut segments: Vec<&str> = Vec::new();
     for segment in path.split('/') {
         match segment {
             "" | "." => {}
             ".." => {
-                out.pop();
+                segments.pop();
             }
-            s => out.push(s),
+            name => segments.push(name),
         }
     }
-    format!("/{}", out.join("/"))
+    format!("/{}", segments.join("/"))
 }
 
 /// Can't be overridden by any configuration (spec §7.1): account and sudo secrets and their backups, private keys,
 /// VPN and Wi-Fi credentials, systemd's service credentials, limen's own directories, root's home, and the
 /// pseudo-filesystems, where a "file" can be a process's environment or a whole disk.
 pub fn built_in_deny() -> &'static [Glob] {
-    static DENY: OnceLock<Vec<Glob>> = OnceLock::new();
-    DENY.get_or_init(|| {
+    static DENY: LazyLock<Vec<Glob>> = LazyLock::new(|| {
         [
             "/etc/shadow",
             "/etc/shadow-",
@@ -108,9 +114,10 @@ pub fn built_in_deny() -> &'static [Glob] {
             "/dev/**",
         ]
         .iter()
-        .map(|p| Glob::new(p).unwrap())
+        .map(|pattern| Glob::new(pattern).expect("every built-in pattern is absolute"))
         .collect()
-    })
+    });
+    &DENY
 }
 
 #[cfg(test)]
@@ -118,16 +125,16 @@ mod tests {
     use super::*;
 
     fn policy(allow: &[&str], deny: &[&str]) -> PathPolicy {
-        let s = |l: &[&str]| l.iter().map(|x| x.to_string()).collect::<Vec<_>>();
-        PathPolicy::new(&s(allow), &s(deny))
+        let owned = |patterns: &[&str]| patterns.iter().map(ToString::to_string).collect::<Vec<_>>();
+        PathPolicy::new(&owned(allow), &owned(deny))
     }
 
     #[test]
     fn allow_deny_and_built_in() {
-        let p = policy(&["/etc/**", "/opt/**"], &["**/*.env"]);
-        assert_eq!(p.check("/etc/nginx/nginx.conf"), Decision::Allowed);
-        assert!(!p.allowed("/opt/app/.env"));
-        assert!(!p.allowed("/srv/data"));
+        let etc_and_opt = policy(&["/etc/**", "/opt/**"], &["**/*.env"]);
+        assert_eq!(etc_and_opt.check("/etc/nginx/nginx.conf"), Decision::Allowed);
+        assert!(!etc_and_opt.allowed("/opt/app/.env"));
+        assert!(!etc_and_opt.allowed("/srv/data"));
         for secret in [
             "/etc/shadow",
             "/etc/sudoers",
@@ -145,7 +152,7 @@ mod tests {
             "/var/backups/shadow.bak",
             "/var/log/limen/audit.jsonl",
         ] {
-            assert!(!p.allowed(secret), "{secret}");
+            assert!(!etc_and_opt.allowed(secret), "{secret}");
         }
         let everything = policy(&["/**"], &[]);
         assert!(!everything.allowed("/proc/1/environ"));
@@ -156,26 +163,26 @@ mod tests {
 
     #[test]
     fn limens_own_files_wherever_they_are() {
-        let p =
+        let srv =
             policy(&["/srv/**"], &[]).with_private(vec!["/srv/limen/audit.jsonl".into(), "/srv/limen/runs/".into()]);
-        assert!(!p.allowed("/srv/limen/audit.jsonl"));
-        assert!(!p.allowed("/srv/limen/runs/x.log"));
-        assert!(!p.leads_to("/srv/limen/runs"));
-        assert!(p.allowed("/srv/limen/audit.jsonl.old") && p.allowed("/srv/limen/runs2"));
+        assert!(!srv.allowed("/srv/limen/audit.jsonl"));
+        assert!(!srv.allowed("/srv/limen/runs/x.log"));
+        assert!(!srv.leads_to("/srv/limen/runs"));
+        assert!(srv.allowed("/srv/limen/audit.jsonl.old") && srv.allowed("/srv/limen/runs2"));
     }
 
     #[test]
     fn empty_allowlist_allows_nothing() {
-        let p = policy(&[], &[]);
-        assert!(!p.allowed("/etc/hostname"));
-        assert!(!p.leads_to("/etc"));
+        let nothing = policy(&[], &[]);
+        assert!(!nothing.allowed("/etc/hostname"));
+        assert!(!nothing.leads_to("/etc"));
     }
 
     #[test]
     fn leads_to_stops_at_denied_directories() {
-        let p = policy(&["/etc/**"], &[]);
-        assert!(p.leads_to("/"));
-        assert!(!p.leads_to("/etc/ssl/private"));
+        let etc = policy(&["/etc/**"], &[]);
+        assert!(etc.leads_to("/"));
+        assert!(!etc.leads_to("/etc/ssl/private"));
     }
 
     #[test]

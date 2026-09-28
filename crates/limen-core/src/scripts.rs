@@ -63,15 +63,23 @@ pub struct Catalog {
     pub problems: Vec<String>,
 }
 
+static SCRIPT_NAME_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(SCRIPT_NAME).expect("SCRIPT_NAME is a valid regex"));
+
+/// A setup script runs in the order of its numeric prefix (spec §6).
+static SETUP_NAME_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new("^[0-9]{1,4}-.+$").expect("a setup script's name pattern is a valid regex"));
+
+static PARAM_NAME_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(PARAM_NAME).expect("PARAM_NAME is a valid regex"));
+
 /// The script name of a file: its name without the extension, or None when that is not a script's name.
 pub fn name_of(file: &str, kind: ScriptKind) -> Option<String> {
     if file.starts_with('.') {
         return None;
     }
-    static NAME: LazyLock<Regex> = LazyLock::new(|| Regex::new(SCRIPT_NAME).unwrap());
-    static SETUP: LazyLock<Regex> = LazyLock::new(|| Regex::new("^[0-9]{1,4}-.+$").unwrap());
-    let base = file.rsplit_once('.').map_or(file, |(b, _)| b);
-    if !NAME.is_match(base) || (kind == ScriptKind::Setup && !SETUP.is_match(base)) {
+    let base = file.rsplit_once('.').map_or(file, |(base, _extension)| base);
+    if !SCRIPT_NAME_REGEX.is_match(base) || (kind == ScriptKind::Setup && !SETUP_NAME_REGEX.is_match(base)) {
         return None;
     }
     Some(base.into())
@@ -79,22 +87,14 @@ pub fn name_of(file: &str, kind: ScriptKind) -> Option<String> {
 
 /// The `#:` lines of the leading comment block, without the marker: a TOML document.
 pub fn extract(text: &str) -> Option<String> {
-    let mut out = String::new();
-    let mut found = false;
-    for (i, line) in text.lines().enumerate() {
-        if i == 0 && line.starts_with("#!") {
-            continue;
-        }
-        if !line.starts_with('#') {
-            break;
-        }
-        if let Some(rest) = line.strip_prefix("#:") {
-            found = true;
-            out.push_str(rest.strip_prefix(' ').unwrap_or(rest));
-            out.push('\n');
-        }
-    }
-    found.then_some(out)
+    let mut lines = text.lines().peekable();
+    lines.next_if(|line| line.starts_with("#!"));
+    let header: Vec<&str> = lines
+        .take_while(|line| line.starts_with('#'))
+        .filter_map(|line| line.strip_prefix("#:"))
+        .map(|content| content.strip_prefix(' ').unwrap_or(content))
+        .collect();
+    (!header.is_empty()).then(|| header.iter().map(|line| format!("{line}\n")).collect())
 }
 
 /// The header as written; [ScriptSpec] is what it means.
@@ -122,73 +122,99 @@ struct Arg {
 }
 
 pub fn parse(name: &str, kind: ScriptKind, text: &str) -> Result<ScriptSpec, String> {
-    let header = extract(text).ok_or_else(|| format!("{name}: no `#:` header"))?;
-    let h: Header = config::from_str(&header).map_err(|e| format!("{name}: header: {e}"))?;
-    let description = h.description.ok_or(format!("{name}: the header has no description"))?;
-    let timeout = match h.timeout {
-        Some(t) => durations::parse(&t).ok_or(format!("{name}: timeout '{t}' is not a duration like 30s or 5m"))?,
+    let header_text = extract(text).ok_or_else(|| format!("{name}: no `#:` header"))?;
+    let header: Header = config::from_str(&header_text).map_err(|error| format!("{name}: header: {error}"))?;
+    let description = header.description.ok_or(format!("{name}: the header has no description"))?;
+    let timeout = match header.timeout {
+        Some(timeout) => {
+            durations::parse(&timeout).ok_or(format!("{name}: timeout '{timeout}' is not a duration like 30s or 5m"))?
+        }
         None => kind.default_timeout(),
     };
-    let params = h.args.into_iter().map(|(arg_name, arg)| param(name, &arg_name, arg)).collect::<Result<_, _>>()?;
+    let params =
+        header.args.into_iter().map(|(arg_name, arg)| param(name, &arg_name, arg)).collect::<Result<_, _>>()?;
     Ok(ScriptSpec { name: name.into(), kind, description, timeout_seconds: timeout.as_secs().max(1), params })
 }
 
 fn param(script: &str, name: &str, arg: Arg) -> Result<Param, String> {
-    static NAME: LazyLock<Regex> = LazyLock::new(|| Regex::new(PARAM_NAME).unwrap());
-    let fail = |why: &str| Err(format!("{script}: argument '{name}': {why}"));
-    if !NAME.is_match(name) {
+    if !PARAM_NAME_REGEX.is_match(name) {
         return Err(format!("{script}: argument name '{name}' must match {PARAM_NAME}"));
     }
-    let kind = match arg.kind.as_deref() {
-        Some("int") => ParamType::Int,
-        Some("bool") => ParamType::Bool,
-        Some("enum") => ParamType::Enum,
-        Some("string") => ParamType::String,
-        None => return fail("has no type"),
-        Some(t) => return fail(&format!("has type '{t}'; it is int, bool, enum or string")),
-    };
-    // Each key belongs to one type: `range` on a string is a mistake to say, not to ignore.
-    for (key, given, belongs) in [
-        ("range", arg.range.is_some(), ParamType::Int),
-        ("values", arg.values.is_some(), ParamType::Enum),
-        ("pattern", arg.pattern.is_some(), ParamType::String),
-    ] {
-        if given && kind != belongs {
-            return fail(&format!("{key} does not apply to this type"));
+    arg.into_param(name).map_err(|why| format!("{script}: argument '{name}': {why}"))
+}
+
+impl Arg {
+    /// What the argument means, or what is wrong with it.
+    fn into_param(self, name: &str) -> Result<Param, String> {
+        let kind = self.param_type()?;
+        self.check_keys_belong_to(kind)?;
+        let bounds = self.bounds()?;
+        if kind == ParamType::Enum && self.values.as_ref().is_none_or(Vec::is_empty) {
+            return Err("is an enum without values".into());
+        }
+        let pattern =
+            (kind == ParamType::String).then(|| self.pattern.unwrap_or_else(|| DEFAULT_STRING_PATTERN.into()));
+        if pattern.as_deref().is_some_and(|pattern| params::full_match(pattern).is_err()) {
+            return Err("bad pattern".into());
+        }
+        if self.default.as_ref().is_some_and(|default| !fits_a_type(default)) {
+            return Err("default must be a string, integer or boolean".into());
+        }
+        let param = Param {
+            name: name.into(),
+            kind,
+            description: self.description,
+            required: self.required.unwrap_or(self.default.is_none()),
+            default: self.default,
+            min: bounds.map(|(min, _)| min),
+            max: bounds.map(|(_, max)| max),
+            values: self.values,
+            pattern,
+        };
+        if let Some(default) = &param.default {
+            param.check(default).map_err(|error| format!("the default does not fit ({error})"))?;
+        }
+        Ok(param)
+    }
+
+    fn param_type(&self) -> Result<ParamType, String> {
+        match self.kind.as_deref() {
+            Some("int") => Ok(ParamType::Int),
+            Some("bool") => Ok(ParamType::Bool),
+            Some("enum") => Ok(ParamType::Enum),
+            Some("string") => Ok(ParamType::String),
+            None => Err("has no type".into()),
+            Some(other) => Err(format!("has type '{other}'; it is int, bool, enum or string")),
         }
     }
-    let range = match arg.range.as_deref() {
-        None => None,
-        Some([min, max]) if min <= max => Some((*min, *max)),
-        Some(_) => return fail("range is [min, max]"),
-    };
-    if kind == ParamType::Enum && arg.values.as_ref().is_none_or(Vec::is_empty) {
-        return fail("is an enum without values");
+
+    /// Each key belongs to one type: `range` on a string is a mistake to say, not to ignore.
+    fn check_keys_belong_to(&self, kind: ParamType) -> Result<(), String> {
+        for (key, given, belongs_to) in [
+            ("range", self.range.is_some(), ParamType::Int),
+            ("values", self.values.is_some(), ParamType::Enum),
+            ("pattern", self.pattern.is_some(), ParamType::String),
+        ] {
+            if given && kind != belongs_to {
+                return Err(format!("{key} does not apply to this type"));
+            }
+        }
+        Ok(())
     }
-    let pattern = (kind == ParamType::String).then(|| arg.pattern.unwrap_or_else(|| DEFAULT_STRING_PATTERN.into()));
-    if pattern.as_deref().is_some_and(|p| params::full_match(p).is_err()) {
-        return fail("bad pattern");
-    }
-    if arg.default.as_ref().is_some_and(|d| !(d.is_string() || d.is_i64() || d.is_boolean())) {
-        return fail("default must be a string, integer or boolean");
-    }
-    let param = Param {
-        name: name.into(),
-        kind,
-        description: arg.description,
-        required: arg.required.unwrap_or(arg.default.is_none()),
-        default: arg.default,
-        min: range.map(|r| r.0),
-        max: range.map(|r| r.1),
-        values: arg.values,
-        pattern,
-    };
-    if let Some(d) = &param.default {
-        if let Err(e) = param.check(d) {
-            return fail(&format!("the default does not fit ({e})"));
+
+    /// `range = [min, max]` as the pair it is.
+    fn bounds(&self) -> Result<Option<(i64, i64)>, String> {
+        match self.range.as_deref() {
+            None => Ok(None),
+            Some([min, max]) if min <= max => Ok(Some((*min, *max))),
+            Some(_) => Err("range is [min, max]".into()),
         }
     }
-    Ok(param)
+}
+
+/// Whether a header's `default` can be the value of some argument type: TOML's floats, dates, arrays and tables can't.
+fn fits_a_type(value: &Value) -> bool {
+    value.is_string() || value.is_i64() || value.is_boolean()
 }
 
 /// `threshold` → `LIMEN_ARG_THRESHOLD`: how an argument reaches the script.
@@ -220,11 +246,11 @@ set -euo pipefail
         let spec = parse("backup-space", ScriptKind::Check, SCRIPT).unwrap();
         assert_eq!(spec.description, "Free space on the backup volume");
         assert_eq!(spec.timeout_seconds, 30);
-        let threshold = spec.params.iter().find(|p| p.name == "threshold").unwrap();
+        let threshold = spec.params.iter().find(|param| param.name == "threshold").unwrap();
         assert_eq!(threshold.default, Some(json!(90)));
         assert_eq!(threshold.min, Some(1));
         assert!(!threshold.required);
-        let mount = spec.params.iter().find(|p| p.name == "mount").unwrap();
+        let mount = spec.params.iter().find(|param| param.name == "mount").unwrap();
         assert!(mount.required);
     }
 
@@ -249,8 +275,8 @@ set -euo pipefail
             ("#: description = \"x\"\n#: [args.n]\n#: type = \"int\"\n#: default = \"x\"", "the default does not fit"),
             ("#: description = \"x\"\n#: [args.Bad]\n#: type = \"int\"", "argument name 'Bad'"),
         ] {
-            let e = parse("s", ScriptKind::Check, text).unwrap_err();
-            assert!(e.contains(expected), "{e} should contain {expected}");
+            let error = parse("s", ScriptKind::Check, text).unwrap_err();
+            assert!(error.contains(expected), "{error} should contain {expected}");
         }
     }
 

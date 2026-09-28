@@ -52,8 +52,8 @@ impl LimenError {
 }
 
 impl fmt::Display for LimenError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.message)
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.message)
     }
 }
 
@@ -72,6 +72,7 @@ pub fn error(code: ErrorCode, message: impl Into<String>) -> LimenError {
 /// One request. Strict: a field nobody reads is an error, not a silent no-op.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[allow(clippy::min_ident_chars, reason = "`v`, the protocol version, is the field's name on the wire (spec §4)")]
 pub struct NodeRequest {
     pub v: i64,
     pub request: String,
@@ -104,15 +105,15 @@ impl NodeResponse {
         Self { ok: true, data: Some(data), truncated, error: None }
     }
 
-    pub fn failure(e: &LimenError) -> Self {
+    pub fn failure(cause: &LimenError) -> Self {
         Self {
             ok: false,
             data: None,
             truncated: false,
             error: Some(NodeError {
-                code: e.code.wire().into(),
-                message: e.message.clone(),
-                versions: e.versions.clone(),
+                code: cause.code.wire().into(),
+                message: cause.message.clone(),
+                versions: cause.versions.clone(),
             }),
         }
     }

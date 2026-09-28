@@ -11,15 +11,16 @@ pub fn token_url(owner: &str, repo: &str, host: &str) -> String {
         ("expires_in", "none".into()),
         ("contents", "read".into()),
     ];
-    let query: Vec<String> = params.iter().map(|(k, v)| format!("{k}={}", encode(v))).collect();
+    let query: Vec<String> = params.iter().map(|(key, value)| format!("{key}={}", encode(value))).collect();
     format!("https://github.com/settings/personal-access-tokens/new?{}", query.join("&"))
 }
 
-fn encode(s: &str) -> String {
-    s.bytes()
-        .map(|b| match b {
-            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => (b as char).to_string(),
-            _ => format!("%{b:02X}"),
+/// [text] percent-encoded: every byte but URLs' unreserved characters.
+fn encode(text: &str) -> String {
+    text.bytes()
+        .map(|byte| match byte {
+            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => char::from(byte).to_string(),
+            _ => format!("%{byte:02X}"),
         })
         .collect()
 }

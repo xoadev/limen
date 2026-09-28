@@ -17,8 +17,8 @@ const OWNER_EXECUTE: u32 = 0o100;
 
 /// [chain] is the script first, then each parent up to `/`. None when trusted, otherwise the reason.
 pub fn problem(chain: &[FileStat], owner: u32) -> Option<String> {
-    if let Some(file) = chain.first().filter(|f| f.is_regular && f.mode & OWNER_EXECUTE == 0) {
-        return Some(format!("{} is not executable", file.path));
+    if let Some(script) = chain.first().filter(|script| script.is_regular && script.mode & OWNER_EXECUTE == 0) {
+        return Some(format!("{} is not executable", script.path));
     }
     untrusted(chain, owner)
 }
@@ -32,14 +32,17 @@ pub fn untrusted(chain: &[FileStat], owner: u32) -> Option<String> {
     if !file.is_regular {
         return Some(format!("{} is not a regular file", file.path));
     }
-    for entry in chain {
-        if entry.uid != 0 && entry.uid != owner {
-            let who = if owner == 0 { "root".to_string() } else { format!("root or uid {owner}") };
-            return Some(format!("{} is not owned by {who}", entry.path));
-        }
-        if entry.mode & GROUP_OR_OTHER_WRITE != 0 {
-            return Some(format!("{} is writable by group or others", entry.path));
-        }
+    chain.iter().find_map(|entry| entry_problem(entry, owner))
+}
+
+/// What is wrong with one file or directory of the chain, if anything.
+fn entry_problem(entry: &FileStat, owner: u32) -> Option<String> {
+    if entry.uid != 0 && entry.uid != owner {
+        let trusted_owners = if owner == 0 { "root".to_string() } else { format!("root or uid {owner}") };
+        return Some(format!("{} is not owned by {trusted_owners}", entry.path));
+    }
+    if entry.mode & GROUP_OR_OTHER_WRITE != 0 {
+        return Some(format!("{} is writable by group or others", entry.path));
     }
     None
 }
@@ -48,15 +51,15 @@ pub fn untrusted(chain: &[FileStat], owner: u32) -> Option<String> {
 mod tests {
     use super::*;
 
-    fn stat(path: &str, uid: u32, mode: u32, dir: bool) -> FileStat {
-        FileStat { path: path.into(), uid, mode, is_directory: dir, is_regular: !dir }
+    fn stat(path: &str, uid: u32, mode: u32, is_directory: bool) -> FileStat {
+        FileStat { path: path.into(), uid, mode, is_directory, is_regular: !is_directory }
     }
 
     #[test]
     fn follows_strict_modes() {
         let script = stat("/etc/limen/checks.d/a", 0, 0o755, false);
         let parents: Vec<FileStat> =
-            ["/etc/limen/checks.d", "/etc/limen", "/etc", "/"].iter().map(|p| stat(p, 0, 0o755, true)).collect();
+            ["/etc/limen/checks.d", "/etc/limen", "/etc", "/"].iter().map(|path| stat(path, 0, 0o755, true)).collect();
         let chain = |first: FileStat, parents: &[FileStat]| [vec![first], parents.to_vec()].concat();
         assert_eq!(problem(&chain(script.clone(), &parents), 0), None);
         let mut foreign = script.clone();

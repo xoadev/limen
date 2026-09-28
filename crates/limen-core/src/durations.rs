@@ -2,38 +2,33 @@
 
 use std::time::Duration;
 
+/// The units longer than a millisecond, in seconds, largest first: the order [show] tries them in.
+const UNITS: [(&str, u64); 4] = [("d", 86_400), ("h", 3600), ("m", 60), ("s", 1)];
+
 pub fn parse(text: &str) -> Option<Duration> {
     let text = text.trim();
-    let unit_at = text.find(|c: char| !c.is_ascii_digit())?;
-    let (digits, unit) = text.split_at(unit_at);
+    let unit_start = text.find(|character: char| !character.is_ascii_digit())?;
+    let (digits, unit) = text.split_at(unit_start);
     if digits.is_empty() || digits.len() > 9 {
         return None;
     }
-    let n: u64 = digits.parse().ok()?;
-    match unit {
-        "ms" => Some(Duration::from_millis(n)),
-        "s" => Some(Duration::from_secs(n)),
-        "m" => Some(Duration::from_secs(n * 60)),
-        "h" => Some(Duration::from_secs(n * 3600)),
-        "d" => Some(Duration::from_secs(n * 86_400)),
-        _ => None,
+    let amount: u64 = digits.parse().ok()?;
+    if unit == "ms" {
+        return Some(Duration::from_millis(amount));
     }
+    let (_, unit_seconds) = UNITS.iter().find(|(name, _)| *name == unit)?;
+    Some(Duration::from_secs(amount * unit_seconds))
 }
 
 /// How a duration is shown back: `60s`, `1h`, the largest unit that divides it.
-pub fn show(d: Duration) -> String {
-    let s = d.as_secs();
-    if d.subsec_millis() != 0 || s == 0 {
-        format!("{}ms", d.as_millis())
-    } else if s % 86_400 == 0 {
-        format!("{}d", s / 86_400)
-    } else if s % 3600 == 0 {
-        format!("{}h", s / 3600)
-    } else if s % 60 == 0 {
-        format!("{}m", s / 60)
-    } else {
-        format!("{s}s")
+pub fn show(duration: Duration) -> String {
+    let seconds = duration.as_secs();
+    if duration.subsec_millis() != 0 || seconds == 0 {
+        return format!("{}ms", duration.as_millis());
     }
+    let (name, unit_seconds) =
+        UNITS.iter().find(|(_, unit_seconds)| seconds % unit_seconds == 0).expect("a second divides any whole seconds");
+    format!("{}{name}", seconds / unit_seconds)
 }
 
 #[cfg(test)]

@@ -19,26 +19,25 @@ pub fn hostname() -> String {
 
 /// Kernel release and machine, as `uname -r` and `uname -m` say.
 pub fn uname() -> (String, String) {
-    let u = rustix::system::uname();
-    (u.release().to_string_lossy().into_owned(), u.machine().to_string_lossy().into_owned())
+    let names = rustix::system::uname();
+    (names.release().to_string_lossy().into_owned(), names.machine().to_string_lossy().into_owned())
 }
 
 pub fn out(text: &str) {
-    let mut o = std::io::stdout().lock();
-    o.write_all(text.as_bytes()).ok();
-    o.flush().ok();
+    out_bytes(text.as_bytes());
 }
 
 pub fn err(text: &str) {
-    let mut e = std::io::stderr().lock();
-    e.write_all(text.as_bytes()).ok();
-    e.flush().ok();
+    write_and_flush(std::io::stderr().lock(), text.as_bytes());
 }
 
 pub fn out_bytes(bytes: &[u8]) {
-    let mut o = std::io::stdout().lock();
-    o.write_all(bytes).ok();
-    o.flush().ok();
+    write_and_flush(std::io::stdout().lock(), bytes);
+}
+
+fn write_and_flush(mut stream: impl Write, bytes: &[u8]) {
+    stream.write_all(bytes).ok();
+    stream.flush().ok();
 }
 
 /// One request from stdin, up to [max] bytes and within [timeout]. One request is one line (spec §4): it stops at the

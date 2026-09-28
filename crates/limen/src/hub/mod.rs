@@ -6,7 +6,7 @@ pub mod server;
 pub mod ssh;
 pub mod transports;
 
-use limen_core::protocol::{NodeResponse, Result};
+use limen_core::protocol::{ErrorCode, LimenError, NodeError, NodeResponse, Result, error};
 use serde_json::{Map, Value};
 use std::time::Duration;
 
@@ -20,6 +20,16 @@ pub trait NodeClient: Send + Sync {
 }
 
 pub use limen_core::join::constant_time_eq;
+
+/// The hub's own failure: a file it can't write, a program it can't start.
+fn internal(message: impl Into<String>) -> LimenError {
+    error(ErrorCode::Internal, message)
+}
+
+/// A node's error as the hub shows it.
+fn failure_text(failure: &NodeError) -> String {
+    format!("{}: {}", failure.code, failure.message)
+}
 
 #[cfg(test)]
 mod tests {

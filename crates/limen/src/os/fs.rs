@@ -3,10 +3,13 @@
 use limen_core::system::procfs::{self, Account};
 use limen_core::trust::FileStat;
 use rustix::fs::{AtFlags, Mode, OFlags};
+use rustix::io::Errno;
+use std::fmt::Display;
 use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{ErrorKind, Read, Seek, SeekFrom, Write};
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
+use std::path::Path;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 const CHUNK: usize = 64 * 1024;
@@ -48,31 +51,30 @@ pub struct FileInfo {
 }
 
 impl FileInfo {
-    fn of(path: &str, m: &fs::Metadata) -> Self {
+    fn of(path: &str, metadata: &fs::Metadata) -> Self {
         FileInfo {
             path: path.into(),
-            kind: kind_of(m.mode()),
-            size: m.size(),
-            mode: m.mode(),
-            uid: m.uid(),
-            gid: m.gid(),
-            modified: m.mtime(),
-            links: m.nlink(),
+            kind: kind_of(metadata.mode()),
+            size: metadata.size(),
+            mode: metadata.mode(),
+            uid: metadata.uid(),
+            gid: metadata.gid(),
+            modified: metadata.mtime(),
+            links: metadata.nlink(),
         }
     }
 
-    // The widths of `stat`'s fields differ between architectures.
-    #[allow(clippy::unnecessary_cast)]
-    fn of_stat(path: &str, st: &rustix::fs::Stat) -> Self {
+    #[allow(clippy::unnecessary_cast, reason = "the widths of `stat`'s fields differ between architectures")]
+    fn of_stat(path: &str, stat: &rustix::fs::Stat) -> Self {
         FileInfo {
             path: path.into(),
-            kind: kind_of(st.st_mode as u32),
-            size: st.st_size.max(0) as u64,
-            mode: st.st_mode as u32,
-            uid: st.st_uid,
-            gid: st.st_gid,
-            modified: st.st_mtime as i64,
-            links: st.st_nlink as u64,
+            kind: kind_of(stat.st_mode as u32),
+            size: stat.st_size.max(0) as u64,
+            mode: stat.st_mode as u32,
+            uid: stat.st_uid,
+            gid: stat.st_gid,
+            modified: stat.st_mtime as i64,
+            links: stat.st_nlink as u64,
         }
     }
 
@@ -104,17 +106,33 @@ pub struct LineSlice {
     pub binary: bool,
 }
 
+impl LineSlice {
+    /// Not text: a NUL byte near the start of what was read.
+    fn binary() -> Self {
+        LineSlice { lines: vec![], eof: true, binary: true }
+    }
+}
+
+/// The error of [action] on [path], as a person reads it: `cannot open /etc/x: Permission denied (os error 13)`.
+fn cannot<E: Display>(action: &str, path: &str) -> impl FnOnce(E) -> String {
+    move |error| format!("cannot {action} {path}: {error}")
+}
+
+fn lossy(path: &Path) -> String {
+    path.to_string_lossy().into_owned()
+}
+
 pub fn real_path(path: &str) -> Option<String> {
-    fs::canonicalize(path).ok().map(|p| p.to_string_lossy().into_owned())
+    fs::canonicalize(path).ok().map(|resolved| lossy(&resolved))
 }
 
 /// [path] itself, not what a link points to.
 pub fn lstat(path: &str) -> Option<FileInfo> {
-    fs::symlink_metadata(path).ok().map(|m| FileInfo::of(path, &m))
+    fs::symlink_metadata(path).ok().map(|metadata| FileInfo::of(path, &metadata))
 }
 
 pub fn stat(path: &str) -> Option<FileInfo> {
-    fs::metadata(path).ok().map(|m| FileInfo::of(path, &m))
+    fs::metadata(path).ok().map(|metadata| FileInfo::of(path, &metadata))
 }
 
 pub fn exists(path: &str) -> bool {
@@ -122,14 +140,14 @@ pub fn exists(path: &str) -> bool {
 }
 
 pub fn is_executable(path: &str) -> bool {
-    stat(path).is_some_and(|i| i.kind == FileType::File)
+    stat(path).is_some_and(|info| info.kind == FileType::File)
         && rustix::fs::access(path, rustix::fs::Access::EXEC_OK).is_ok()
 }
 
 pub fn list(dir: &str) -> Result<Vec<String>, String> {
     let mut names: Vec<String> = fs::read_dir(dir)
-        .map_err(|e| format!("cannot open {dir}: {e}"))?
-        .filter_map(|e| e.ok().map(|e| e.file_name().to_string_lossy().into_owned()))
+        .map_err(cannot("open", dir))?
+        .filter_map(|entry| entry.ok().map(|entry| entry.file_name().to_string_lossy().into_owned()))
         .collect();
     names.sort();
     Ok(names)
@@ -137,7 +155,7 @@ pub fn list(dir: &str) -> Result<Vec<String>, String> {
 
 /// Opens [path] without following a link at its end.
 pub fn open_read(path: &str) -> Result<File, String> {
-    OpenOptions::new().read(true).custom_flags(NOFOLLOW).open(path).map_err(|e| format!("cannot open {path}: {e}"))
+    OpenOptions::new().read(true).custom_flags(NOFOLLOW).open(path).map_err(cannot("open", path))
 }
 
 /// A file the read role opened, and what it is: everything checked about it is checked on this descriptor, never
@@ -157,19 +175,20 @@ pub enum OpenError {
 /// Opens [path], resolved and checked by the caller, as exactly that: no link at its end, and no directory on the
 /// way swapped for one since, as `/proc/self/fd` says of what was opened.
 pub fn open_exact(path: &str) -> Result<Opened, OpenError> {
-    let file = OpenOptions::new().read(true).custom_flags(NOFOLLOW | NONBLOCK).open(path).map_err(|e| {
-        if e.kind() == std::io::ErrorKind::NotFound {
+    let file = OpenOptions::new().read(true).custom_flags(NOFOLLOW | NONBLOCK).open(path).map_err(|error| {
+        if error.kind() == ErrorKind::NotFound {
             OpenError::Missing
         } else {
-            OpenError::Other(format!("cannot open {path}: {e}"))
+            OpenError::Other(cannot("open", path)(error))
         }
     })?;
-    same_path(file.as_raw_fd(), path)?;
-    let info = FileInfo::of(path, &file.metadata().map_err(|e| OpenError::Other(format!("cannot stat {path}: {e}")))?);
-    Ok(Opened { file, info })
+    ensure_opened_as(file.as_raw_fd(), path)?;
+    let metadata = file.metadata().map_err(|error| OpenError::Other(cannot("stat", path)(error)))?;
+    Ok(Opened { file, info: FileInfo::of(path, &metadata) })
 }
 
-fn same_path(fd: i32, path: &str) -> Result<(), OpenError> {
+/// Fails unless [fd] is [path] itself, as `/proc/self/fd` says: not what a directory swapped in on the way leads to.
+fn ensure_opened_as(fd: i32, path: &str) -> Result<(), OpenError> {
     match read_link(&format!("/proc/self/fd/{fd}")) {
         Some(opened) if opened == path => Ok(()),
         Some(_) => Err(OpenError::Other(format!("{path} changed while it was opened"))),
@@ -185,53 +204,59 @@ pub struct OpenDir {
 
 pub fn open_dir_exact(path: &str) -> Result<OpenDir, OpenError> {
     let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
-    let fd = rustix::fs::open(path, flags, Mode::empty()).map_err(|e| match e {
-        rustix::io::Errno::NOENT => OpenError::Missing,
-        rustix::io::Errno::NOTDIR => OpenError::NotDirectory,
-        e => OpenError::Other(format!("cannot open {path}: {e}")),
+    let fd = rustix::fs::open(path, flags, Mode::empty()).map_err(|errno| match errno {
+        Errno::NOENT => OpenError::Missing,
+        Errno::NOTDIR => OpenError::NotDirectory,
+        other => OpenError::Other(cannot("open", path)(other)),
     })?;
-    same_path(fd.as_raw_fd(), path)?;
+    ensure_opened_as(fd.as_raw_fd(), path)?;
     Ok(OpenDir { fd, path: path.into() })
 }
 
 impl OpenDir {
     /// Every entry and what it is itself —a link as a link—, by name.
     pub fn entries(&self) -> Result<Vec<(String, FileInfo)>, String> {
-        let dir = rustix::fs::Dir::read_from(&self.fd).map_err(|e| format!("cannot read {}: {e}", self.path))?;
-        let mut out = Vec::new();
+        let dir = rustix::fs::Dir::read_from(&self.fd).map_err(cannot("read", &self.path))?;
+        let mut entries = Vec::new();
         for entry in dir {
-            let entry = entry.map_err(|e| format!("cannot read {}: {e}", self.path))?;
+            let entry = entry.map_err(cannot("read", &self.path))?;
             let name = entry.file_name().to_string_lossy().into_owned();
             if name == "." || name == ".." {
                 continue;
             }
             // Gone since it was listed: not an entry any more.
-            let Ok(st) = rustix::fs::statat(&self.fd, entry.file_name(), AtFlags::SYMLINK_NOFOLLOW) else { continue };
-            let full = if self.path == "/" { format!("/{name}") } else { format!("{}/{name}", self.path) };
-            out.push((name, FileInfo::of_stat(&full, &st)));
+            let Ok(stat) = rustix::fs::statat(&self.fd, entry.file_name(), AtFlags::SYMLINK_NOFOLLOW) else {
+                continue;
+            };
+            let info = FileInfo::of_stat(&self.path_of(&name), &stat);
+            entries.push((name, info));
         }
-        out.sort_by(|a, b| a.0.cmp(&b.0));
-        Ok(out)
+        entries.sort_by(|(one, _), (other, _)| one.cmp(other));
+        Ok(entries)
+    }
+
+    fn path_of(&self, name: &str) -> String {
+        if self.path == "/" { format!("/{name}") } else { format!("{}/{name}", self.path) }
     }
 }
 
 /// At most [max] bytes of [path], or None when it can't be opened.
 pub fn read(path: &str, max: usize) -> Option<Vec<u8>> {
     let file = open_read(path).ok()?;
-    let mut out = Vec::new();
-    file.take(max as u64).read_to_end(&mut out).ok()?;
-    Some(out)
+    let mut bytes = Vec::new();
+    file.take(max as u64).read_to_end(&mut bytes).ok()?;
+    Some(bytes)
 }
 
 pub fn read_text(path: &str) -> Option<String> {
-    read(path, usize::MAX).map(|b| String::from_utf8_lossy(&b).into_owned())
+    read(path, usize::MAX).map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
 }
 
 /// A configuration file, following links: an operator's `limen.toml` or `authorized_keys` that links to a file kept
 /// elsewhere is that file. Only for files under root's or the hub user's directories; what the read role opens goes
 /// through the policy and [read] instead.
 pub fn read_following(path: &str) -> Option<String> {
-    real_path(path).and_then(|p| read_text(&p))
+    real_path(path).and_then(|resolved| read_text(&resolved))
 }
 
 /// Replaces the file [path] leads to, so a link the operator made stays a link.
@@ -249,11 +274,11 @@ pub fn try_lock(path: &str) -> Result<Option<File>, String> {
         .mode(0o600)
         .custom_flags(NOFOLLOW)
         .open(path)
-        .map_err(|e| format!("cannot open {path}: {e}"))?;
+        .map_err(cannot("open", path))?;
     match rustix::fs::flock(&file, rustix::fs::FlockOperation::NonBlockingLockExclusive) {
         Ok(()) => Ok(Some(file)),
-        Err(rustix::io::Errno::WOULDBLOCK) => Ok(None),
-        Err(e) => Err(format!("cannot lock {path}: {e}")),
+        Err(Errno::WOULDBLOCK) => Ok(None),
+        Err(other) => Err(cannot("lock", path)(other)),
     }
 }
 
@@ -271,7 +296,7 @@ pub fn contains(mut file: &File, needle: &[u8], limit: u64) -> bool {
             Ok(n) => n,
         };
         let end = carried + n;
-        if buffer[..end].windows(needle.len()).any(|w| w == needle) {
+        if buffer[..end].windows(needle.len()).any(|window| window == needle) {
             return true;
         }
         // The tail that could start a match across the chunk boundary goes first in the next round.
@@ -293,76 +318,112 @@ pub fn read_lines(
     max_bytes: usize,
     max_skip: u64,
 ) -> Result<LineSlice, String> {
-    file.seek(SeekFrom::Start(0)).map_err(|e| e.to_string())?;
-    let mut skipped: u64 = 0;
-    let mut lines = Vec::new();
-    let mut line_no = 1;
-    let mut bytes = 0;
-    let mut partial: Vec<u8> = Vec::new();
+    file.seek(SeekFrom::Start(0)).map_err(|error| error.to_string())?;
+    let mut window = LineWindow::new(from, count, max_bytes);
     let mut buffer = vec![0u8; CHUNK];
+    let mut skipped: u64 = 0;
     let mut first = true;
-    let cut = |lines: Vec<String>| Ok(LineSlice { lines, eof: false, binary: false });
     loop {
-        let n = file.read(&mut buffer).map_err(|e| e.to_string())?;
+        let n = file.read(&mut buffer).map_err(|error| error.to_string())?;
         if n == 0 {
-            break;
+            return Ok(window.at_end());
         }
-        if line_no < from {
+        let chunk = &buffer[..n];
+        if window.before_start() {
             skipped += n as u64;
             if skipped > max_skip {
                 return Err(format!("line {from} is past the first {} MiB", max_skip >> 20));
             }
         }
-        if first && is_binary(&buffer[..n]) {
-            return Ok(LineSlice { lines: vec![], eof: true, binary: true });
+        if first && is_binary(chunk) {
+            return Ok(LineSlice::binary());
         }
         first = false;
+        if !window.take(chunk) {
+            return Ok(window.cut());
+        }
+    }
+}
+
+/// The lines [read_lines] keeps as the file goes by: from line [from], at most [count] of them and [max_bytes].
+struct LineWindow {
+    from: usize,
+    count: usize,
+    max_bytes: usize,
+    /// The line being read, 1-based.
+    line_number: usize,
+    /// What the lines kept take, newlines included.
+    kept_bytes: usize,
+    /// The start of a line in the window, not ended yet.
+    partial: Vec<u8>,
+    lines: Vec<String>,
+}
+
+impl LineWindow {
+    fn new(from: usize, count: usize, max_bytes: usize) -> Self {
+        LineWindow { from, count, max_bytes, line_number: 1, kept_bytes: 0, partial: Vec::new(), lines: Vec::new() }
+    }
+
+    fn before_start(&self) -> bool {
+        self.line_number < self.from
+    }
+
+    /// Takes in the next [chunk] of the file; false when the window is full or a line in it is over [max_bytes].
+    fn take(&mut self, chunk: &[u8]) -> bool {
         let mut start = 0;
-        for i in 0..n {
-            if buffer[i] != b'\n' {
-                continue;
-            }
-            if line_no >= from {
-                partial.extend_from_slice(&buffer[start..i]);
-                let line = String::from_utf8_lossy(&partial).into_owned();
-                bytes += line.len() + 1;
-                if bytes > max_bytes || lines.len() >= count {
-                    return cut(lines);
+        for (end, _) in chunk.iter().enumerate().filter(|&(_, &byte)| byte == b'\n') {
+            if !self.before_start() {
+                self.partial.extend_from_slice(&chunk[start..end]);
+                let line = String::from_utf8_lossy(&self.partial).into_owned();
+                self.kept_bytes += line.len() + 1;
+                if self.kept_bytes > self.max_bytes || self.lines.len() >= self.count {
+                    return false;
                 }
-                lines.push(line);
+                self.lines.push(line);
             }
-            partial.clear();
-            line_no += 1;
-            start = i + 1;
+            self.partial.clear();
+            self.line_number += 1;
+            start = end + 1;
         }
-        if line_no >= from && start < n {
-            partial.extend_from_slice(&buffer[start..n]);
-            if partial.len() > max_bytes {
-                return cut(lines);
+        if !self.before_start() && start < chunk.len() {
+            self.partial.extend_from_slice(&chunk[start..]);
+            if self.partial.len() > self.max_bytes {
+                return false;
             }
         }
+        true
     }
-    if !partial.is_empty() && line_no >= from {
-        if lines.len() >= count {
-            return cut(lines);
+
+    /// The window at the end of the file, whose last line may have no newline.
+    fn at_end(mut self) -> LineSlice {
+        if !self.partial.is_empty() && !self.before_start() {
+            if self.lines.len() >= self.count {
+                return self.cut();
+            }
+            self.lines.push(String::from_utf8_lossy(&self.partial).into_owned());
         }
-        lines.push(String::from_utf8_lossy(&partial).into_owned());
+        LineSlice { lines: self.lines, eof: true, binary: false }
     }
-    Ok(LineSlice { lines, eof: true, binary: false })
+
+    /// The window, full before the end of the file.
+    fn cut(self) -> LineSlice {
+        LineSlice { lines: self.lines, eof: false, binary: false }
+    }
 }
 
 /// The last [count] lines of [file], reading backwards from the end at most [max_bytes].
 pub fn tail(mut file: &File, count: usize, max_bytes: u64) -> Result<LineSlice, String> {
-    let size = file.metadata().map_err(|e| e.to_string())?.len();
+    let size = file.metadata().map_err(|error| error.to_string())?.len();
     let start = size.saturating_sub(max_bytes);
-    file.seek(SeekFrom::Start(start)).map_err(|e| e.to_string())?;
-    let mut all = Vec::new();
-    file.take(max_bytes).read_to_end(&mut all).map_err(|e| e.to_string())?;
-    if is_binary(&all) {
-        return Ok(LineSlice { lines: vec![], eof: true, binary: true });
+    file.seek(SeekFrom::Start(start)).map_err(|error| error.to_string())?;
+    let mut last_bytes = Vec::new();
+    file.take(max_bytes).read_to_end(&mut last_bytes).map_err(|error| error.to_string())?;
+    if is_binary(&last_bytes) {
+        return Ok(LineSlice::binary());
     }
-    let text = String::from_utf8_lossy(&all);
+    let text = String::from_utf8_lossy(&last_bytes);
     let mut lines: Vec<&str> = text.split('\n').collect();
+    // Unless it starts the file, what comes before the first newline may be only the end of a line.
     if start > 0 {
         lines.remove(0);
     }
@@ -370,18 +431,13 @@ pub fn tail(mut file: &File, count: usize, max_bytes: u64) -> Result<LineSlice, 
         lines.pop();
     }
     let eof = start == 0 && lines.len() <= count;
-    let from = lines.len().saturating_sub(count);
-    Ok(LineSlice { lines: lines[from..].iter().map(|s| s.to_string()).collect(), eof, binary: false })
+    let last = lines.split_off(lines.len().saturating_sub(count));
+    Ok(LineSlice { lines: last.into_iter().map(String::from).collect(), eof, binary: false })
 }
 
 pub fn append(path: &str, bytes: &[u8], mode: u32) -> Result<(), String> {
-    let mut f = OpenOptions::new()
-        .append(true)
-        .create(true)
-        .mode(mode)
-        .open(path)
-        .map_err(|e| format!("cannot open {path}: {e}"))?;
-    f.write_all(bytes).map_err(|e| format!("cannot write {path}: {e}"))
+    let mut file = OpenOptions::new().append(true).create(true).mode(mode).open(path).map_err(cannot("open", path))?;
+    file.write_all(bytes).map_err(cannot("write", path))
 }
 
 pub fn append_line(path: &str, line: &str) -> Result<(), String> {
@@ -392,46 +448,48 @@ pub fn append_line(path: &str, line: &str) -> Result<(), String> {
 pub fn write_atomic(path: &str, bytes: &[u8], mode: u32) -> Result<(), String> {
     static TEMPORARIES: AtomicU32 = AtomicU32::new(0);
     // Its own name and O_EXCL: two writers at once each rename a whole file, and none writes into a link.
-    let tmp = format!("{path}.limen-{}-{}", std::process::id(), TEMPORARIES.fetch_add(1, Ordering::Relaxed));
-    let result = (|| {
-        let mut f = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(mode)
-            .custom_flags(NOFOLLOW)
-            .open(&tmp)
-            .map_err(|e| format!("cannot write {tmp}: {e}"))?;
-        f.write_all(bytes).map_err(|e| format!("cannot write {tmp}: {e}"))?;
-        f.sync_all().ok();
-        fs::set_permissions(&tmp, fs::Permissions::from_mode(mode)).map_err(|e| format!("cannot chmod {tmp}: {e}"))?;
-        fs::rename(&tmp, path).map_err(|e| format!("cannot replace {path}: {e}"))
-    })();
+    let temporary = format!("{path}.limen-{}-{}", std::process::id(), TEMPORARIES.fetch_add(1, Ordering::Relaxed));
+    let result =
+        write_new(&temporary, bytes, mode).and_then(|()| fs::rename(&temporary, path).map_err(cannot("replace", path)));
     if result.is_err() {
-        fs::remove_file(&tmp).ok();
+        fs::remove_file(&temporary).ok();
     }
     result
 }
 
+/// Creates [path], which must not exist yet, with [bytes] and exactly [mode], whatever the umask.
+fn write_new(path: &str, bytes: &[u8], mode: u32) -> Result<(), String> {
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(mode)
+        .custom_flags(NOFOLLOW)
+        .open(path)
+        .map_err(cannot("write", path))?;
+    file.write_all(bytes).map_err(cannot("write", path))?;
+    file.sync_all().ok();
+    chmod(path, mode)
+}
+
 pub fn mkdirs(path: &str, mode: u32) -> Result<(), String> {
     let mut current = String::new();
-    for part in path.split('/').filter(|p| !p.is_empty()) {
+    for part in path.split('/').filter(|part| !part.is_empty()) {
         current.push('/');
         current.push_str(part);
-        if let Err(e) = fs::DirBuilder::new().mode(mode).create(&current) {
-            if e.kind() != std::io::ErrorKind::AlreadyExists {
-                return Err(format!("cannot create {current}: {e}"));
-            }
+        match fs::DirBuilder::new().mode(mode).create(&current) {
+            Err(error) if error.kind() != ErrorKind::AlreadyExists => return Err(cannot("create", &current)(error)),
+            _ => {}
         }
     }
     Ok(())
 }
 
 pub fn chmod(path: &str, mode: u32) -> Result<(), String> {
-    fs::set_permissions(path, fs::Permissions::from_mode(mode)).map_err(|e| format!("cannot chmod {path}: {e}"))
+    fs::set_permissions(path, fs::Permissions::from_mode(mode)).map_err(cannot("chmod", path))
 }
 
 pub fn chown(path: &str, uid: u32, gid: u32) -> Result<(), String> {
-    std::os::unix::fs::chown(path, Some(uid), Some(gid)).map_err(|e| format!("cannot chown {path}: {e}"))
+    std::os::unix::fs::chown(path, Some(uid), Some(gid)).map_err(cannot("chown", path))
 }
 
 pub fn remove(path: &str) -> bool {
@@ -440,45 +498,49 @@ pub fn remove(path: &str) -> bool {
 
 /// Users and groups from `/etc/passwd` and `/etc/group`, read each time: the same on every libc.
 pub fn accounts() -> Vec<Account> {
-    read_text("/etc/passwd").map(|t| procfs::accounts(&t)).unwrap_or_default()
+    read_text("/etc/passwd").map(|passwd| procfs::accounts(&passwd)).unwrap_or_default()
 }
 
 /// gid → name, from `/etc/group`.
 pub fn groups() -> std::collections::BTreeMap<u32, String> {
-    read_text("/etc/group").map(|t| procfs::groups(&t)).unwrap_or_default()
+    read_text("/etc/group").map(|group| procfs::groups(&group)).unwrap_or_default()
 }
 
 pub fn account(name: &str) -> Option<Account> {
-    accounts().into_iter().find(|a| a.name == name)
+    accounts().into_iter().find(|account| account.name == name)
 }
 
 /// Free and total bytes of the filesystem holding [path].
 pub fn space(path: &str) -> Option<(u64, u64)> {
-    let st = rustix::fs::statvfs(path).ok()?;
-    Some((st.f_bavail * st.f_frsize, st.f_blocks * st.f_frsize))
+    let stats = rustix::fs::statvfs(path).ok()?;
+    Some((stats.f_bavail * stats.f_frsize, stats.f_blocks * stats.f_frsize))
 }
 
 /// Where a symlink points, unresolved.
 pub fn read_link(path: &str) -> Option<String> {
-    fs::read_link(path).ok().map(|p| p.to_string_lossy().into_owned())
+    fs::read_link(path).ok().map(|target| lossy(&target))
 }
 
 /// [path] and every directory above it: what [limen_core::trust] checks.
 pub fn chain(path: &str) -> Vec<FileStat> {
-    let mut out = Vec::new();
+    let mut stats = Vec::new();
     let mut current = path.to_string();
     loop {
         match stat(&current) {
-            Some(info) => out.push(info.to_stat()),
-            None => return out,
+            Some(info) => stats.push(info.to_stat()),
+            None => return stats,
         }
         if current == "/" {
-            return out;
+            return stats;
         }
-        current = match current.rsplit_once('/') {
-            Some(("", _)) | None => "/".into(),
-            Some((parent, _)) => parent.into(),
-        };
+        current = parent_of(&current).into();
+    }
+}
+
+fn parent_of(path: &str) -> &str {
+    match path.rsplit_once('/') {
+        Some(("", _)) | None => "/",
+        Some((parent, _)) => parent,
     }
 }
 
@@ -487,14 +549,11 @@ mod tests {
     use super::*;
 
     fn temp() -> String {
-        let dir = std::env::temp_dir().join(format!("limen-fs-{}-{}", std::process::id(), rand_suffix()));
+        static NEXT: AtomicU32 = AtomicU32::new(0);
+        let suffix = NEXT.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("limen-fs-{}-{suffix}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
-        dir.to_string_lossy().into_owned()
-    }
-
-    fn rand_suffix() -> u32 {
-        static N: AtomicU32 = AtomicU32::new(0);
-        N.fetch_add(1, Ordering::Relaxed)
+        lossy(&dir)
     }
 
     #[test]
@@ -503,9 +562,9 @@ mod tests {
         let path = format!("{dir}/f");
         write_atomic(&path, b"one\ntwo\nthree\nfour", 0o644).unwrap();
         let file = &open_exact(&path).ok().unwrap().file;
-        let s = read_lines(file, 2, 2, 1000, 1000).unwrap();
-        assert_eq!(s.lines, ["two", "three"]);
-        assert!(!s.eof);
+        let slice = read_lines(file, 2, 2, 1000, 1000).unwrap();
+        assert_eq!(slice.lines, ["two", "three"]);
+        assert!(!slice.eof);
         assert_eq!(
             read_lines(file, 3, 10, 1000, 1000).unwrap(),
             LineSlice { lines: vec!["three".into(), "four".into()], eof: true, binary: false }
@@ -548,13 +607,14 @@ mod tests {
         let Ok(opened) = open_exact(&path) else { panic!("a FIFO opens without a writer") };
         assert_eq!(opened.info.kind, FileType::Other);
         let listed = open_dir_exact(&dir).ok().unwrap().entries().unwrap();
-        assert_eq!(listed.iter().map(|(n, i)| (n.as_str(), i.kind)).collect::<Vec<_>>(), [("fifo", FileType::Other)]);
+        let kinds: Vec<_> = listed.iter().map(|(name, info)| (name.as_str(), info.kind)).collect();
+        assert_eq!(kinds, [("fifo", FileType::Other)]);
         fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn a_chain_goes_up_to_the_root() {
-        let paths: Vec<String> = chain("/usr/bin").into_iter().map(|s| s.path).collect();
+        let paths: Vec<String> = chain("/usr/bin").into_iter().map(|stat| stat.path).collect();
         assert_eq!(paths, ["/usr/bin", "/usr", "/"]);
     }
 }

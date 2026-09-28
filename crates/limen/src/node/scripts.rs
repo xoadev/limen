@@ -1,6 +1,6 @@
 //! Finds, validates and runs the operator's scripts (spec §6).
 
-use super::Node;
+use super::{Node, internal};
 use crate::os::{fs, proc, sys};
 use limen_core::params;
 use limen_core::protocol::{ErrorCode, Result, error};
@@ -22,80 +22,112 @@ pub struct ScriptEntry {
     pub ignored: bool,
 }
 
+impl ScriptEntry {
+    fn usable(file: &str, resolved: String, spec: ScriptSpec) -> Self {
+        ScriptEntry { file: file.into(), path: resolved, spec: Some(spec), problem: None, ignored: false }
+    }
+
+    fn broken(file: &str, path: &str, problem: String) -> Self {
+        ScriptEntry { file: file.into(), path: path.into(), spec: None, problem: Some(problem), ignored: false }
+    }
+
+    fn not_a_script(file: &str, path: &str, problem: String) -> Self {
+        ScriptEntry { ignored: true, ..ScriptEntry::broken(file, path, problem) }
+    }
+}
+
+/// Every file in the directory of [kind] but hidden ones (a `.gitkeep`), each with its spec or its problem.
 pub fn discover(node: &Node, kind: ScriptKind) -> Vec<ScriptEntry> {
     let dir = node.config.directory(kind);
     let Some(info) = fs::stat(&dir) else { return vec![] };
     if info.kind != fs::FileType::Directory {
-        return vec![entry_problem(&dir, &dir, format!("{dir} is not a directory"), false)];
+        return vec![ScriptEntry::broken(&dir, &dir, format!("{dir} is not a directory"))];
     }
     fs::list(&dir)
         .unwrap_or_default()
         .into_iter()
-        .filter(|f| !f.starts_with('.'))
-        .map(|file| entry(node, kind, &dir, &file))
+        .filter(|file| !file.starts_with('.'))
+        .map(|file| read_entry(node, kind, &dir, &file))
         .collect()
 }
 
-fn entry_problem(file: &str, path: &str, problem: String, ignored: bool) -> ScriptEntry {
-    ScriptEntry { file: file.into(), path: path.into(), spec: None, problem: Some(problem), ignored }
-}
-
-fn entry(node: &Node, kind: ScriptKind, dir: &str, file: &str) -> ScriptEntry {
+fn read_entry(node: &Node, kind: ScriptKind, dir: &str, file: &str) -> ScriptEntry {
     let path = format!("{dir}/{file}");
     let Some(name) = scripts::name_of(file, kind) else {
         let shape = if kind == ScriptKind::Setup { "NN-name" } else { "a-z, 0-9, - and _" };
-        return entry_problem(file, &path, format!("{path}: not a script name ({shape}); ignored"), true);
+        return ScriptEntry::not_a_script(file, &path, format!("{path}: not a script name ({shape}); ignored"));
     };
-    let Some(resolved) = fs::real_path(&path) else {
-        return entry_problem(file, &path, format!("{path}: cannot resolve"), false);
-    };
-    if let Some(p) = trust::problem(&fs::chain(&resolved), node.trusted_owner) {
-        return entry_problem(file, &path, format!("{path}: {p}"), false);
-    }
-    let Some(bytes) = fs::read(&resolved, MAX_HEADER) else {
-        return entry_problem(file, &path, format!("{path}: cannot read"), false);
-    };
-    match scripts::parse(&name, kind, &String::from_utf8_lossy(&bytes)) {
-        Ok(spec) => ScriptEntry { file: file.into(), path: resolved, spec: Some(spec), problem: None, ignored: false },
-        Err(e) => entry_problem(file, &path, format!("{path}: {e}"), false),
+    match trusted_spec(node, kind, &name, &path) {
+        Ok((resolved, spec)) => ScriptEntry::usable(file, resolved, spec),
+        Err(problem) => ScriptEntry::broken(file, &path, format!("{path}: {problem}")),
     }
 }
 
+/// The script at [path], resolved, trusted and with its header parsed; what stops it otherwise.
+fn trusted_spec(
+    node: &Node,
+    kind: ScriptKind,
+    name: &str,
+    path: &str,
+) -> std::result::Result<(String, ScriptSpec), String> {
+    let resolved = fs::real_path(path).ok_or("cannot resolve")?;
+    if let Some(problem) = trust::problem(&fs::chain(&resolved), node.trusted_owner) {
+        return Err(problem);
+    }
+    let header = fs::read(&resolved, MAX_HEADER).ok_or("cannot read")?;
+    let spec = scripts::parse(name, kind, &String::from_utf8_lossy(&header))?;
+    Ok((resolved, spec))
+}
+
 pub fn catalog(node: &Node) -> Catalog {
-    let all: Vec<(ScriptKind, Vec<ScriptEntry>)> = ScriptKind::ALL.iter().map(|k| (*k, discover(node, *k))).collect();
+    let discovered: Vec<(ScriptKind, Vec<ScriptEntry>)> =
+        ScriptKind::ALL.into_iter().map(|kind| (kind, discover(node, kind))).collect();
     let specs = |kind: ScriptKind| -> Vec<ScriptSpec> {
-        all.iter().filter(|(k, _)| *k == kind).flat_map(|(_, e)| e.iter().filter_map(|e| e.spec.clone())).collect()
+        discovered
+            .iter()
+            .filter(|(entries_kind, _)| *entries_kind == kind)
+            .flat_map(|(_, entries)| entries.iter().filter_map(|entry| entry.spec.clone()))
+            .collect()
     };
+    let problems = discovered
+        .iter()
+        .flat_map(|(_, entries)| entries)
+        .filter(|entry| !entry.ignored)
+        .filter_map(|entry| entry.problem.clone())
+        .collect();
     Catalog {
         checks: specs(ScriptKind::Check),
         actions: specs(ScriptKind::Action),
         setup: specs(ScriptKind::Setup),
-        problems: all
-            .iter()
-            .flat_map(|(_, e)| e.iter().filter(|e| !e.ignored).filter_map(|e| e.problem.clone()))
-            .collect(),
+        problems,
     }
 }
 
 /// The usable script [name] of [kind]; `not_found` or `unavailable` with the reason otherwise.
 pub fn find(node: &Node, kind: ScriptKind, name: &str) -> Result<(ScriptEntry, ScriptSpec)> {
-    let same: Vec<ScriptEntry> =
-        discover(node, kind).into_iter().filter(|e| scripts::name_of(&e.file, kind).as_deref() == Some(name)).collect();
-    let Some(entry) = same.first().cloned() else {
+    let named: Vec<ScriptEntry> = discover(node, kind)
+        .into_iter()
+        .filter(|entry| scripts::name_of(&entry.file, kind).as_deref() == Some(name))
+        .collect();
+    if named.len() > 1 {
+        let files: Vec<&str> = named.iter().map(|entry| entry.file.as_str()).collect();
+        return Err(error(ErrorCode::Unavailable, same_name_problem(name, &files)));
+    }
+    let Some(entry) = named.into_iter().next() else {
         return Err(error(
             ErrorCode::NotFound,
             format!("no {} named '{name}' in {}", kind.name(), node.config.directory(kind)),
         ));
     };
-    if same.len() > 1 {
-        let files: Vec<&str> = same.iter().map(|e| e.file.as_str()).collect();
-        return Err(error(ErrorCode::Unavailable, format!("{} are both '{name}'; keep one", files.join(" and "))));
-    }
-    let spec = entry
-        .spec
-        .clone()
-        .ok_or_else(|| error(ErrorCode::Unavailable, entry.problem.clone().unwrap_or("unusable script".into())))?;
+    let spec = entry.spec.clone().ok_or_else(|| {
+        error(ErrorCode::Unavailable, entry.problem.clone().unwrap_or_else(|| "unusable script".into()))
+    })?;
     Ok((entry, spec))
+}
+
+/// Two [files] that are both the script [name]: which one runs would depend on the order of the directory.
+pub fn same_name_problem(name: &str, files: &[&str]) -> String {
+    format!("{} are both '{name}'; keep one", files.join(" and "))
 }
 
 /// The environment of a script: a clean one plus `LIMEN_*` (spec §6). Arguments are validated first.
@@ -105,14 +137,18 @@ pub fn environment(spec: &ScriptSpec, args: &Map<String, Value>) -> Result<Vec<S
     env.push(format!("LIMEN_KIND={}", spec.kind.name()));
     env.push(format!("LIMEN_SCRIPT={}", spec.name));
     env.push(format!("LIMEN_NODE={}", sys::hostname()));
-    for (k, v) in values {
-        let text = match &v {
-            Value::String(s) => s.clone(),
-            other => other.to_string(),
-        };
-        env.push(format!("{}={text}", scripts::env_name(&k)));
+    for (param, value) in values {
+        env.push(format!("{}={}", scripts::env_name(&param), env_value(&value)));
     }
     Ok(env)
+}
+
+/// An argument as its variable holds it: a string as itself, anything else as JSON.
+fn env_value(value: &Value) -> String {
+    match value {
+        Value::String(text) => text.clone(),
+        other => other.to_string(),
+    }
 }
 
 pub fn run(
@@ -132,5 +168,5 @@ pub fn run(
             ..Default::default()
         },
     )
-    .map_err(|e| error(ErrorCode::Internal, e))
+    .map_err(internal)
 }

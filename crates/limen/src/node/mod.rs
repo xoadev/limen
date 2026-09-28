@@ -19,6 +19,11 @@ use limen_core::redactor::Redactor;
 use serde_json::Value;
 use std::time::Duration;
 
+/// What `exec` keeps of each stream a program writes.
+const MAX_OUTPUT_BYTES: usize = 16 << 20;
+const EXEC_OK_TIMEOUT: Duration = Duration::from_secs(30);
+const MINUTE: Duration = Duration::from_secs(60);
+
 /// Everything a request on this node is answered with: its configuration and what derives from it.
 pub struct Node {
     pub config: NodeConfig,
@@ -39,13 +44,14 @@ impl Node {
     /// could have written, is `internal`, with the reason.
     pub fn load(path: &str) -> Result<Node> {
         let Some(real) = fs::real_path(path) else { return Ok(Node::new(NodeConfig::default())) };
-        let text = trusted_text(&real, sys::euid()).map_err(|e| error(ErrorCode::Internal, format!("{path}: {e}")))?;
-        NodeConfig::parse(&text).map(Node::new).map_err(|e| error(ErrorCode::Internal, format!("{path}: {e}")))
+        let unusable = |reason: String| internal(format!("{path}: {reason}"));
+        let text = read_if_trusted(&real, sys::euid()).map_err(unusable)?;
+        NodeConfig::parse(&text).map(Node::new).map_err(|reason| unusable(reason.to_string()))
     }
 
     /// [path], if only root —or the user limen runs as— could have written it (see [limen_core::trust]).
     pub fn trusted_text(&self, path: &str) -> Result<String> {
-        trusted_text(path, self.trusted_owner).map_err(|e| error(ErrorCode::Internal, e))
+        read_if_trusted(path, self.trusted_owner).map_err(internal)
     }
 
     pub fn now(&self) -> i64 {
@@ -55,34 +61,41 @@ impl Node {
     /// Runs a system program by name. A program that is not there is `unavailable` (no Docker on this node), not an
     /// internal error.
     pub fn exec(&self, argv: &[&str], timeout: Duration) -> Result<proc::ProcResult> {
-        self.exec_capped(argv, timeout, 16 << 20)
+        self.exec_capped(argv, timeout, MAX_OUTPUT_BYTES)
     }
 
+    /// [exec], keeping at most [max_output] bytes of each stream.
     pub fn exec_capped(&self, argv: &[&str], timeout: Duration, max_output: usize) -> Result<proc::ProcResult> {
-        let path = proc::which(argv[0])
-            .ok_or_else(|| error(ErrorCode::Unavailable, format!("{} is not installed on this node", argv[0])))?;
-        let full: Vec<String> = std::iter::once(path).chain(argv[1..].iter().map(|s| s.to_string())).collect();
-        let r = proc::run(&full, proc::Run { env: proc::root_env(), timeout, max_output, ..Default::default() })
-            .map_err(|e| error(ErrorCode::Internal, e))?;
-        if r.timed_out {
-            return Err(error(ErrorCode::Timeout, format!("{} did not finish in {}s", argv[0], timeout.as_secs())));
+        let (program, arguments) = argv.split_first().expect("argv starts with the program");
+        let program_path = proc::which(program)
+            .ok_or_else(|| error(ErrorCode::Unavailable, format!("{program} is not installed on this node")))?;
+        let full_argv: Vec<String> =
+            std::iter::once(program_path).chain(arguments.iter().map(ToString::to_string)).collect();
+        let result =
+            proc::run(&full_argv, proc::Run { env: proc::root_env(), timeout, max_output, ..Default::default() })
+                .map_err(internal)?;
+        if result.timed_out {
+            return Err(error(ErrorCode::Timeout, format!("{program} did not finish in {}s", timeout.as_secs())));
         }
-        Ok(r)
+        Ok(result)
     }
 
     /// [exec] that must succeed; its stderr becomes the error.
     pub fn exec_ok(&self, argv: &[&str]) -> Result<String> {
-        let r = self.exec(argv, Duration::from_secs(30))?;
-        if r.exit_code != 0 {
-            let err = r.err();
-            let last = err.trim().lines().last().map(String::from).unwrap_or_else(|| format!("exit {}", r.exit_code));
-            return Err(error(ErrorCode::Internal, format!("{}: {last}", argv[0])));
+        let result = self.exec(argv, EXEC_OK_TIMEOUT)?;
+        if result.exit_code != 0 {
+            return Err(internal(format!("{}: {}", argv[0], failure_reason(&result))));
         }
-        Ok(r.out())
+        Ok(result.out())
     }
 }
 
-fn trusted_text(path: &str, owner: u32) -> std::result::Result<String, String> {
+/// Why a program failed: the last line of its stderr, or its exit code when it wrote nothing there.
+fn failure_reason(result: &proc::ProcResult) -> String {
+    result.err().trim().lines().last().map_or_else(|| format!("exit {}", result.exit_code), String::from)
+}
+
+fn read_if_trusted(path: &str, owner: u32) -> std::result::Result<String, String> {
     let real = fs::real_path(path).ok_or_else(|| format!("{path} does not exist"))?;
     if let Some(why) = limen_core::trust::untrusted(&fs::chain(&real), owner) {
         return Err(format!("not trusted: {why}"));

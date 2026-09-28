@@ -6,6 +6,7 @@ pub mod github;
 pub mod hub;
 pub mod node;
 
+use regex::Regex;
 use serde::de::DeserializeOwned;
 use std::fmt;
 
@@ -14,8 +15,8 @@ use std::fmt;
 pub struct ConfigError(pub String);
 
 impl fmt::Display for ConfigError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0)
     }
 }
 
@@ -30,13 +31,13 @@ pub fn fail<T>(key: &str, why: impl fmt::Display) -> ConfigResult<T> {
 
 /// [text] as a [T], or where and why it isn't one, on one line.
 pub fn from_str<T: DeserializeOwned>(text: &str) -> ConfigResult<T> {
-    toml_edit::de::from_str(text).map_err(|e| {
-        let message = e.message().trim().replace('\n', "; ");
-        ConfigError(match e.span() {
+    toml_edit::de::from_str(text).map_err(|error| {
+        let message = error.message().trim().replace('\n', "; ");
+        ConfigError(match error.span() {
             Some(span) => {
                 let before = &text[..span.start.min(text.len())];
                 let line = before.matches('\n').count() + 1;
-                let column = before.len() - before.rfind('\n').map_or(0, |i| i + 1) + 1;
+                let column = before.len() - before.rfind('\n').map_or(0, |newline| newline + 1) + 1;
                 format!("line {line}, column {column}: {message}")
             }
             None => message,
@@ -47,17 +48,22 @@ pub fn from_str<T: DeserializeOwned>(text: &str) -> ConfigResult<T> {
 /// [value] if it is a positive number, as a count; [key] names it in the error.
 fn positive(key: &str, value: Option<i64>) -> ConfigResult<Option<usize>> {
     match value {
-        Some(n) if n <= 0 => fail(key, "must be positive"),
-        n => Ok(n.map(|n| n as usize)),
+        Some(count) if count <= 0 => fail(key, "must be positive"),
+        count => Ok(count.map(|count| count as usize)),
     }
 }
 
 /// [value] if it is an absolute path.
 fn absolute(key: &str, value: Option<String>) -> ConfigResult<Option<String>> {
     match value {
-        Some(v) if !v.starts_with('/') => fail(key, "must be an absolute path"),
-        v => Ok(v),
+        Some(path) if !path.starts_with('/') => fail(key, "must be an absolute path"),
+        path => Ok(path),
     }
+}
+
+/// One of limen's own regular expressions, which are known to compile.
+pub(crate) fn own_regex(pattern: &str) -> Regex {
+    Regex::new(pattern).expect("limen's own patterns compile")
 }
 
 #[cfg(test)]
@@ -67,16 +73,16 @@ mod tests {
 
     #[derive(Debug, Deserialize)]
     #[serde(deny_unknown_fields)]
-    #[allow(dead_code)]
     struct Sample {
         name: String,
     }
 
     #[test]
     fn errors_say_where_on_one_line() {
-        let e = from_str::<Sample>("name = \"a\"\n\ntypo = 1").unwrap_err();
-        assert!(e.0.starts_with("line 3, column 1: unknown field `typo`"), "{e}");
-        assert!(!e.0.contains('\n'));
+        assert_eq!(from_str::<Sample>("name = \"a\"").unwrap().name, "a");
+        let error = from_str::<Sample>("name = \"a\"\n\ntypo = 1").unwrap_err();
+        assert!(error.0.starts_with("line 3, column 1: unknown field `typo`"), "{error}");
+        assert!(!error.0.contains('\n'));
         assert!(from_str::<Sample>("name = ").is_err());
     }
 }
