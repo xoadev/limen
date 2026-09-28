@@ -531,15 +531,17 @@ key opened.
     redaction, the join's formats and the parsers of what system programs print. Pure, tested without a
     machine.
   - `limen`: the binary — processes, files, SSH, MCP and HTTP.
-- MCP: own JSON-RPC 2.0 implementation, no SDK. HTTP: `tiny_http` for the hub; `join`'s two requests over
-  `std::net`. Neither has TLS. JSON: `serde_json`. CLI: `clap`. System calls: `rustix`; no `unsafe` code.
+- MCP: own JSON-RPC 2.0 implementation, no SDK. HTTP: an own bounded HTTP/1.1 server for the hub (§9);
+  `join`'s two requests over `std::net`. Neither has TLS. JSON: `serde_json`. CLI: `clap`. System calls: `rustix`; no `unsafe` code.
 - Users and groups come from `/etc/passwd` and `/etc/group`, read by limen itself; nodes resolve no host
   names (`git` and `ssh` do).
 - Processes: `std::process::Command` with an argument array, never a shell; own process group, a clean
   environment, stdout and stderr on separate pipes read with a cap; timeouts send `SIGTERM` to the group,
   then `SIGKILL`.
 - SSH: the system `ssh` binary with `BatchMode=yes`, `IdentitiesOnly=yes` and connection
-  multiplexing (`ControlMaster`, sockets in `$XDG_RUNTIME_DIR/limen-<uid>/<hub>` or `/tmp/limen-<uid>/<hub>`, directories of mode `0700` that must be the user's; `-F none`, and no agent or port forwarding).
+  multiplexing (`ControlMaster`, sockets in `$XDG_RUNTIME_DIR/limen-<uid>/<hub>`, or under `/tmp` when that path
+  would not fit a Unix socket; directories of mode `0700` that must be the user's), `-F none`, and no agent or port
+  forwarding.
 - TOML: `toml_edit`. Files are read into `#[derive(Deserialize)]` types that refuse unknown keys, so a typo
   fails with its line; the hub's and node's `limen.toml` are edited as documents, comments kept.
 

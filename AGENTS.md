@@ -21,6 +21,8 @@ next session, another agent or a person can't read it.
 |---|---|
 | `docs/` | `spec.md`; `openwrt.md`, OpenWrt as a node and the one binary for every Linux |
 | `Cargo.toml`, `rust-toolchain.toml` | The workspace and the Rust version it is built with, targets included; `.cargo/config.toml` links the musl targets with `rust-lld` |
+| `rustfmt.toml`, `clippy.toml`, `[workspace.lints]` | The layout and the lints `make lint` applies (see [Code](#code)) |
+| `.claude/settings.json` | Claude Code's hooks for this repository: an edited Rust file is formatted at once |
 | `crates/limen-core/` | Pure rules: protocol, request schemas, argument validation, configuration, TOML reading, script headers, path policy, redaction, the join's formats, parsers of what system programs print. No processes, files or network |
 | `crates/limen/` | The `limen` binary: `os/` (processes, files), `node/` (gate, requests, platforms, repository, scripts, install, join), `hub/` (SSH client, MCP server, transports, the hub's directory) |
 | `install.sh` | The installer a user pipes into `sh` on a new machine. POSIX `sh` (OpenWrt has no bash); `make e2e` runs it under dash and ash |
@@ -33,7 +35,7 @@ next session, another agent or a person can't read it.
 | Crate | Type | May depend on | Never on |
 |---|---|---|---|
 | `limen-core` | Library | Pure crates: `serde`, `serde_json`, `toml_edit`, `indexmap`, `regex`, `sha2`, `hmac`, `base64` | processes, files, network, system calls |
-| `limen` | The binary, static musl for `x86_64` and `aarch64` | `limen-core`, `clap`, `rustix`, `tiny_http` | — |
+| `limen` | The binary, static musl for `x86_64` and `aarch64` | `limen-core`, `clap`, `rustix`, `regex`, `serde`, `serde_json`, `base64` | C code of any kind |
 
 Rules that hold:
 
@@ -42,8 +44,8 @@ Rules that hold:
 - **A new dependency must build for both musl targets without a C compiler** —`make cli ARCH="x86_64 aarch64"`—
   and earn its size: the binary goes on routers with a few megabytes of flash. `make e2e` runs the result on Debian
   and OpenWrt.
-- **No `unsafe` code**: `#![forbid(unsafe_code)]` in both crates. What `std` lacks (`statvfs`, `poll`, `kill` of a
-  process group, termios, `uname`) comes from `rustix`'s safe API.
+- **No `unsafe` code**: `unsafe_code = "forbid"` in the workspace lints. What `std` lacks (`statvfs`, `poll`, `flock`,
+  `kill` of a process group, termios, `uname`) comes from `rustix`'s safe API.
 
 ## Technical choices
 
@@ -59,20 +61,40 @@ Each one had an alternative. Changing one is changing this table and the spec's 
 | MCP | Own JSON-RPC 2.0, no SDK | A few hundred lines, fully under control; the SDKs bring an async runtime |
 | TOML | `toml_edit`: `#[derive(Deserialize)]` with `deny_unknown_fields` to read, `DocumentMut` to edit | A typo is an error with its line; editing a document keeps the operator's comments, and a value can't become a table |
 | CLI | `clap` (derive) | Help and usage from the definitions |
-| HTTP | `tiny_http` for the hub; `join`'s two requests over `std::net` (`os/http.rs`) | Synchronous and small; the hub is reached over a VPN or the LAN, and a client library was ten crates for two requests to our own server |
+| HTTP | An own HTTP/1.1 server for the hub (`hub/server.rs`); `join`'s two requests over `std::net` (`os/http.rs`) | `tiny_http` let one unauthenticated request with a huge `Content-Length` stop the hub; a server of a few hundred lines has the limits (connections, head, body, time) where they can be seen. A client library was ten crates for two requests to our own server |
 | libc | musl, linked statically by Rust's own targets and `rust-lld` | One file per architecture runs on any Linux, and building for arm64 needs no cross compiler |
 | System facts | `/proc`, `statvfs`, `/etc/passwd` | `ps`, `ss` and `df` differ between distributions and busybox |
 
 ## Conventions
 
 - **Everything in English**: code, comments, documentation, commit messages, tool descriptions.
-- **Comments only when they add something**: the *why* the code can't say — a rule of the spec, a platform
-  constraint, a decision with an alternative. Never a narration of the line below.
-- **Security rules are code, not habits.** Every read goes through `PathPolicy` with the resolved path; every
-  argument through `params::validate`; every program through `proc::run` with an argument array; every text leaving
-  the node through `Redactor`.
+- **Security rules are code, not habits.** Every path the read role opens is walked by `read::walk` and opened once
+  with `fs::open_exact`, every check made on that descriptor; every argument goes through `params::validate`; every
+  program through `proc::run` with an argument array; every text leaving the node through `Redactor`.
 - **Errors say what to do**: `no SSH key at /data/id_ed25519 ([ssh].identity in /data/limen.toml)`, not
   `file not found`.
+
+## Code
+
+Code here is read far more than written, often by someone who has never seen it. Most of what follows is checked by
+clippy: the workspace lints in `Cargo.toml` and `clippy.toml`, where every warning fails `make lint`.
+
+- **Names say what a thing holds or does.** No single-letter names (`min_ident_chars`; `i`, `j`, `n`, `x`… are the
+  exceptions), closures and tests included: `entry`, `line`, `answer`, not `e`, `l`, `o`. Functions are verbs, or
+  the thing they return (`resolve`, `last_matching`, `allowed_file`). No abbreviation a reader has to decode.
+- **One function, one job.** A hundred lines at most (`too_many_lines`), and far fewer is normal; seven arguments at
+  most (`too_many_arguments`): more is a struct asking to exist.
+- **One place for each thing.** A second copy of a piece of logic becomes a function, a type or a module both use.
+  Look before writing: paths and files are `os::fs`, processes `os::proc`, argument rules `limen_core::params`,
+  masking `Redactor`, errors `protocol::error`.
+- **Small types with one responsibility, traits at the seams.** What talks to the outside sits behind a trait a
+  test can fake (`NodeClient` for the nodes, `server::Handler` for HTTP); rules are plain functions over data in
+  `limen-core`. Code depends on those traits and types, not on the concrete I/O behind them.
+- **Comments for what the code can't say**: why, a platform constraint, a rule of the spec, a decision with an
+  alternative, context without which the code would mislead. Never a narration of the line below; a name that
+  needs a comment needs a better name.
+- **No `unwrap` outside tests** (`unwrap_used`): `expect("…")` says why it can't fail, and whatever can fail returns
+  an error. A silenced lint says why: `#[allow(clippy::…, reason = "…")]` (`allow_attributes_without_reason`).
 
 ## Mandatory loop
 
@@ -91,8 +113,8 @@ spec → change → make check → commit
 5. Small commits. One goal per branch; the PR includes the output of `make check`.
 
 **Commits follow [Conventional Commits](https://www.conventionalcommits.org)**: `feat(gate): answer ports`. Types:
-`feat`, `fix`, `docs`, `refactor`, `test`, `chore`, `build`, `ci`; scopes: `core`, `gate`, `hub`, `install`,
-`spec`, `harness`. **PRs are merged with squash**, so the PR title is the commit that stays.
+`feat`, `fix`, `docs`, `refactor`, `test`, `chore`, `build`, `ci`; scopes: `core`, `node`, `gate`, `hub`, `install`,
+`image`, `release`, `spec`, `readme`, `harness`. **PRs are merged with squash**, so the PR title is the commit that stays.
 
 **Nothing is committed straight to `main`.** Everything through a PR, one-line changes included. `make hooks`
 installs a `pre-push` that refuses pushes to `main`.
@@ -107,7 +129,7 @@ covers what you need, add the target or the script in `tools/`.
 | Target | What it does |
 |---|---|
 | `make check` | `lint build test`. What CI runs |
-| `make lint` | rustfmt and clippy (every warning an error) over `crates/`, shellcheck over `tools/` and `install.sh`, actionlint over the workflows. `FIX=1` formats instead of checking |
+| `make lint` | rustfmt and clippy (every warning an error, the workspace lints included) over `crates/`, shellcheck over `tools/` and `install.sh`, actionlint over the workflows. `FIX=1` formats instead of checking |
 | `make build` / `make test` | Every crate, tests included, for this machine |
 | `make cli` | Only the static binary. `VARIANT=release` for the optimised one; `ARCH="x86_64 aarch64"` for both architectures |
 | `make e2e` | Containers with a real SSH server —Debian with OpenSSH and a repository, OpenWrt's image with dropbear—, `limen install` inside, the hub against them with both keys. `SUITE=debian`, `openwrt` or `join` for one. Needs Docker. Not in `make check` |
@@ -129,7 +151,7 @@ a tag can move, a SHA can't. Secrets reach a step through `env:`, never interpol
 | `release.yml` | Every push to `main`; by hand to publish | On a push, [convco-version](https://github.com/xoadev/convco-version) reads the conventional commits that touched what goes into the binary or the image and rewrites **one draft** release, `vX.Y.Z`, with what went in; nothing is built. **Run by hand** (Actions → release → Run workflow), it publishes that draft: waits for `check.yml` green on the draft's commit, stamps the version (`limen --version`), builds both static binaries in release, runs `make e2e` with the release binary, checks they are static, builds the image per architecture and starts it, pushes it to `ghcr.io/<repo>` as `X.Y.Z`, attests binaries and image, attaches the binaries and `SHA256SUMS` to the draft, and only then publishes it —which creates the tag— and moves `latest`. With `publish` unticked it builds all of it and publishes nothing. Nobody publishes from the releases page: a release would be public without its files |
 | `cli.yml` | Label `cli` on a PR, or by hand | Both binaries (debug) as an artifact, with the link commented on the PR: for trying a change on a real node |
 | `e2e.yml` | Every PR that touches code (`crates/`, the Cargo files, `tools/`, `etc/`, `install.sh`, `Makefile`); weekly; by hand | `make e2e`, every suite. Weekly because the Debian and OpenWrt images it runs move upstream |
-| `dependabot.yml` | Weekly | Pull requests that update the pinned actions, SHA and version comment together |
+| `dependabot.yml` | Weekly | Pull requests that update the pinned actions (SHA and version comment together), the crates and the image's base images |
 
 The version is never written in the code: the commits decide it, and it only exists once a release is published.
 The build reads it from `LIMEN_VERSION`, `LIMEN_BUILD_DATE` and `LIMEN_BUILD_NUMBER` (`tools/cargo.sh` checks their
@@ -140,7 +162,7 @@ shape); a local build says `dev`.
 Mistakes made here, with what avoids them. `make check` does not see them.
 
 - **`O_NOFOLLOW` refuses symlinks, `/etc/os-release` included.** `fs::read` opens what the caller already resolved
-  and checked; resolve with `fs::real_path` first, or use `fs::read_following` for a configuration file.
+  and checked; a configuration file that may be a link is `fs::read_following`.
 - **A child can close its stdin before reading it.** Writing to it then fails with EPIPE (Rust ignores SIGPIPE);
   `proc::run` treats that as the end of the input, not an error. A test sends a megabyte to `/bin/true`.
 - **A multiplexed SSH connection skips the host key check.** With `ControlMaster`, a second connection to the
@@ -149,8 +171,7 @@ Mistakes made here, with what avoids them. `make check` does not see them.
 - **Script trust depends on who runs it.** A script is trusted when it and every parent directory are owned by
   root (or the user limen runs as) and not writable by group or others. `/tmp` and a group-writable checkout fail
   that on purpose; tests that run scripts live in `make e2e`, where they are root's.
-
-- **`/proc/mounts` is a symlink**, and `Fs.read` opens with `O_NOFOLLOW`: read `/proc/self/mounts`.
+- **`/proc/mounts` is a symlink**, and `fs::read` opens with `O_NOFOLLOW`: read `/proc/self/mounts`.
 - **Two roles as the same user share a multiplexed SSH connection.** On OpenWrt both keys log in as root; a
   deploy request through `ControlMaster` rode the socket the read key had opened and landed in the read role.
   Deploy requests never multiplex.
@@ -176,6 +197,16 @@ Mistakes made here, with what avoids them. `make check` does not see them.
   lines took 211 s. Fixed patterns are `static … LazyLock<Regex>`.
 - **Unicode's `\s` and `\w` cost milliseconds to compile**, on every request: the built-in redaction patterns
   spell their classes in ASCII and compile on first use.
+- **A `grep` on the raw text is an oracle.** Filtering before redacting answered whether a guess at a secret was
+  right, one character at a time. Every filter runs on what is already redacted (`read::last_matching`).
+- **Checking a path and then opening it again is a race.** A local user swapped a directory for a link between the
+  check and `list_dir`'s listing, 44 times in 300. The read role opens once and checks the descriptor.
+- **A Unix socket path has 108 bytes.** ssh's control socket in a long `XDG_RUNTIME_DIR` made every call to OpenWrt
+  in `make e2e` fail; `hub::ssh::runtime_dir` falls back to `/tmp` when the path would not fit.
+- **`userdel --remove` won't remove a home its user doesn't own**, and role users' homes are root's: `uninstall`
+  removes the one it made itself.
+- **What a workflow does with `GITHUB_TOKEN` starts no other workflow.** A tag or a release it creates triggers
+  nothing, which is why publishing is one workflow run by hand, not a tag that starts another.
 
 ## Prohibitions
 

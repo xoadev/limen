@@ -44,7 +44,9 @@ Go through `make`: a plain `cargo build` builds for this machine's libc, not the
 - Titles follow [Conventional Commits](https://www.conventionalcommits.org): `fix(gate): …`, `feat(hub): …`,
   `docs: …`. Pull requests are merged with squash, so the title is the commit that stays and what the release
   notes are made of.
-- Code, comments and documentation are in English. Comments say *why*, not what the next line does.
+- Code, comments and documentation are in English. Names say what things are, functions do one thing, and
+  comments say *why*, not what the next line does: [`AGENTS.md`](AGENTS.md#code) has the rules, and clippy checks
+  most of them.
 - Describe what changed and paste the end of `make check` (and `make e2e` when it applies).
 
 By contributing you agree that your contribution is licensed under the [Apache License 2.0](LICENSE).
