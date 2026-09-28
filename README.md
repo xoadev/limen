@@ -219,6 +219,10 @@ safety net.
 
 ### Other ways
 
+- **Before a hub**, a machine can already follow its repository:
+  `curl -fsSL …/install.sh | sudo env LIMEN_REPO=https://github.com/you/infra.git sh` sets it up and syncs, and
+  `sudo limen apply` brings it up; nothing is open to SSH until a hub joins it with its line. The hub's own machine
+  can be built that way: its folder's stacks include the hub, and once `apply` starts it, the machine joins it.
 - **The hub on your laptop**, for Claude Code there (stdio, nothing listening):
   `curl -fsSL …/install.sh | sh -s -- --hub` installs `limen` in `~/.local/bin`, creates `~/.limen` and prints the
   `claude mcp add` line. Without an HTTP hub to call back, `limen invite nas` prints a line with the hub's key in it

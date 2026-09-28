@@ -250,6 +250,11 @@ procd = ["dnsmasq", "firewall"]       # OpenWrt services that must exist and not
 - `state` (read role, an MCP tool) compares the deployed commit with the remote (`git ls-remote`:
   nothing on the node changes) and every expected service with what runs.
 - With `[repo]`, the script directories default to the node's folder; `[scripts]` still overrides.
+- **A machine can follow its repository before there is a hub.** `install --repo` without `--read-key` sets up
+  `/etc/limen`, the repository and its token, and syncs, but opens nothing to SSH; `sudo limen apply` then brings the
+  machine up on its own. A join later adds the hub's key and leaves `[repo]` as it is. That is how the hub's own
+  machine can be built from the repository: its folder's stacks include the hub, `apply` starts it, and the machine
+  then joins the hub it runs.
 - **Whoever can push to that branch runs code as root on the node**, and the MCP can run its checks.
   The branch must be protected.
 - A private repository over `https://` needs a token (§10, `install`). It lives in
@@ -423,7 +428,7 @@ host_key = "ssh-ed25519 AAAA…"
 | `limen join <line> \| --hub-key <key> --name <name> [--repo …] [--deploy-key …] [--from …] [--address …] [--ssh-port …]` | node, root | Joins the hub (§10.1): install with the hub's key, then report. `--path` defaults to `nodes/<its name on the hub>` |
 | `limen call <node> <request> [--arg k=v]…` | hub | One request over SSH; prints the JSON. Checks as `check_<name>`; a script's arguments are typed by its header, from the node's catalog. For `apply` and `action`, with the deploy role's `--user` and `--identity`, it streams their output: what CI runs |
 | `limen gate --role <role>` | node | The forced command. Not for people |
-| `limen install --read-key <key> [--deploy-key <key>] [--from <cidr>] [--repo <url> [--branch b] [--path p]] [--dry-run]` | node, root | Debian: binary in `/usr/local/bin`, users, `authorized_keys`, `sudoers` (validated with `visudo -c` first). OpenWrt: binary in `/usr/bin`, root's dropbear keys, sysupgrade keep list. Both: `/etc/limen/`; with `--repo`, the repository (below). Idempotent |
+| `limen install [--read-key <key>] [--deploy-key <key>] [--from <cidr>] [--repo <url> [--branch b] [--path p]] [--dry-run]` | node, root | Debian: binary in `/usr/local/bin`, users, `authorized_keys`, `sudoers` (validated with `visudo -c` first). OpenWrt: binary in `/usr/bin`, root's dropbear keys, sysupgrade keep list. Both: `/etc/limen/`; with `--repo`, the repository (below). Without `--read-key` there is no hub yet: only the keys given are wired, and `--repo` alone is a machine that follows its repository (§6.1). Idempotent |
 | `limen uninstall [--purge]` | node, root | Undoes `install`; keeps `/etc/limen/`, the logs and the checkout unless `--purge` |
 | `limen token` | node, root | Asks for the repository token again (when it expires), checks it and saves it |
 | `limen sync` | node | The checkout to the remote branch |

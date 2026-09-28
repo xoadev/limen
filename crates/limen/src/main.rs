@@ -223,9 +223,9 @@ struct JoinArgs {
 
 #[derive(Args)]
 struct InstallArgs {
-    /// Public key of the hub (read role)
+    /// Public key of the hub (read role); without it there is no hub yet, and a join adds one later
     #[arg(long)]
-    read_key: String,
+    read_key: Option<String>,
     #[command(flatten)]
     setup: SetupArgs,
     /// Say what would change and change nothing
@@ -592,7 +592,7 @@ fn join_with_key(hub_key: &str, args: &JoinArgs) -> Exit {
 
 fn install(args: &InstallArgs) -> Exit {
     let node = sys::hostname().to_lowercase();
-    Installer::new(args.dry_run).install(&args.read_key, &args.setup.setup(), &node, true).map_err(failed("install"))
+    Installer::new(args.dry_run).install(args.read_key.as_deref(), &args.setup.setup(), &node, true).map_err(failed("install"))
 }
 
 fn apply(from: Option<&str>, sync_first: bool, dry_run: bool, config: &str) -> Exit {

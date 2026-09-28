@@ -18,7 +18,7 @@ impl Joiner {
         let invitation = fetch_invitation(url)?;
         let fingerprint = verify_invitation(url, &invitation)?;
         sys::say(&format!("Joining the hub at {} as '{}' (hub key {fingerprint})", url.base, invitation.name));
-        self.installer.install(&invitation.hub_key, setup, &invitation.name, false)?;
+        self.installer.install(Some(&invitation.hub_key), setup, &invitation.name, false)?;
         let host_key = self.installer.host_key().ok_or("cannot read this machine's SSH host key")?;
         let arrival = Arrival::new(&join::without_comment(&host_key), &self.installer.read_user(), ssh_port, address)
             .signed(&url.secret);
@@ -28,7 +28,7 @@ impl Joiner {
 
     pub fn with_key(&self, hub_key: &str, name: &str, setup: &Setup, ssh_port: u16) -> Outcome<i32> {
         join::fingerprint(hub_key).map_err(|failure| format!("--hub-key: {}", failure.message))?;
-        self.installer.install(hub_key, setup, name, false)?;
+        self.installer.install(Some(hub_key), setup, name, false)?;
         let host_key = self
             .installer
             .host_key()

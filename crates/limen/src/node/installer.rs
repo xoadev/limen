@@ -99,31 +99,39 @@ impl Installer {
     }
 
     /// Sets this machine up with the hub's [read_key] and [setup]; [node] is its name, the repository's default folder.
-    pub fn install(&self, read_key: &str, setup: &Setup, node: &str, announce: bool) -> Outcome<i32> {
+    /// Without a read key there is no hub yet: the machine can follow its repository, and a join adds the hub later.
+    pub fn install(&self, read_key: Option<&str>, setup: &Setup, node: &str, announce: bool) -> Outcome<i32> {
         let (deploy_key, from) = (setup.deploy_key.as_deref(), setup.from.as_deref());
         let repo = setup.repo.as_ref().map(|choice| choice.for_node(node));
         let repo = repo.as_ref();
-        self.check_arguments(read_key, deploy_key, from)?;
+        self.check_arguments(read_key, deploy_key, from, repo.is_some())?;
         let repo_config = repo.map(repo_config).transpose()?;
         self.require_root()?;
-        let keys: Vec<(Role, &str)> =
-            std::iter::once((Role::Read, read_key)).chain(deploy_key.map(|key| (Role::Deploy, key))).collect();
+        let keys: Vec<(Role, &str)> = read_key
+            .map(|key| (Role::Read, key))
+            .into_iter()
+            .chain(deploy_key.map(|key| (Role::Deploy, key)))
+            .collect();
         self.refuse_keys_opened_elsewhere(&keys)?;
         if let Some(repo_config) = &repo_config {
             self.check_repo(repo_config)?;
         }
         self.install_binary()?;
-        if self.openwrt {
-            self.wire_dropbear(&keys)?;
-        } else {
-            self.wire_openssh(&keys, from)?;
+        if !keys.is_empty() {
+            if self.openwrt {
+                self.wire_dropbear(&keys)?;
+            } else {
+                self.wire_openssh(&keys, from)?;
+            }
         }
         self.ensure_directories(repo)?;
         if let Some(repo_config) = &repo_config {
             self.connect_repo(repo_config)?;
         }
-        if announce {
-            self.announce_next_steps();
+        match (announce, read_key) {
+            (false, _) => {}
+            (true, Some(_)) => self.announce_next_steps(),
+            (true, None) => self.announce_without_hub(),
         }
         Ok(0)
     }
@@ -171,12 +179,26 @@ impl Installer {
     }
 
     /// The arguments on their own, before anything on the machine is looked at.
-    fn check_arguments(&self, read_key: &str, deploy_key: Option<&str>, from: Option<&str>) -> Outcome<()> {
-        validate_key("--read-key", read_key)?;
+    fn check_arguments(
+        &self,
+        read_key: Option<&str>,
+        deploy_key: Option<&str>,
+        from: Option<&str>,
+        follows_repo: bool,
+    ) -> Outcome<()> {
+        if read_key.is_none() && deploy_key.is_none() && !follows_repo {
+            return Err("nothing to install: give --read-key (the hub's key), --repo, or both".into());
+        }
+        if let Some(read_key) = read_key {
+            validate_key("--read-key", read_key)?;
+        }
         if let Some(deploy_key) = deploy_key {
             validate_key("--deploy-key", deploy_key)?;
         }
         if let Some(from) = from {
+            if read_key.is_none() && deploy_key.is_none() {
+                return Err("--from limits where the keys connect from; give --read-key or --deploy-key".into());
+            }
             if !FROM_ADDRESSES.is_match(from) {
                 return Err(format!("--from '{from}' is not a list of addresses or CIDRs"));
             }
@@ -186,7 +208,9 @@ impl Installer {
                 );
             }
         }
-        if deploy_key.is_some_and(|deploy_key| key_blob(deploy_key) == key_blob(read_key)) {
+        let same_key =
+            matches!((read_key, deploy_key), (Some(read_key), Some(deploy_key)) if key_blob(read_key) == key_blob(deploy_key));
+        if same_key {
             return Err("--read-key and --deploy-key are the same key: the hub would hold the deploy role too".into());
         }
         Ok(())
@@ -617,6 +641,17 @@ impl Installer {
         }
         let host_key = self.host_key().unwrap_or("<ssh-keyscan -t ed25519 this-host, checked out of band>".into());
         sys::say(&format!("  host_key = \"{host_key}\""));
+        if self.warnings.get() > 0 {
+            sys::say(&format!("{} warning(s) above.", self.warnings.get()));
+        }
+    }
+
+    /// No hub yet: what the machine can already do, and how a hub joins it later.
+    fn announce_without_hub(&self) {
+        sys::say("");
+        self.conclude("limen is installed, with no hub yet.");
+        sys::say("`sudo limen apply` brings this machine to its folder of the repository. A hub joins it later:");
+        sys::say("  on the hub, `limen invite <name>`; here, as root, the line that prints");
         if self.warnings.get() > 0 {
             sys::say(&format!("{} warning(s) above.", self.warnings.get()));
         }

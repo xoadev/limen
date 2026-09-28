@@ -315,6 +315,14 @@ EOF
   echo "e2e/debian: uninstall"
   expect "uninstall removes the users" "limen is uninstalled" docker exec "$node" limen uninstall --purge
   expect "and the users are gone" "no such user" docker exec "$node" id limen-read
+
+  echo "e2e/debian: a repository before a hub"
+  expect "install --repo with no hub key" "with no hub yet" \
+    docker exec "$node" /tmp/limen install --repo file:///srv/moved.git --path nodes/e2e
+  expect "and nothing a hub could log in to" "no such user" docker exec "$node" id limen-read
+  expect "apply on the machine itself" "limen: apply finished: 1 script(s), 0 stack(s)" docker exec "$node" limen apply
+  expect "a hub joins later" "limen is installed" docker exec "$node" limen install --read-key "$(cat "$work/read.pub")"
+  expect "and the repository stays" "moved.git" docker exec "$node" grep -h "url" /etc/limen/limen.toml
 }
 
 suite_openwrt() {

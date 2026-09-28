@@ -3,6 +3,8 @@
 #
 # A machine, joining a hub (spec §10.1), as root — the hub's `limen invite <name>` prints this line:
 #   curl -fsSL https://raw.githubusercontent.com/xoadev/limen/main/install.sh | sudo sh -s -- --join '<line>'
+# A machine with no hub yet, following its repository (a hub joins it later with the line above):
+#   curl -fsSL https://raw.githubusercontent.com/xoadev/limen/main/install.sh | sudo env LIMEN_REPO=<url> sh
 # A hub for this user, for Claude Code on this machine (stdio):
 #   curl -fsSL https://raw.githubusercontent.com/xoadev/limen/main/install.sh | sh -s -- --hub
 #
@@ -147,11 +149,12 @@ main() {
 
   # --- a machine: how it joins ---------------------------------------------------------------------------------------
   LIMEN_HUB_KEY=${LIMEN_HUB_KEY:-${LIMEN_READ_KEY:-}}
+  no_hub=0
   if [ -z "${LIMEN_JOIN:-}" ] && [ -z "$LIMEN_HUB_KEY" ]; then
-    ask LIMEN_JOIN "The join line from the hub's \`limen invite\` (or the hub's public key)" ""
+    ask LIMEN_JOIN "The join line from the hub's \`limen invite\` (or the hub's public key; empty: no hub yet)" ""
     case "$LIMEN_JOIN" in
       ssh-* | /*) LIMEN_HUB_KEY=$LIMEN_JOIN; LIMEN_JOIN= ;;
-      "") die "a join line (LIMEN_JOIN) or the hub's key (LIMEN_HUB_KEY) is needed" ;;
+      "") no_hub=1 ;;
     esac
   fi
   if [ -n "$LIMEN_HUB_KEY" ] && [ -z "${LIMEN_JOIN:-}" ]; then ask LIMEN_NAME "This machine's name on the hub" "$hostname"; fi
@@ -160,7 +163,7 @@ main() {
   ask LIMEN_REPO "Repository this machine follows, e.g. https://github.com/you/infra.git (none to skip)" "none"
   if [ "$LIMEN_REPO" != none ]; then
     ask LIMEN_BRANCH "Its branch" "main"
-    ask LIMEN_PATH "Its folder in the repository (empty: nodes/<its name on the hub>)" ""
+    ask LIMEN_PATH "Its folder in the repository (empty: nodes/<this machine's name>)" ""
     if ! command -v git > /dev/null 2>&1; then
       if [ "$openwrt" = 1 ]; then
         if command -v apk > /dev/null 2>&1; then install_git="apk update && apk add git-http"; else install_git="opkg update && opkg install git-http"; fi
@@ -174,16 +177,21 @@ main() {
     fi
   fi
 
-  # --- limen join ----------------------------------------------------------------------------------------------------
-  if [ -n "${LIMEN_JOIN:-}" ]; then
+  # --- limen join, or install with no hub yet ------------------------------------------------------------------------
+  if [ "$no_hub" = 1 ]; then
+    [ "$LIMEN_REPO" != none ] || die "nothing to do: a hub (LIMEN_JOIN or LIMEN_HUB_KEY) or a repository (LIMEN_REPO)"
+    set -- install
+  elif [ -n "${LIMEN_JOIN:-}" ]; then
     set -- join "$LIMEN_JOIN"
   else
     set -- join --hub-key "$(key "$LIMEN_HUB_KEY")" --name "${LIMEN_NAME:-$hostname}"
   fi
   [ -z "${LIMEN_DEPLOY_KEY:-}" ] || [ "$LIMEN_DEPLOY_KEY" = none ] || set -- "$@" --deploy-key "$(key "$LIMEN_DEPLOY_KEY")"
   [ -z "${LIMEN_FROM:-}" ] || set -- "$@" --from "$LIMEN_FROM"
-  [ -z "${LIMEN_ADDRESS:-}" ] || set -- "$@" --address "$LIMEN_ADDRESS"
-  [ -z "${LIMEN_SSH_PORT:-}" ] || set -- "$@" --ssh-port "$LIMEN_SSH_PORT"
+  if [ "$no_hub" = 0 ]; then
+    [ -z "${LIMEN_ADDRESS:-}" ] || set -- "$@" --address "$LIMEN_ADDRESS"
+    [ -z "${LIMEN_SSH_PORT:-}" ] || set -- "$@" --ssh-port "$LIMEN_SSH_PORT"
+  fi
   if [ "$LIMEN_REPO" != none ]; then
     set -- "$@" --repo "$LIMEN_REPO" --branch "${LIMEN_BRANCH:-main}"
     [ -z "${LIMEN_PATH:-}" ] || set -- "$@" --path "$LIMEN_PATH"
