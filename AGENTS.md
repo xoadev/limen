@@ -120,8 +120,9 @@ spec → change → make check → commit
 `feat`, `fix`, `docs`, `refactor`, `test`, `chore`, `build`, `ci`; scopes: `core`, `node`, `gate`, `hub`, `install`,
 `image`, `release`, `spec`, `readme`, `harness`. **PRs are merged with squash**, so the PR title is the commit that stays.
 
-**Nothing is committed straight to `main`.** Everything through a PR, one-line changes included. `make hooks`
-installs a `pre-push` that refuses pushes to `main`.
+**Nothing is committed straight to `main`.** Everything through a PR, one-line changes included: a ruleset on `main`
+refuses pushes and merges without `check` green, and allows squash only. `make hooks` installs a `pre-push` that
+refuses pushes to `main` before GitHub has to.
 
 If `make check` can't go green for a reason outside your goal, say so in the PR; never disable or relax a check.
 
@@ -147,7 +148,9 @@ covers what you need, add the target or the script in `tools/`.
 
 Every workflow calls `Makefile` targets: what is checked is defined once, and CI can't drift from a laptop. Every
 third-party action is pinned by commit SHA with its version in a comment (`actions/checkout@3d3c42e… # v7.0.1`):
-a tag can move, a SHA can't. Secrets reach a step through `env:`, never interpolated into `run:`.
+a tag can move, a SHA can't, and the repository refuses to run one that isn't. A workflow's token only reads unless
+its job asks for more. Secrets reach a step through `env:`, never interpolated into `run:`. Releases are immutable,
+and no `v*` tag can be moved or deleted.
 
 | Workflow | When | What |
 |---|---|---|
