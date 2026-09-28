@@ -3,6 +3,7 @@
 
 use crate::config;
 use crate::durations;
+use crate::own_regex;
 use crate::params::{self, DEFAULT_STRING_PATTERN, PARAM_NAME, Param, ParamType};
 use crate::requests::SCRIPT_NAME;
 use indexmap::IndexMap;
@@ -63,15 +64,20 @@ pub struct Catalog {
     pub problems: Vec<String>,
 }
 
-static SCRIPT_NAME_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(SCRIPT_NAME).expect("SCRIPT_NAME is a valid regex"));
+static SCRIPT_NAME_REGEX: LazyLock<Regex> = LazyLock::new(|| own_regex(SCRIPT_NAME));
 
 /// A setup script runs in the order of its numeric prefix (spec §6).
-static SETUP_NAME_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new("^[0-9]{1,4}-.+$").expect("a setup script's name pattern is a valid regex"));
+static SETUP_NAME_REGEX: LazyLock<Regex> = LazyLock::new(|| own_regex("^[0-9]{1,4}-.+$"));
 
-static PARAM_NAME_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(PARAM_NAME).expect("PARAM_NAME is a valid regex"));
+static PARAM_NAME_REGEX: LazyLock<Regex> = LazyLock::new(|| own_regex(PARAM_NAME));
+
+pub fn is_script_name(name: &str) -> bool {
+    SCRIPT_NAME_REGEX.is_match(name)
+}
+
+pub fn is_param_name(name: &str) -> bool {
+    PARAM_NAME_REGEX.is_match(name)
+}
 
 /// The script name of a file: its name without the extension, or None when that is not a script's name.
 pub fn name_of(file: &str, kind: ScriptKind) -> Option<String> {
@@ -79,7 +85,7 @@ pub fn name_of(file: &str, kind: ScriptKind) -> Option<String> {
         return None;
     }
     let base = file.rsplit_once('.').map_or(file, |(base, _extension)| base);
-    if !SCRIPT_NAME_REGEX.is_match(base) || (kind == ScriptKind::Setup && !SETUP_NAME_REGEX.is_match(base)) {
+    if !is_script_name(base) || (kind == ScriptKind::Setup && !SETUP_NAME_REGEX.is_match(base)) {
         return None;
     }
     Some(base.into())
@@ -137,7 +143,7 @@ pub fn parse(name: &str, kind: ScriptKind, text: &str) -> Result<ScriptSpec, Str
 }
 
 fn param(script: &str, name: &str, arg: Arg) -> Result<Param, String> {
-    if !PARAM_NAME_REGEX.is_match(name) {
+    if !is_param_name(name) {
         return Err(format!("{script}: argument name '{name}' must match {PARAM_NAME}"));
     }
     arg.into_param(name).map_err(|why| format!("{script}: argument '{name}': {why}"))

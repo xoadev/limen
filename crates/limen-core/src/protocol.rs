@@ -49,6 +49,11 @@ impl LimenError {
     pub fn new(code: ErrorCode, message: impl Into<String>) -> Self {
         Self { code, message: message.into(), versions: None }
     }
+
+    /// `code: message`, as limen prints an error on a terminal or in a log.
+    pub fn summary(&self) -> String {
+        format!("{}: {}", self.code.wire(), self.message)
+    }
 }
 
 impl fmt::Display for LimenError {
@@ -69,15 +74,32 @@ pub fn error(code: ErrorCode, message: impl Into<String>) -> LimenError {
     LimenError::new(code, message)
 }
 
+/// limen's own failure: a file it can't write, a program it can't start.
+pub fn internal(message: impl Into<String>) -> LimenError {
+    LimenError::new(ErrorCode::Internal, message)
+}
+
 /// One request. Strict: a field nobody reads is an error, not a silent no-op.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-#[allow(clippy::min_ident_chars, reason = "`v`, the protocol version, is the field's name on the wire (spec §4)")]
 pub struct NodeRequest {
-    pub v: i64,
+    #[serde(rename = "v")]
+    pub version: i64,
     pub request: String,
     #[serde(default)]
     pub args: Map<String, Value>,
+}
+
+impl NodeRequest {
+    /// A request in the protocol version this build speaks first.
+    pub fn new(request: &str, args: Map<String, Value>) -> Self {
+        Self { version: PROTOCOL_VERSIONS[0], request: request.into(), args }
+    }
+
+    /// The request as the gate reads it: one line of JSON.
+    pub fn to_line(&self) -> String {
+        format!("{}\n", serde_json::to_string(self).expect("a request serializes"))
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -86,6 +108,13 @@ pub struct NodeError {
     pub message: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub versions: Option<Vec<i64>>,
+}
+
+impl NodeError {
+    /// `code: message`, as the hub shows a node's error.
+    pub fn summary(&self) -> String {
+        format!("{}: {}", self.code, self.message)
+    }
 }
 
 /// The gate's answer. `truncated` says an output limit cut the data (spec §1, principle 5); it is there only then.

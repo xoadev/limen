@@ -35,12 +35,39 @@ static REPO_SECTION: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)^\s*\[r
 
 pub type Outcome<T> = Result<T, String>;
 
-/// `--repo`, `--branch` and `--path` of `install`.
+/// The repository a node follows, its folder settled.
 #[derive(Debug, Clone)]
 pub struct RepoOptions {
     pub url: String,
     pub branch: String,
     pub path: String,
+}
+
+/// `--repo`, `--branch` and `--path` as given: without `--path`, the folder is the node's name, which a join only
+/// learns from the hub.
+#[derive(Debug, Clone)]
+pub struct RepoChoice {
+    pub url: String,
+    pub branch: String,
+    pub path: Option<String>,
+}
+
+impl RepoChoice {
+    pub fn for_node(&self, node: &str) -> RepoOptions {
+        RepoOptions {
+            url: self.url.clone(),
+            branch: self.branch.clone(),
+            path: self.path.clone().unwrap_or_else(|| format!("nodes/{node}")),
+        }
+    }
+}
+
+/// What `install` and `join` set up on a machine besides the hub's key.
+#[derive(Debug, Clone, Default)]
+pub struct Setup {
+    pub deploy_key: Option<String>,
+    pub from: Option<String>,
+    pub repo: Option<RepoChoice>,
 }
 
 pub fn user_of(role: Role) -> String {
@@ -71,14 +98,11 @@ impl Installer {
         if self.openwrt { "root".into() } else { user_of(Role::Read) }
     }
 
-    pub fn install(
-        &self,
-        read_key: &str,
-        deploy_key: Option<&str>,
-        from: Option<&str>,
-        repo: Option<&RepoOptions>,
-        announce: bool,
-    ) -> Outcome<i32> {
+    /// Sets this machine up with the hub's [read_key] and [setup]; [node] is its name, the repository's default folder.
+    pub fn install(&self, read_key: &str, setup: &Setup, node: &str, announce: bool) -> Outcome<i32> {
+        let (deploy_key, from) = (setup.deploy_key.as_deref(), setup.from.as_deref());
+        let repo = setup.repo.as_ref().map(|choice| choice.for_node(node));
+        let repo = repo.as_ref();
         self.check_arguments(read_key, deploy_key, from)?;
         let repo_config = repo.map(repo_config).transpose()?;
         self.require_root()?;
@@ -225,7 +249,7 @@ impl Installer {
             return Ok(());
         }
         self.act(&format!("install this binary as {}", self.binary), || {
-            fs::mkdirs(parent_dir(self.binary), 0o755)?;
+            fs::mkdirs(fs::parent(self.binary), 0o755)?;
             fs::write_atomic(self.binary, &bytes, 0o755)?;
             fs::chown(self.binary, 0, 0)
         })?;
@@ -363,7 +387,7 @@ impl Installer {
         self.act(
             &format!("write limen's keys in {DROPBEAR_KEYS} ({}, forced commands; other keys kept)", roles.join(", ")),
             || {
-                fs::mkdirs(parent_dir(DROPBEAR_KEYS), 0o700)?;
+                fs::mkdirs(fs::parent(DROPBEAR_KEYS), 0o700)?;
                 fs::write_following(DROPBEAR_KEYS, text.as_bytes(), 0o600)
             },
         )
@@ -384,7 +408,7 @@ impl Installer {
     /// A system upgrade of OpenWrt keeps only the files listed in keep.d: limen's are its binary and /etc/limen.
     fn write_sysupgrade_keep(&self) -> Outcome<()> {
         let text = format!("{}\n/etc/limen/\n", self.binary);
-        if !is_directory(parent_dir(SYSUPGRADE_KEEP))
+        if !fs::is_directory(fs::parent(SYSUPGRADE_KEEP))
             || fs::read_text(SYSUPGRADE_KEEP).as_deref() == Some(text.as_str())
         {
             return Ok(());
@@ -426,7 +450,7 @@ impl Installer {
     }
 
     fn ensure_directory(&self, dir: &str, mode: u32, detail: &str) -> Outcome<()> {
-        if is_directory(dir) {
+        if fs::is_directory(dir) {
             return Ok(());
         }
         self.act(&format!("create {dir}{detail}"), || fs::mkdirs(dir, mode))
@@ -464,14 +488,14 @@ impl Installer {
     /// The repository: a token when it needs one, and the first checkout.
     fn connect_repo(&self, repo: &RepoConfig) -> Outcome<()> {
         if self.dry_run {
-            say(&format!(
+            sys::say(&format!(
                 "would check access to {}, ask for a token if it needs one, and sync it to {}",
                 repo.display_url(),
                 repo.dir
             ));
             return Ok(());
         }
-        say(&format!("sync {} {} into {}", repo.display_url(), repo.branch, repo.dir));
+        sys::say(&format!("sync {} {} into {}", repo.display_url(), repo.branch, repo.dir));
         let node = Node::load(node_config::PATH).map_err(|failure| failure.message)?;
         let (_, commit) = repo::sync(&node, repo).map_err(|failure| format!("sync: {}", failure.message))?;
         self.note(&format!("at {}; `limen apply` runs its setup scripts and stacks", repo::short_hash(&commit)));
@@ -493,7 +517,7 @@ impl Installer {
             match repo::access(repo, Some(&token)) {
                 repo::Access::Failed(message) => return Err(cannot_reach(repo, &message)),
                 repo::Access::Readable => return save_token(repo, &token),
-                repo::Access::NeedsToken => say(&format!("that token can't read {}", repo.display_url())),
+                repo::Access::NeedsToken => sys::say(&format!("that token can't read {}", repo.display_url())),
             }
         }
         Err(format!("no token that reads {}", repo.display_url()))
@@ -522,7 +546,7 @@ impl Installer {
         let mut paths = vec!["/etc/limen".to_string(), "/var/log/limen".to_string()];
         if let Some(repo) = repo {
             // repo.dir is removed only if it is what sync made of it: a checkout.
-            if fs::exists(&format!("{}/.git", repo.dir)) {
+            if repo::is_checkout(repo) {
                 paths.push(repo.dir.clone());
             } else if fs::exists(&repo.dir) {
                 self.note(&format!("kept {}: it is not a git checkout", repo.dir));
@@ -580,21 +604,21 @@ impl Installer {
     }
 
     fn announce_next_steps(&self) {
-        say("");
+        sys::say("");
         self.conclude("limen is installed.");
-        say(&format!(
+        sys::say(&format!(
             "Next: list what may be read in {} ([files].allow is empty), then add this node to the hub:",
             node_config::PATH
         ));
-        say(&format!("  [nodes.{}]", node_name()));
-        say("  host = \"<address>\"");
+        sys::say(&format!("  [nodes.{}]", node_name()));
+        sys::say("  host = \"<address>\"");
         if self.openwrt {
-            say("  user = \"root\"");
+            sys::say("  user = \"root\"");
         }
         let host_key = self.host_key().unwrap_or("<ssh-keyscan -t ed25519 this-host, checked out of band>".into());
-        say(&format!("  host_key = \"{host_key}\""));
+        sys::say(&format!("  host_key = \"{host_key}\""));
         if self.warnings.get() > 0 {
-            say(&format!("{} warning(s) above.", self.warnings.get()));
+            sys::say(&format!("{} warning(s) above.", self.warnings.get()));
         }
     }
 
@@ -617,30 +641,26 @@ impl Installer {
 
     fn act(&self, what: &str, block: impl FnOnce() -> Outcome<()>) -> Outcome<()> {
         if self.dry_run {
-            say(&format!("would {what}"));
+            sys::say(&format!("would {what}"));
             Ok(())
         } else {
-            say(what);
+            sys::say(what);
             block()
         }
     }
 
     fn conclude(&self, done: &str) {
-        say(if self.dry_run { "Dry run: nothing was changed." } else { done });
+        sys::say(if self.dry_run { "Dry run: nothing was changed." } else { done });
     }
 
     fn note(&self, text: &str) {
-        say(&format!("  note: {text}"));
+        sys::say(&format!("  note: {text}"));
     }
 
     fn warn(&self, text: &str) {
         self.warnings.set(self.warnings.get() + 1);
-        say(&format!("  WARNING: {text}"));
+        sys::say(&format!("  WARNING: {text}"));
     }
-}
-
-pub(super) fn say(text: &str) {
-    sys::out(&format!("{text}\n"));
 }
 
 fn repo_config(options: &RepoOptions) -> Outcome<RepoConfig> {
@@ -676,13 +696,15 @@ fn cannot_reach(repo: &RepoConfig, message: &str) -> String {
 }
 
 fn explain_token(repo: &RepoConfig) {
-    say("");
-    say(&format!("{} needs a token that can read it.", repo.display_url()));
+    sys::say("");
+    sys::say(&format!("{} needs a token that can read it.", repo.display_url()));
     let Some((owner, name)) = repo.github() else { return };
-    say("Create one here (fine-grained, read-only contents, no expiry):");
-    say(&format!("  {}", github::token_url(&owner, &name, &sys::hostname())));
-    say(&format!("In the form, check that the resource owner is {owner} (select it again if in doubt) and, under"));
-    say(&format!("Repository access, choose \"Only select repositories\" and {name}."));
+    sys::say("Create one here (fine-grained, read-only contents, no expiry):");
+    sys::say(&format!("  {}", github::token_url(&owner, &name, &sys::hostname())));
+    sys::say(&format!(
+        "In the form, check that the resource owner is {owner} (select it again if in doubt) and, under"
+    ));
+    sys::say(&format!("Repository access, choose \"Only select repositories\" and {name}."));
 }
 
 /// One token from the operator: typed unseen on a terminal, or a line from a pipe.
@@ -693,10 +715,10 @@ fn prompt_token() -> Outcome<String> {
 }
 
 fn save_token(repo: &RepoConfig, token: &str) -> Outcome<()> {
-    fs::mkdirs(parent_dir(&repo.token_file), 0o755)?;
+    fs::mkdirs(fs::parent(&repo.token_file), 0o755)?;
     fs::write_atomic(&repo.token_file, format!("{token}\n").as_bytes(), 0o600)?;
     fs::chown(&repo.token_file, 0, 0)?;
-    say(&format!("token saved in {} (root only)", repo.token_file));
+    sys::say(&format!("token saved in {} (root only)", repo.token_file));
     Ok(())
 }
 
@@ -798,20 +820,10 @@ fn home_of(user: &str) -> String {
     fs::account(user).map_or_else(|| default_home(user), |account| account.home)
 }
 
-fn is_directory(path: &str) -> bool {
-    fs::stat(path).is_some_and(|info| info.kind == fs::FileType::Directory)
-}
-
-fn parent_dir(path: &str) -> &str {
-    path.rsplit_once('/').map_or("/", |(parent, _)| parent)
-}
-
 /// A system program by name, with a minute to finish; what it says on stderr is the error.
 fn exec(argv: &[&str]) -> Outcome<()> {
-    let program = argv[0];
-    let path = proc::which(program).ok_or(format!("{program} is not installed"))?;
-    let full: Vec<String> = std::iter::once(path).chain(argv[1..].iter().map(ToString::to_string)).collect();
-    let result = proc::run(&full, proc::Run { timeout: Duration::from_secs(60), ..Default::default() })?;
+    let located = proc::located(argv).ok_or(format!("{} is not installed", argv[0]))?;
+    let result = proc::run(&located, proc::Run { timeout: Duration::from_secs(60), ..Default::default() })?;
     if result.exit_code != 0 {
         return Err(format!("{}: {}", argv.join(" "), result.err().trim()));
     }

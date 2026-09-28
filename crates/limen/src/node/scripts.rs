@@ -10,6 +10,8 @@ use serde_json::{Map, Value};
 use std::time::Duration;
 
 const MAX_HEADER: usize = 64 * 1024;
+/// What a check or an action may print before it is stopped; a stream sends it on as it comes instead.
+pub const MAX_OUTPUT_BYTES: usize = 64 * 1024;
 
 /// A file in a script directory: its spec when it is usable, or what is wrong with it. A file whose name is not a
 /// script's ([ignored]: a README, a mistyped name) is only reported by `limen lint`.

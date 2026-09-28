@@ -3,7 +3,7 @@
 //! `ss` or `df`, whose busybox versions lack the options.
 
 use super::read::last_matching_messages;
-use super::{MINUTE, Node, failure_reason};
+use super::{MINUTE, Node};
 use crate::os::{fs, sys};
 use limen_core::glob::segment_matches;
 use limen_core::protocol::{ErrorCode, LimenError, Result, error};
@@ -86,7 +86,7 @@ pub fn disks() -> Result<Value> {
 /// The space of the filesystem at [mount], if it is one that has any.
 fn disk(mount: &Mount) -> Option<Value> {
     // A file bind-mounted over another (a container's /etc/hostname) is not a filesystem to report.
-    if fs::stat(&mount.point).map(|info| info.kind) != Some(fs::FileType::Directory) {
+    if !fs::is_directory(&mount.point) {
         return None;
     }
     let (free, total) = fs::space(&mount.point).filter(|(_, total)| *total > 0)?;
@@ -459,7 +459,7 @@ fn logread_tail(node: &Node, lines: usize) -> Result<String> {
     let count = lines.to_string();
     let result = node.exec(&["logread", "-l", &count], MINUTE)?;
     if result.exit_code != 0 {
-        return Err(error(ErrorCode::Unavailable, format!("logread: {}", failure_reason(&result))));
+        return Err(error(ErrorCode::Unavailable, format!("logread: {}", result.failure_reason())));
     }
     Ok(result.out())
 }

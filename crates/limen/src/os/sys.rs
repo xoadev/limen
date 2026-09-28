@@ -9,6 +9,11 @@ pub fn env(name: &str) -> Option<String> {
     std::env::var(name).ok()
 }
 
+/// A setting from the environment: [name]'s value trimmed, or None when it is unset or blank.
+pub fn env_setting(name: &str) -> Option<String> {
+    env(name).map(|value| value.trim().to_string()).filter(|value| !value.is_empty())
+}
+
 pub fn euid() -> u32 {
     rustix::process::geteuid().as_raw()
 }
@@ -29,6 +34,16 @@ pub fn out(text: &str) {
 
 pub fn err(text: &str) {
     write_and_flush(std::io::stderr().lock(), text.as_bytes());
+}
+
+/// A line on stdout.
+pub fn say(text: &str) {
+    out(&format!("{text}\n"));
+}
+
+/// A line on stderr, the way limen reports what it did or what went wrong: `limen: …`.
+pub fn log(message: &str) {
+    err(&format!("limen: {message}\n"));
 }
 
 pub fn out_bytes(bytes: &[u8]) {

@@ -25,25 +25,28 @@ pub fn run(node: &Node, request: &str, args: &Map<String, Value>) -> Result<bool
             let sync_first = args.bool("sync").unwrap_or(true);
             apply(node, args.string("from"), dry_run, sync_first)
         }
-        "action" => action(node, args.string("name").unwrap_or_default(), &args.obj("args"))?,
+        "action" => action(node, args.string("name").unwrap_or_default(), &args.object("args"))?,
         other => unreachable!("not a deploy request: {other}"),
     })
 }
 
 pub fn sync(node: &Node) -> bool {
     let Some(repo) = &node.config.repo else {
-        say("limen: no [repo] in limen.toml; nothing to sync");
+        sys::say("limen: no [repo] in limen.toml; nothing to sync");
         return false;
     };
     let folder = if repo.path.is_empty() { String::new() } else { format!(" ({})", repo.path) };
-    say(&format!("==> sync {} {}{folder}", repo.display_url(), repo.branch));
+    sys::say(&format!("==> sync {} {}{folder}", repo.display_url(), repo.branch));
     match repo::sync(node, repo) {
         Ok((before, after)) => {
             let after_short = repo::short_hash(&after);
             if before.as_deref() == Some(after.as_str()) {
-                say(&format!("<== sync: already at {after_short}"));
+                sys::say(&format!("<== sync: already at {after_short}"));
             } else {
-                say(&format!("<== sync: {} -> {after_short}", before.as_deref().map_or("nothing", repo::short_hash)));
+                sys::say(&format!(
+                    "<== sync: {} -> {after_short}",
+                    before.as_deref().map_or("nothing", repo::short_hash)
+                ));
             }
             true
         }
@@ -66,7 +69,7 @@ pub fn apply(node: &Node, from: Option<&str>, dry_run: bool, sync_first: bool) -
     let stacks = match state::expectations(node) {
         Ok(expected) => expected.compose,
         Err(failure) => {
-            say(&format!("limen: apply stopped: {}", failure.message));
+            sys::say(&format!("limen: apply stopped: {}", failure.message));
             return false;
         }
     };
@@ -96,7 +99,7 @@ fn setup_scripts(node: &Node) -> Option<Vec<ScriptEntry>> {
     if problems.is_empty() {
         return Some(scripts);
     }
-    say(&format!("limen: apply stopped before running anything:\n{}", problems.join("\n")));
+    sys::say(&format!("limen: apply stopped before running anything:\n{}", problems.join("\n")));
     None
 }
 
@@ -113,17 +116,21 @@ fn number_prefix(name: &str) -> &str {
 
 fn describe_plan(scripts: &[(&ScriptEntry, &ScriptSpec)], stacks: &[String]) {
     for (_, spec) in scripts {
-        say(&format!("would run {}: {}", spec.name, spec.description));
+        sys::say(&format!("would run {}: {}", spec.name, spec.description));
     }
     for stack in stacks {
-        say(&format!("would bring up stack {stack}"));
+        sys::say(&format!("would bring up stack {stack}"));
     }
 }
 
 fn run_setup_scripts(node: &Node, scripts: &[(&ScriptEntry, &ScriptSpec)]) -> bool {
     for (entry, spec) in scripts {
         if !run_script(node, entry, spec, &Map::new()) {
-            say(&format!("limen: apply stopped at {}; resume with --from {}", spec.name, number_prefix(&spec.name)));
+            sys::say(&format!(
+                "limen: apply stopped at {}; resume with --from {}",
+                spec.name,
+                number_prefix(&spec.name)
+            ));
             return false;
         }
     }
@@ -133,7 +140,7 @@ fn run_setup_scripts(node: &Node, scripts: &[(&ScriptEntry, &ScriptSpec)]) -> bo
 fn bring_up_stacks(node: &Node, stacks: &[String]) -> bool {
     for stack in stacks {
         if !finish(&format!("stack {stack}"), compose_up(node, stack)) {
-            say(&format!("limen: apply stopped at stack {stack}"));
+            sys::say(&format!("limen: apply stopped at stack {stack}"));
             return false;
         }
     }
@@ -145,12 +152,12 @@ fn expected_services_run(node: &Node, scripts: &[(&ScriptEntry, &ScriptSpec)], s
     let down: Vec<state::ServiceState> =
         state::services(node).unwrap_or_default().into_iter().filter(|service| !service.running).collect();
     for service in &down {
-        say(&format!("limen: expected {} {} is not running", service.kind, service.name));
+        sys::say(&format!("limen: expected {} {} is not running", service.kind, service.name));
     }
     if down.is_empty() {
-        say(&format!("limen: apply finished: {} script(s), {} stack(s)", scripts.len(), stacks.len()));
+        sys::say(&format!("limen: apply finished: {} script(s), {} stack(s)", scripts.len(), stacks.len()));
     } else {
-        say(&format!("limen: apply finished with {} expected service(s) not running", down.len()));
+        sys::say(&format!("limen: apply finished with {} expected service(s) not running", down.len()));
     }
     down.is_empty()
 }
@@ -159,8 +166,11 @@ fn expected_services_run(node: &Node, scripts: &[(&ScriptEntry, &ScriptSpec)], s
 fn compose_up(node: &Node, stack: &str) -> StepOutcome {
     let file = state::compose_file(node, stack).map_err(|failure| failure.message)?;
     let docker = proc::which("docker").ok_or("docker is not installed")?;
-    say(&format!("==> stack {stack}"));
-    let argv = [docker.as_str(), "compose", "-p", stack, "-f", &file, "up", "-d", "--remove-orphans"].map(String::from);
+    sys::say(&format!("==> stack {stack}"));
+    let argv: Vec<String> = std::iter::once(docker.as_str())
+        .chain(state::compose_args(stack, &file, &["up", "-d", "--remove-orphans"]))
+        .map(String::from)
+        .collect();
     let mut stream = |_: i32, bytes: &[u8]| sys::out_bytes(bytes);
     let options = proc::Run {
         env: proc::root_env(),
@@ -179,12 +189,12 @@ fn run_script(node: &Node, entry: &ScriptEntry, spec: &ScriptSpec, args: &Map<St
 fn run_logged(node: &Node, entry: &ScriptEntry, spec: &ScriptSpec, args: &Map<String, Value>) -> StepOutcome {
     let env = node_scripts::environment(spec, args).map_err(|failure| failure.message)?;
     let log = RunLog::start(node, spec);
-    say(&format!("==> {}: {}", spec.name, spec.description));
+    sys::say(&format!("==> {}: {}", spec.name, spec.description));
     let mut stream = |_: i32, bytes: &[u8]| {
         sys::out_bytes(bytes);
         log.append(bytes);
     };
-    let result = node_scripts::run(entry, spec, env, 64 * 1024, Some(&mut stream));
+    let result = node_scripts::run(entry, spec, env, node_scripts::MAX_OUTPUT_BYTES, Some(&mut stream));
     let (succeeded, ending) = match &result {
         Err(failure) => (false, failure.message.clone()),
         Ok(done) if done.timed_out => (false, format!("timed out after {}s", spec.timeout_seconds)),
@@ -230,16 +240,12 @@ impl RunLog {
 fn finish(step: &str, outcome: StepOutcome) -> bool {
     match outcome {
         Ok(()) => {
-            say(&format!("<== {step}: ok"));
+            sys::say(&format!("<== {step}: ok"));
             true
         }
         Err(why) => {
-            say(&format!("<== {step}: FAILED ({why})"));
+            sys::say(&format!("<== {step}: FAILED ({why})"));
             false
         }
     }
-}
-
-fn say(text: &str) {
-    sys::out(&format!("{text}\n"));
 }

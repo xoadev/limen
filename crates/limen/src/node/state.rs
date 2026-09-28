@@ -171,16 +171,20 @@ fn ask_compose(node: &Node, name: &str) -> std::result::Result<(bool, Map<String
     };
     let listed = match compose(node, name, &file, &["ps", "--all", "--format", "json"]) {
         Ok(result) if result.exit_code == 0 => result.out(),
-        Ok(result) => return Err(format!("docker compose ps: {}", result.err().trim().lines().last().unwrap_or(""))),
+        Ok(result) => return Err(format!("docker compose ps: {}", result.failure_reason())),
         Err(failure) => return Err(failure.message),
     };
     Ok(stack_state(&declared, &compose_containers(&listed)))
 }
 
-fn compose(node: &Node, stack: &str, file: &str, args: &[&str]) -> Result<proc::ProcResult> {
-    let argv: Vec<&str> =
-        ["docker", "compose", "-p", stack, "-f", file].into_iter().chain(args.iter().copied()).collect();
+fn compose(node: &Node, stack: &str, file: &str, command: &[&str]) -> Result<proc::ProcResult> {
+    let argv: Vec<&str> = std::iter::once("docker").chain(compose_args(stack, file, command)).collect();
     node.exec(&argv, COMPOSE_TIMEOUT)
+}
+
+/// `docker`'s arguments for [command] on one stack: its project named after the stack, its file the repository's.
+pub fn compose_args<'a>(stack: &'a str, file: &'a str, command: &[&'a str]) -> Vec<&'a str> {
+    ["compose", "-p", stack, "-f", file].into_iter().chain(command.iter().copied()).collect()
 }
 
 /// `docker compose ps --format json`: one JSON array from older Compose, one object per line from newer ones.

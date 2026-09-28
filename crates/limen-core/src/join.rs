@@ -3,7 +3,7 @@
 //! key, signed with the secret.
 
 use crate::config::hub::{self, is};
-use crate::config::own_regex;
+use crate::own_regex;
 use crate::protocol::{Result, bad_request};
 use base64::Engine;
 use base64::engine::general_purpose::{STANDARD, STANDARD_NO_PAD};

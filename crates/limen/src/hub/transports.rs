@@ -19,14 +19,14 @@ const JOIN_PREFIX: &str = "/join/";
 
 /// `limen mcp`: newline-delimited JSON-RPC on stdin and stdout. Logs go to stderr: stdout is the protocol.
 pub fn stdio(client: Arc<dyn NodeClient>) {
-    let server = McpServer::new(client, Some(Box::new(print_line)), Box::new(log));
+    let server = McpServer::new(client, Some(Box::new(sys::say)), Box::new(sys::log));
     for line in std::io::stdin().lock().lines() {
         let Ok(line) = line else { return };
         if line.trim().is_empty() {
             continue;
         }
         if let Some(answer) = server.handle(&line) {
-            print_line(&answer);
+            sys::say(&answer);
         }
     }
 }
@@ -38,25 +38,17 @@ pub fn stdio(client: Arc<dyn NodeClient>) {
 /// No token there: the one-time code is the authorisation, and all it allows is adding the node it names.
 pub fn http(hub: Arc<Hub>, live: Arc<LiveHub>, listen: &str, token: String) -> Result<()> {
     let config = live.config()?;
-    let server = McpServer::new(live.clone(), None, Box::new(log));
+    let server = McpServer::new(live.clone(), None, Box::new(sys::log));
     let listener = TcpListener::bind(listen)
         .map_err(|cause| error(ErrorCode::Unavailable, format!("cannot listen on {listen}: {cause}")))?;
     let node_count = live.nodes().map_or(0, |nodes| nodes.len());
     let fingerprint = join::fingerprint(&hub.public_key()?)?;
-    log(&format!("serving MCP on http://{listen}/mcp; {node_count} node(s); hub key {fingerprint}"));
-    log("`limen connect` prints the line for an MCP client, `limen invite <name>` the one for a new node");
+    sys::log(&format!("serving MCP on http://{listen}/mcp; {node_count} node(s); hub key {fingerprint}"));
+    sys::log("`limen connect` prints the line for an MCP client, `limen invite <name>` the one for a new node");
     let routes: Arc<dyn Handler> = Arc::new(Routes { hub, live, server, config, token });
     let stopped = server::serve(&listener, &routes, Limits::default());
     // A server that stops is a hub that is down: exit with an error, so a restart policy brings it back.
     Err(error(ErrorCode::Unavailable, format!("the HTTP server stopped: {stopped}")))
-}
-
-fn print_line(text: &str) {
-    sys::out(&format!("{text}\n"));
-}
-
-fn log(message: &str) {
-    sys::err(&format!("limen: {message}\n"));
 }
 
 struct Routes {
@@ -125,7 +117,7 @@ impl Routes {
         };
         match self.hub.arrive(code, &arrival, from, self.live.as_ref()) {
             Ok(welcome) => {
-                log(&format!(
+                sys::log(&format!(
                     "node {} joined from {}: {}",
                     welcome.name,
                     welcome.address,

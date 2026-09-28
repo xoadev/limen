@@ -1,7 +1,8 @@
 //! `/etc/limen/limen.toml` (spec §7.1). Every key has a default; a missing file means nothing is readable.
 
-use super::{ConfigError, ConfigResult, absolute, fail, own_regex, positive};
+use super::{ConfigError, ConfigResult, absolute, fail, positive};
 use crate::glob::Glob;
+use crate::own_regex;
 use crate::scripts::ScriptKind;
 use regex::Regex;
 use serde::Deserialize;

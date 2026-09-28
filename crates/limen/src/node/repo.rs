@@ -98,7 +98,7 @@ fn checkout_remote_branch(git: &Git) -> Result<String> {
 
 fn clone_checkout(git: &Git) -> Result<()> {
     let repo = git.repo;
-    let parent = repo.dir.rsplit_once('/').map_or("/", |(parent, _)| parent);
+    let parent = fs::parent(&repo.dir);
     fs::mkdirs(parent, 0o755).map_err(|message| error(ErrorCode::Internal, message))?;
     // Only an empty directory makes way for the clone: anything else at repo.dir is not limen's to remove.
     if fs::exists(&repo.dir) {
@@ -128,8 +128,9 @@ fn update_checkout(git: &Git) -> Result<()> {
     Ok(())
 }
 
-fn is_checkout(repo: &RepoConfig) -> bool {
-    fs::stat(&format!("{}/.git", repo.dir)).is_some_and(|info| info.kind == fs::FileType::Directory)
+/// Whether repo.dir is what `sync` makes of it: a git checkout.
+pub fn is_checkout(repo: &RepoConfig) -> bool {
+    fs::is_directory(&format!("{}/.git", repo.dir))
 }
 
 fn ls_remote(git: &Git) -> Result<proc::ProcResult> {

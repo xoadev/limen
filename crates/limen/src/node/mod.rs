@@ -14,7 +14,7 @@ pub mod system;
 use crate::os::{fs, proc, sys};
 use limen_core::config::node::NodeConfig;
 use limen_core::path_policy::PathPolicy;
-use limen_core::protocol::{ErrorCode, LimenError, Result, error};
+use limen_core::protocol::{ErrorCode, Result, error};
 use limen_core::redactor::Redactor;
 use serde_json::Value;
 use std::time::Duration;
@@ -61,19 +61,11 @@ impl Node {
     /// Runs a system program by name. A program that is not there is `unavailable` (no Docker on this node), not an
     /// internal error.
     pub fn exec(&self, argv: &[&str], timeout: Duration) -> Result<proc::ProcResult> {
-        self.exec_capped(argv, timeout, MAX_OUTPUT_BYTES)
-    }
-
-    /// [exec], keeping at most [max_output] bytes of each stream.
-    pub fn exec_capped(&self, argv: &[&str], timeout: Duration, max_output: usize) -> Result<proc::ProcResult> {
-        let (program, arguments) = argv.split_first().expect("argv starts with the program");
-        let program_path = proc::which(program)
+        let program = argv[0];
+        let located = proc::located(argv)
             .ok_or_else(|| error(ErrorCode::Unavailable, format!("{program} is not installed on this node")))?;
-        let full_argv: Vec<String> =
-            std::iter::once(program_path).chain(arguments.iter().map(ToString::to_string)).collect();
-        let result =
-            proc::run(&full_argv, proc::Run { env: proc::root_env(), timeout, max_output, ..Default::default() })
-                .map_err(internal)?;
+        let options = proc::Run { env: proc::root_env(), timeout, max_output: MAX_OUTPUT_BYTES, ..Default::default() };
+        let result = proc::run(&located, options).map_err(internal)?;
         if result.timed_out {
             return Err(error(ErrorCode::Timeout, format!("{program} did not finish in {}s", timeout.as_secs())));
         }
@@ -84,15 +76,10 @@ impl Node {
     pub fn exec_ok(&self, argv: &[&str]) -> Result<String> {
         let result = self.exec(argv, EXEC_OK_TIMEOUT)?;
         if result.exit_code != 0 {
-            return Err(internal(format!("{}: {}", argv[0], failure_reason(&result))));
+            return Err(internal(format!("{}: {}", argv[0], result.failure_reason())));
         }
         Ok(result.out())
     }
-}
-
-/// Why a program failed: the last line of its stderr, or its exit code when it wrote nothing there.
-fn failure_reason(result: &proc::ProcResult) -> String {
-    result.err().trim().lines().last().map_or_else(|| format!("exit {}", result.exit_code), String::from)
 }
 
 fn read_if_trusted(path: &str, owner: u32) -> std::result::Result<String, String> {
@@ -119,6 +106,4 @@ impl Answer {
     }
 }
 
-pub fn internal(message: impl Into<String>) -> LimenError {
-    error(ErrorCode::Internal, message)
-}
+pub use limen_core::protocol::internal;

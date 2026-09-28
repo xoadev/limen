@@ -2,11 +2,11 @@
 //! invitations. Everything that reads or changes it goes through here.
 
 use super::ssh::SshClient;
-use super::{NodeClient, constant_time_eq, failure_text, internal};
+use super::{NodeClient, constant_time_eq, internal};
 use crate::os::{fs, proc, sys};
 use limen_core::config::hub::{self, HubConfig, is};
 use limen_core::join::{self, Arrival, Invitation, PendingInvite, Welcome};
-use limen_core::protocol::{ErrorCode, NodeResponse, Result, error};
+use limen_core::protocol::{ErrorCode, NodeError, NodeResponse, Result, error};
 use limen_core::time;
 use serde_json::{Map, Value};
 use std::sync::{Arc, Mutex};
@@ -61,7 +61,7 @@ impl Hub {
     pub fn home(option: Option<&str>) -> String {
         option
             .map(String::from)
-            .or_else(|| sys::env("LIMEN_HOME").filter(|home| !home.trim().is_empty()))
+            .or_else(|| sys::env_setting("LIMEN_HOME"))
             .unwrap_or_else(|| format!("{}/.limen", sys::env("HOME").unwrap_or("/root".into())))
     }
 
@@ -99,7 +99,7 @@ impl Hub {
             fs::write_atomic(&self.config_path, CONFIG_TEMPLATE.as_bytes(), 0o600).map_err(internal)?;
             created.push(self.config_path.clone());
         }
-        if serve && !fs::exists(&self.token_path) && token_from_env().is_none() {
+        if serve && !fs::exists(&self.token_path) && sys::env_setting("LIMEN_TOKEN").is_none() {
             let token = format!("{}\n", random(TOKEN_LENGTH)?);
             fs::write_atomic(&self.token_path, token.as_bytes(), 0o600).map_err(internal)?;
             created.push(self.token_path.clone());
@@ -122,7 +122,7 @@ impl Hub {
 
     /// The HTTP clients' token: `LIMEN_TOKEN`, or the one `init` wrote.
     pub fn token(&self) -> Result<String> {
-        let token = token_from_env()
+        let token = sys::env_setting("LIMEN_TOKEN")
             .or_else(|| trimmed(fs::read_following(&self.token_path)))
             .ok_or_else(|| error(ErrorCode::Unavailable, "no token: set LIMEN_TOKEN or run `limen init --serve`"))?;
         let length = token.chars().count();
@@ -234,7 +234,7 @@ impl Hub {
 
 /// `LIMEN_PUBLIC_URL`, which overrides `[http].public_url`.
 fn public_url_from_env() -> Result<Option<String>> {
-    let Some(url) = sys::env("LIMEN_PUBLIC_URL").filter(|url| !url.trim().is_empty()) else { return Ok(None) };
+    let Some(url) = sys::env_setting("LIMEN_PUBLIC_URL") else { return Ok(None) };
     let url = url.trim_end_matches('/').to_string();
     if !is(hub::PUBLIC_URL, &url) {
         return Err(error(
@@ -243,10 +243,6 @@ fn public_url_from_env() -> Result<Option<String>> {
         ));
     }
     Ok(Some(url))
-}
-
-fn token_from_env() -> Option<String> {
-    trimmed(sys::env("LIMEN_TOKEN"))
 }
 
 /// [text] without the whitespace around it, unless nothing is left.
@@ -258,7 +254,7 @@ fn trimmed(text: Option<String>) -> Option<String> {
 /// or why it did not answer.
 fn hello_detail(hello: &NodeResponse) -> String {
     if !hello.ok {
-        return hello.error.as_ref().map(failure_text).unwrap_or_default();
+        return hello.error.as_ref().map(NodeError::summary).unwrap_or_default();
     }
     let field = |name: &str| hello.data.as_ref().and_then(|data| data.get(name)).and_then(Value::as_str);
     format!("{}, limen {}", field("os").unwrap_or("Linux"), field("version").unwrap_or_default())

@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-/// The units longer than a millisecond, in seconds, largest first: the order [show] tries them in.
+/// The units longer than a millisecond, in seconds.
 const UNITS: [(&str, u64); 4] = [("d", 86_400), ("h", 3600), ("m", 60), ("s", 1)];
 
 pub fn parse(text: &str) -> Option<Duration> {
@@ -20,17 +20,6 @@ pub fn parse(text: &str) -> Option<Duration> {
     Some(Duration::from_secs(amount * unit_seconds))
 }
 
-/// How a duration is shown back: `60s`, `1h`, the largest unit that divides it.
-pub fn show(duration: Duration) -> String {
-    let seconds = duration.as_secs();
-    if duration.subsec_millis() != 0 || seconds == 0 {
-        return format!("{}ms", duration.as_millis());
-    }
-    let (name, unit_seconds) =
-        UNITS.iter().find(|(_, unit_seconds)| seconds % unit_seconds == 0).expect("a second divides any whole seconds");
-    format!("{}{name}", seconds / unit_seconds)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -43,7 +32,5 @@ mod tests {
         for bad in ["", "s", "5", "5x", "-1s", "1.5s", "1234567890s"] {
             assert_eq!(parse(bad), None, "{bad}");
         }
-        assert_eq!(show(Duration::from_secs(60)), "1m");
-        assert_eq!(show(Duration::from_secs(90)), "90s");
     }
 }

@@ -17,7 +17,7 @@ use limen_core::protocol::{LimenError, NodeRequest, bad_request, pretty};
 use limen_core::requests::{self, Role};
 use limen_core::scripts::{Catalog, ScriptKind};
 use limen_core::version::{BUILD_DATE, BUILD_NUMBER, VERSION};
-use node::installer::{self, Installer, RepoOptions};
+use node::installer::{self, Installer, RepoChoice, Setup};
 use node::joiner::Joiner;
 use node::{Answer, Node, deploy, gate, lint, read};
 use os::sys;
@@ -211,23 +211,12 @@ struct JoinArgs {
     /// This machine's name on the hub, with --hub-key
     #[arg(long)]
     name: Option<String>,
-    /// Public key for the deploy role
-    #[arg(long)]
-    deploy_key: Option<String>,
-    /// Addresses or CIDRs the keys may connect from (not OpenWrt)
-    #[arg(long)]
-    from: Option<String>,
-    /// Git repository this machine follows
-    #[arg(long)]
-    repo: Option<String>,
-    #[arg(long, default_value = "main")]
-    branch: String,
-    /// This machine's folder in --repo (default: nodes/<its name on the hub>)
-    #[arg(long)]
-    path: Option<String>,
+    #[command(flatten)]
+    setup: SetupArgs,
     /// Where the hub reaches this machine (default: where the join request comes from)
     #[arg(long)]
     address: Option<String>,
+    /// This machine's SSH port, as the hub reaches it
     #[arg(long, default_value_t = 22)]
     ssh_port: u16,
 }
@@ -237,24 +226,45 @@ struct InstallArgs {
     /// Public key of the hub (read role)
     #[arg(long)]
     read_key: String,
+    #[command(flatten)]
+    setup: SetupArgs,
+    /// Say what would change and change nothing
+    #[arg(long)]
+    dry_run: bool,
+}
+
+/// What `install` and `join` set up besides the hub's key.
+#[derive(Args)]
+struct SetupArgs {
     /// Public key of CI or a person (deploy role); without it, no deploy role
     #[arg(long)]
     deploy_key: Option<String>,
-    /// Addresses or CIDRs the keys may connect from, e.g. 100.64.0.0/10
+    /// Addresses or CIDRs the keys may connect from, e.g. 100.64.0.0/10 (not OpenWrt)
     #[arg(long)]
     from: Option<String>,
-    /// Git repository with this node's scripts, stacks and node.toml (https:// asks for a token)
+    /// Git repository with this machine's scripts, stacks and node.toml (https:// asks for a token)
     #[arg(long)]
     repo: Option<String>,
     /// Branch of --repo
     #[arg(long, default_value = "main")]
     branch: String,
-    /// This node's folder in --repo (default: nodes/<hostname>)
+    /// This machine's folder in --repo (default: nodes/<its name>)
     #[arg(long)]
     path: Option<String>,
-    /// Say what would change and change nothing
-    #[arg(long)]
-    dry_run: bool,
+}
+
+impl SetupArgs {
+    fn setup(&self) -> Setup {
+        Setup {
+            deploy_key: self.deploy_key.clone(),
+            from: self.from.clone(),
+            repo: self.repo.as_ref().map(|url| RepoChoice {
+                url: url.clone(),
+                branch: self.branch.clone(),
+                path: self.path.clone(),
+            }),
+        }
+    }
 }
 
 /// Why a command stopped: its usage (exit 2), limen's own error (1), or a message (1).
@@ -275,10 +285,10 @@ impl Stop {
     fn report(self) -> i32 {
         let (text, code) = match self {
             Stop::Usage(message) => (message, 2),
-            Stop::Limen(error) => (format!("{}: {}", error.code.wire(), error.message), 1),
+            Stop::Limen(error) => (error.summary(), 1),
             Stop::Message(message) => (message, 1),
         };
-        sys::err(&format!("limen: {text}\n"));
+        sys::log(&text);
         code
     }
 
@@ -314,7 +324,7 @@ fn version_line() -> String {
 }
 
 fn version() -> Exit {
-    sys::out(&format!("{}\n", version_line()));
+    sys::say(&version_line());
     Ok(0)
 }
 
@@ -367,12 +377,12 @@ fn init(serve: bool, home: Option<&str>) -> Exit {
     let hub = Hub::at(home);
     let created = hub.init(serve)?;
     for path in &created {
-        sys::out(&format!("created {path}\n"));
+        sys::say(&format!("created {path}"));
     }
     if created.is_empty() {
-        sys::out(&format!("{} was already a hub\n", hub.home));
+        sys::say(&format!("{} was already a hub", hub.home));
     }
-    sys::out(&format!("hub key: {}\n", join::fingerprint(&hub.public_key()?)?));
+    sys::say(&format!("hub key: {}", join::fingerprint(&hub.public_key()?)?));
     sys::out("Next: `limen invite <name>` for each machine, and `limen connect` for the MCP client.\n");
     Ok(0)
 }
@@ -387,7 +397,7 @@ fn mcp(home: Option<&str>) -> Exit {
 fn serve(home: Option<&str>, listen: Option<String>) -> Exit {
     let hub = Arc::new(Hub::at(home));
     for path in hub.init(true)? {
-        sys::err(&format!("limen: created {path}\n"));
+        sys::log(&format!("created {path}"));
     }
     let token = hub.token()?;
     let live = Arc::new(LiveHub::new(hub.clone()));
@@ -398,7 +408,7 @@ fn serve(home: Option<&str>, listen: Option<String>) -> Exit {
 
 /// `--listen`, else `LIMEN_LISTEN` when it says something, else `[http].listen`.
 fn listen_address(listen: Option<String>, live: &LiveHub) -> Result<String, LimenError> {
-    match listen.or_else(|| sys::env("LIMEN_LISTEN").filter(|address| !address.trim().is_empty())) {
+    match listen.or_else(|| sys::env_setting("LIMEN_LISTEN")) {
         Some(address) => Ok(address),
         None => live.config().map(|config| config.listen),
     }
@@ -415,7 +425,7 @@ fn connect(home: Option<&str>, url: Option<String>) -> Exit {
         }
         _ => format!("claude mcp add limen -- limen mcp{}", home_option(&hub)),
     };
-    sys::out(&format!("{command}\n"));
+    sys::say(&command);
     Ok(0)
 }
 
@@ -445,19 +455,19 @@ fn invite(name: &str, home: Option<&str>, ttl: &str) -> Exit {
         secret: issued.secret,
     };
     print_install_lines(name, &format!("--join '{line}'"));
-    sys::out(&format!("Valid once, for {ttl}.\n"));
+    sys::say(&format!("Valid once, for {ttl}."));
     Ok(0)
 }
 
 /// How to run the installer on [name] with [options]: with curl and sudo, and on OpenWrt.
 fn print_install_lines(name: &str, options: &str) {
-    sys::out(&format!("On {name}, as root:\n  curl -fsSL {INSTALL_SCRIPT} | sudo sh -s -- {options}\n"));
-    sys::out(&format!("OpenWrt:\n  wget -qO- {INSTALL_SCRIPT} | sh -s -- {options}\n"));
+    sys::say(&format!("On {name}, as root:\n  curl -fsSL {INSTALL_SCRIPT} | sudo sh -s -- {options}"));
+    sys::say(&format!("OpenWrt:\n  wget -qO- {INSTALL_SCRIPT} | sh -s -- {options}"));
 }
 
 fn trust(name: &str, address: &str, host_key: &str, user: &str, port: u16, home: Option<&str>) -> Exit {
     Hub::at(home).trust(name, address, host_key, user, port)?;
-    sys::out(&format!("{name} added; try it with `limen call {name} hello`\n"));
+    sys::say(&format!("{name} added; try it with `limen call {name} hello`"));
     Ok(0)
 }
 
@@ -465,7 +475,7 @@ fn forget(name: &str, home: Option<&str>) -> Exit {
     if !Hub::at(home).remove(name)? {
         return Err(Stop::Usage(format!("no node named '{name}'")));
     }
-    sys::out(&format!("{name} removed from the hub\n"));
+    sys::say(&format!("{name} removed from the hub"));
     Ok(0)
 }
 
@@ -490,7 +500,7 @@ fn call(
         return Err(Stop::Usage("--user and --identity are only for deploy requests".into()));
     }
     let response = live.call(node, name, &args, None);
-    sys::out(&format!("{}\n", pretty(&response)));
+    sys::say(&pretty(&response));
     Ok(exit_code(response.ok))
 }
 
@@ -545,25 +555,15 @@ fn call_deploy(
     user: &str,
     identity: Option<&str>,
 ) -> Exit {
-    let request = NodeRequest { v: 1, request: name.into(), args };
-    let line = format!("{}\n", serde_json::to_string(&request).expect("a request serializes"));
+    let line = NodeRequest::new(name, args).to_line();
     let mut print = |fd: i32, bytes: &[u8]| {
         if fd == 1 { sys::out_bytes(bytes) } else { sys::err(&String::from_utf8_lossy(bytes)) }
     };
     let finished = live.ssh()?.stream(node, user, identity, &line, DEPLOY_TIMEOUT, &mut print)?;
     if finished.exit_code == SSH_FAILED {
-        sys::err(&format!("limen: cannot reach {node}\n"));
+        sys::log(&format!("cannot reach {node}"));
     }
     Ok(finished.exit_code)
-}
-
-/// `--repo`, `--branch` and `--path` as a node's repository; its folder defaults to `nodes/<node>`.
-fn repo_options(url: &str, branch: &str, path: Option<&str>, node: &str) -> RepoOptions {
-    RepoOptions {
-        url: url.into(),
-        branch: branch.into(),
-        path: path.map_or_else(|| format!("nodes/{node}"), String::from),
-    }
 }
 
 fn join_hub(args: &JoinArgs) -> Exit {
@@ -577,30 +577,22 @@ fn join_hub(args: &JoinArgs) -> Exit {
 /// Joins through the hub's HTTP server, which gives its key and this machine's name.
 fn join_with_line(line: &str, args: &JoinArgs) -> Exit {
     let url = JoinUrl::parse(line)?;
-    // The folder defaults to the name the invitation gives, known only once the hub answers.
-    let (branch, path) = (args.branch.as_str(), args.path.as_deref());
-    let repo_for = args.repo.as_deref().map(|url| move |invited: &str| repo_options(url, branch, path, invited));
-    let repo_for = repo_for.as_ref().map(|options_for| options_for as &dyn Fn(&str) -> RepoOptions);
     Joiner { installer: Installer::new(false) }
-        .join(&url, args.deploy_key.as_deref(), args.from.as_deref(), repo_for, args.address.as_deref(), args.ssh_port)
+        .join(&url, &args.setup.setup(), args.address.as_deref(), args.ssh_port)
         .map_err(failed("join"))
 }
 
 /// Joins with the hub's key given by hand: the machine prints the `limen trust` line to run on the hub.
 fn join_with_key(hub_key: &str, args: &JoinArgs) -> Exit {
     let name = args.name.as_deref().ok_or_else(|| Stop::Usage("--hub-key needs --name".into()))?;
-    let repo = args.repo.as_deref().map(|url| repo_options(url, &args.branch, args.path.as_deref(), name));
     Joiner { installer: Installer::new(false) }
-        .with_key(hub_key, name, args.deploy_key.as_deref(), args.from.as_deref(), repo.as_ref(), args.ssh_port)
+        .with_key(hub_key, name, &args.setup.setup(), args.ssh_port)
         .map_err(failed("join"))
 }
 
 fn install(args: &InstallArgs) -> Exit {
     let node = sys::hostname().to_lowercase();
-    let repo = args.repo.as_deref().map(|url| repo_options(url, &args.branch, args.path.as_deref(), &node));
-    Installer::new(args.dry_run)
-        .install(&args.read_key, args.deploy_key.as_deref(), args.from.as_deref(), repo.as_ref(), true)
-        .map_err(failed("install"))
+    Installer::new(args.dry_run).install(&args.read_key, &args.setup.setup(), &node, true).map_err(failed("install"))
 }
 
 fn apply(from: Option<&str>, sync_first: bool, dry_run: bool, config: &str) -> Exit {
@@ -624,12 +616,12 @@ fn check(name: &str, pairs: &[String], config: &str) -> Exit {
     let node = Node::load(config)?;
     match run_check(&node, name, pairs) {
         Ok(answer) => {
-            sys::out(&format!("{}\n", pretty(&answer.data)));
+            sys::say(&pretty(&answer.data));
             Ok(nagios_code(answer.data.get("status").and_then(Value::as_str)))
         }
         Err(error) => {
             // Not found, a timeout, bad arguments: no answer from the check is Nagios' UNKNOWN, not a warning.
-            sys::err(&format!("limen: check: {}: {}\n", error.code.wire(), error.message));
+            sys::log(&format!("check: {}", error.summary()));
             Ok(NAGIOS_UNKNOWN)
         }
     }

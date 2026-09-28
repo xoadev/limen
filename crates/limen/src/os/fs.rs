@@ -533,15 +533,20 @@ pub fn chain(path: &str) -> Vec<FileStat> {
         if current == "/" {
             return stats;
         }
-        current = parent_of(&current).into();
+        current = parent(&current).into();
     }
 }
 
-fn parent_of(path: &str) -> &str {
+/// The directory [path] is in: `/` for what is directly under it.
+pub fn parent(path: &str) -> &str {
     match path.rsplit_once('/') {
         Some(("", _)) | None => "/",
         Some((parent, _)) => parent,
     }
+}
+
+pub fn is_directory(path: &str) -> bool {
+    stat(path).is_some_and(|info| info.kind == FileType::Directory)
 }
 
 #[cfg(test)]

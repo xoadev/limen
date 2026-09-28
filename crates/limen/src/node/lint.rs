@@ -33,7 +33,7 @@ pub fn run(node: &Node) -> i32 {
 /// Reports the directory of [kind] file by file; how many problems it holds.
 fn lint_directory(node: &Node, kind: ScriptKind) -> usize {
     let entries = scripts::discover(node, kind);
-    sys::out(&format!("{}: {} file(s)\n", node.config.directory(kind), entries.len()));
+    sys::say(&format!("{}: {} file(s)", node.config.directory(kind), entries.len()));
     let findings = same_names(&entries).into_iter().chain(entries.iter().filter_map(entry_finding));
     let mut problems = 0;
     for finding in findings {

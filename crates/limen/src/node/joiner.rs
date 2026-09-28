@@ -3,8 +3,8 @@
 //! installed with it, and the hub is told this node's host key, signed with the line's secret. With `--hub-key` there
 //! is no hub to talk to: the node is installed and prints the `limen trust` line for the hub.
 
-use super::installer::{Installer, Outcome, RepoOptions, say};
-use crate::os::http;
+use super::installer::{Installer, Outcome, Setup};
+use crate::os::{http, sys};
 use limen_core::config::hub::{self, is};
 use limen_core::join::{self, Arrival, Invitation, JoinUrl, Welcome};
 use serde_json::Value;
@@ -14,20 +14,11 @@ pub struct Joiner {
 }
 
 impl Joiner {
-    pub fn join(
-        &self,
-        url: &JoinUrl,
-        deploy_key: Option<&str>,
-        from: Option<&str>,
-        repo: Option<&dyn Fn(&str) -> RepoOptions>,
-        address: Option<&str>,
-        ssh_port: u16,
-    ) -> Outcome<i32> {
+    pub fn join(&self, url: &JoinUrl, setup: &Setup, address: Option<&str>, ssh_port: u16) -> Outcome<i32> {
         let invitation = fetch_invitation(url)?;
         let fingerprint = verify_invitation(url, &invitation)?;
-        say(&format!("Joining the hub at {} as '{}' (hub key {fingerprint})", url.base, invitation.name));
-        let repo = repo.map(|repo_for| repo_for(&invitation.name));
-        self.installer.install(&invitation.hub_key, deploy_key, from, repo.as_ref(), false)?;
+        sys::say(&format!("Joining the hub at {} as '{}' (hub key {fingerprint})", url.base, invitation.name));
+        self.installer.install(&invitation.hub_key, setup, &invitation.name, false)?;
         let host_key = self.installer.host_key().ok_or("cannot read this machine's SSH host key")?;
         let arrival = Arrival::new(&join::without_comment(&host_key), &self.installer.read_user(), ssh_port, address)
             .signed(&url.secret);
@@ -35,17 +26,9 @@ impl Joiner {
         Ok(announce_welcome(&welcome, ssh_port))
     }
 
-    pub fn with_key(
-        &self,
-        hub_key: &str,
-        name: &str,
-        deploy_key: Option<&str>,
-        from: Option<&str>,
-        repo: Option<&RepoOptions>,
-        ssh_port: u16,
-    ) -> Outcome<i32> {
+    pub fn with_key(&self, hub_key: &str, name: &str, setup: &Setup, ssh_port: u16) -> Outcome<i32> {
         join::fingerprint(hub_key).map_err(|failure| format!("--hub-key: {}", failure.message))?;
-        self.installer.install(hub_key, deploy_key, from, repo, false)?;
+        self.installer.install(hub_key, setup, name, false)?;
         let host_key = self
             .installer
             .host_key()
@@ -58,9 +41,9 @@ impl Joiner {
         if ssh_port != 22 {
             trust_options.push_str(&format!(" --port {ssh_port}"));
         }
-        say("");
-        say("limen is installed. On the hub, with this machine's address:");
-        say(&format!("  limen trust {name} <address> '{host_key}'{trust_options}"));
+        sys::say("");
+        sys::say("limen is installed. On the hub, with this machine's address:");
+        sys::say(&format!("  limen trust {name} <address> '{host_key}'{trust_options}"));
         Ok(0)
     }
 }
@@ -114,13 +97,13 @@ fn arrive(url: &JoinUrl, arrival: &Arrival) -> Outcome<Welcome> {
 /// What the hub says of this node once it is on it. The exit code: 1 while the hub can't reach it.
 fn announce_welcome(welcome: &Welcome, ssh_port: u16) -> i32 {
     let (name, address, detail) = (printable(&welcome.name), printable(&welcome.address), printable(&welcome.detail));
-    say("");
+    sys::say("");
     if welcome.reachable {
-        say(&format!("{name} is on the hub, at {address}: {detail}."));
+        sys::say(&format!("{name} is on the hub, at {address}: {detail}."));
         return 0;
     }
-    say(&format!("{name} is on the hub at {address}, but the hub can't reach it yet: {detail}"));
-    say(&format!(
+    sys::say(&format!("{name} is on the hub at {address}, but the hub can't reach it yet: {detail}"));
+    sys::say(&format!(
         "Check that the hub reaches this machine's SSH port ({ssh_port}) at that address, or join again with --address."
     ));
     1

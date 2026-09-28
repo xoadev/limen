@@ -249,11 +249,11 @@ pub fn input_schema(params: &[Param], extra: &[(Param, bool)]) -> Value {
 /// Typed reads of validated arguments.
 pub trait ArgsExt {
     fn string(&self, name: &str) -> Option<&str>;
-    fn long(&self, name: &str) -> Option<i64>;
+    fn integer(&self, name: &str) -> Option<i64>;
     /// An integer that must fit an `i32`: one that doesn't is refused, not wrapped.
-    fn int(&self, name: &str) -> Result<Option<i32>>;
+    fn small_integer(&self, name: &str) -> Result<Option<i32>>;
     fn bool(&self, name: &str) -> Option<bool>;
-    fn obj(&self, name: &str) -> Map<String, Value>;
+    fn object(&self, name: &str) -> Map<String, Value>;
 }
 
 impl ArgsExt for Map<String, Value> {
@@ -261,11 +261,11 @@ impl ArgsExt for Map<String, Value> {
         self.get(name).and_then(Value::as_str)
     }
 
-    fn long(&self, name: &str) -> Option<i64> {
+    fn integer(&self, name: &str) -> Option<i64> {
         self.get(name).and_then(Value::as_i64)
     }
 
-    fn int(&self, name: &str) -> Result<Option<i32>> {
+    fn small_integer(&self, name: &str) -> Result<Option<i32>> {
         match self.get(name) {
             None | Some(Value::Null) => Ok(None),
             Some(value) => value
@@ -280,7 +280,7 @@ impl ArgsExt for Map<String, Value> {
         self.get(name).and_then(Value::as_bool)
     }
 
-    fn obj(&self, name: &str) -> Map<String, Value> {
+    fn object(&self, name: &str) -> Map<String, Value> {
         self.get(name).and_then(Value::as_object).cloned().unwrap_or_default()
     }
 }

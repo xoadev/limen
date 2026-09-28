@@ -1,7 +1,8 @@
 //! `$LIMEN_HOME/limen.toml` (spec §7.2): how the hub reaches its nodes and how it listens.
 
-use super::{ConfigResult, fail, own_regex};
+use super::{ConfigResult, fail};
 use crate::durations;
+use crate::own_regex;
 use indexmap::IndexMap;
 use regex::Regex;
 use serde::Deserialize;

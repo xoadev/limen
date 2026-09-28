@@ -1,6 +1,7 @@
 //! What the kernel says in `/proc` and `/etc`, parsed without the programs that usually read it (`ps`, `ss`, `df`):
 //! they differ between distributions and busybox.
 
+use crate::own_regex;
 use regex::Regex;
 use std::collections::{BTreeMap, HashSet};
 use std::sync::LazyLock;
@@ -137,8 +138,7 @@ fn holds_data(mount: &Mount) -> bool {
 
 /// `\040` and the other octal escapes of `/proc/mounts`.
 fn unescape(text: &str) -> String {
-    static OCTAL: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r"\\([0-7]{3})").expect("the octal escape pattern is a valid regex"));
+    static OCTAL: LazyLock<Regex> = LazyLock::new(|| own_regex(r"\\([0-7]{3})"));
     OCTAL
         .replace_all(text, |escape: &regex::Captures| {
             char::from_u32(u32::from_str_radix(&escape[1], 8).unwrap_or(0)).map(String::from).unwrap_or_default()
@@ -281,11 +281,10 @@ const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Au
 pub fn logread_line(line: &str) -> Option<LogreadEntry> {
     // ASCII classes: this runs on every line.
     static LINE: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(concat!(
+        own_regex(concat!(
             r"^[A-Za-z]{3} (?<month>[A-Za-z]{3}) +(?<day>[0-9]{1,2}) (?<time>[0-9:]{8}) (?<year>[0-9]{4}) ",
             r"[a-z0-9]+\.(?<level>[a-z]+) (?<source>[^\[:]+?)(?:\[(?<pid>[0-9]+)\])?: ?(?<message>.*)$",
         ))
-        .expect("the logread line pattern is a valid regex")
     });
     let fields = LINE.captures(line)?;
     let month = MONTHS.iter().position(|name| *name == &fields["month"])? + 1;

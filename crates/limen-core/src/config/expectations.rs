@@ -1,7 +1,8 @@
 //! `node.toml` in the node's folder of the repository (spec §6.1): what must be running. The scripts are how the
 //! node gets there; this is what `state` compares against.
 
-use super::{ConfigResult, fail, own_regex};
+use super::{ConfigResult, fail};
+use crate::own_regex;
 use crate::requests::UNIT;
 use serde::Deserialize;
 

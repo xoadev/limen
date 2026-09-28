@@ -85,8 +85,10 @@ clippy: the workspace lints in `Cargo.toml` and `clippy.toml`, where every warni
 - **One function, one job.** A hundred lines at most (`too_many_lines`), and far fewer is normal; seven arguments at
   most (`too_many_arguments`): more is a struct asking to exist.
 - **One place for each thing.** A second copy of a piece of logic becomes a function, a type or a module both use.
-  Look before writing: paths and files are `os::fs`, processes `os::proc`, argument rules `limen_core::params`,
-  masking `Redactor`, errors `protocol::error`.
+  Look before writing: paths and files are `os::fs` (`parent`, `is_directory`, `open_exact`…), processes `os::proc`
+  (`located`, `ProcResult::failure_reason`), what goes to the terminal `sys::say` and `sys::log`, settings from the
+  environment `sys::env_setting`, argument rules `limen_core::params`, masking `Redactor`, errors `protocol::error`
+  and `internal`, fixed patterns `limen_core::own_regex`.
 - **Small types with one responsibility, traits at the seams.** What talks to the outside sits behind a trait a
   test can fake (`NodeClient` for the nodes, `server::Handler` for HTTP); rules are plain functions over data in
   `limen-core`. Code depends on those traits and types, not on the concrete I/O behind them.

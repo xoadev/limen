@@ -6,7 +6,6 @@ pub mod github;
 pub mod hub;
 pub mod node;
 
-use regex::Regex;
 use serde::de::DeserializeOwned;
 use std::fmt;
 
@@ -59,11 +58,6 @@ fn absolute(key: &str, value: Option<String>) -> ConfigResult<Option<String>> {
         Some(path) if !path.starts_with('/') => fail(key, "must be an absolute path"),
         path => Ok(path),
     }
-}
-
-/// One of limen's own regular expressions, which are known to compile.
-pub(crate) fn own_regex(pattern: &str) -> Regex {
-    Regex::new(pattern).expect("limen's own patterns compile")
 }
 
 #[cfg(test)]

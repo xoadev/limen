@@ -2,7 +2,7 @@
 
 use super::scripts as node_scripts;
 use super::system::{self, IdNames, Init, LogFilter};
-use super::{Answer, MINUTE, Node, failure_reason, internal};
+use super::{Answer, MINUTE, Node, internal};
 use crate::os::{fs, proc, sys};
 use limen_core::durations;
 use limen_core::params::{ArgsExt, full_match};
@@ -30,7 +30,6 @@ const MAX_LISTED_ENTRIES: usize = 1000;
 /// What `history` reads per audit line it answers.
 const AUDIT_BYTES_PER_LINE: u64 = 8192;
 /// A check's output is capped (spec §6).
-const MAX_CHECK_OUTPUT_BYTES: usize = 64 * 1024;
 const MAX_CHECK_STDERR_CHARS: usize = 4000;
 
 pub fn hello(node: &Node) -> Answer {
@@ -307,7 +306,7 @@ fn journal(node: &Node, lines: usize, filter: &LogFilter) -> Result<Answer> {
     // journalctl --grep exits 1 when nothing matches: that is an empty answer, not an error.
     let output = result.out();
     if result.exit_code != 0 && output.trim().is_empty() && !result.err().trim().is_empty() {
-        return Err(internal(format!("journalctl: {}", failure_reason(&result))));
+        return Err(internal(format!("journalctl: {}", result.failure_reason())));
     }
     let entries = parsers::journal(&output, &node.redactor);
     Ok(Answer::cut(json!(last_matching_messages(entries, filter.grep, lines)), result.truncated))
@@ -522,9 +521,9 @@ pub fn history(node: &Node, args: &Args) -> Result<Answer> {
 
 pub fn check(node: &Node, args: &Args) -> Result<Answer> {
     let (entry, spec) = node_scripts::find(node, ScriptKind::Check, args.string("name").unwrap_or_default())?;
-    let env = node_scripts::environment(&spec, &args.obj("args"))?;
+    let env = node_scripts::environment(&spec, &args.object("args"))?;
     super::gate::allow(Duration::from_secs(spec.timeout_seconds) + MINUTE);
-    let result = node_scripts::run(&entry, &spec, env, MAX_CHECK_OUTPUT_BYTES, None)?;
+    let result = node_scripts::run(&entry, &spec, env, node_scripts::MAX_OUTPUT_BYTES, None)?;
     if result.timed_out {
         return Err(error(
             ErrorCode::Timeout,
@@ -608,7 +607,7 @@ fn walk(node: &Node, path: &str) -> Walked {
         match component.as_str() {
             "." => continue,
             ".." => {
-                current = parent(&current);
+                current = fs::parent(&current).into();
                 continue;
             }
             _ => {}
@@ -644,10 +643,6 @@ fn components_last_first(path: &str) -> Vec<String> {
     path.split('/').rev().filter(|component| !component.is_empty()).map(String::from).collect()
 }
 
-fn parent(path: &str) -> String {
-    path.rsplit_once('/').map_or("/", |(parent, _)| if parent.is_empty() { "/" } else { parent }).into()
-}
-
 /// Whether the client may see [path]: it is allowed, or on the way to something allowed.
 fn visible(node: &Node, path: &str) -> bool {
     node.policy.allowed(path) || node.policy.leads_to(path)
@@ -672,7 +667,7 @@ fn does_not_exist(requested: &str) -> LimenError {
 
 /// The integer argument [name], [default] when absent, and never below [min].
 fn usize_arg(args: &Args, name: &str, default: i32, min: i32) -> Result<usize> {
-    Ok(args.int(name)?.unwrap_or(default).max(min) as usize)
+    Ok(args.small_integer(name)?.unwrap_or(default).max(min) as usize)
 }
 
 fn instant_arg(node: &Node, args: &Args, name: &str) -> Result<Option<i64>> {

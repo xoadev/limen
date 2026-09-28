@@ -4,16 +4,16 @@
 //! Every tool is a read request to one node. Actions and setup scripts are listed in `nodes` and never become tools
 //! (spec §1, principle 2).
 
-use super::{NodeClient, failure_text};
+use super::NodeClient;
 use limen_core::params::{self, Param, ParamType};
 use limen_core::protocol::{LimenError, NodeError, NodeResponse, pretty};
 use limen_core::requests::{self, RequestDef, Role};
-use limen_core::scripts::{Catalog, ScriptSpec};
+use limen_core::scripts::{self, Catalog, ScriptSpec};
 use limen_core::version::VERSION;
-use regex::{Regex, RegexBuilder};
+use regex::RegexBuilder;
 use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 /// Newest first; the first is what a client that asks for something else gets.
@@ -366,7 +366,7 @@ fn node_summary(node: &str, hello: Option<&NodeResponse>, catalog: Option<&Catal
     summary.insert("node".into(), json!(node));
     summary.insert("reachable".into(), json!(hello.is_some_and(|answer| answer.ok)));
     if let Some(failure) = hello.and_then(|answer| answer.error.as_ref()) {
-        summary.insert("error".into(), json!(failure_text(failure)));
+        summary.insert("error".into(), json!(failure.summary()));
     }
     if let Some(data) = hello.and_then(|answer| answer.data.as_ref()).and_then(Value::as_object) {
         for fact in FACTS {
@@ -420,18 +420,14 @@ fn sane(mut catalog: Catalog) -> Catalog {
 }
 
 fn sane_spec(spec: &ScriptSpec) -> bool {
-    static NAME: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(requests::SCRIPT_NAME).expect("limen's own patterns compile"));
-    NAME.is_match(&spec.name)
+    scripts::is_script_name(&spec.name)
         && plain(&spec.description, MAX_DESCRIPTION_CHARS)
         && (1..=MAX_CHECK_SECONDS).contains(&spec.timeout_seconds)
         && spec.params.iter().all(sane_param)
 }
 
 fn sane_param(param: &Param) -> bool {
-    static NAME: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(params::PARAM_NAME).expect("limen's own patterns compile"));
-    NAME.is_match(&param.name)
+    scripts::is_param_name(&param.name)
         // `node` is the hub's own argument: a script's must not take its place.
         && param.name != "node"
         && plain(&param.description, MAX_DESCRIPTION_CHARS)
@@ -526,7 +522,7 @@ fn failure_message(failure: Option<&NodeError>) -> String {
             format!(" (the node speaks versions {}; update limen there)", versions.join(", "))
         })
         .unwrap_or_default();
-    format!("{}{update}", failure_text(failure))
+    format!("{}{update}", failure.summary())
 }
 
 fn tool_text(text: &str) -> Value {

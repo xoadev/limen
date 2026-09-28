@@ -143,7 +143,7 @@ impl NodeClient for SshClient {
         let argv = self.argv(entry, &entry.user, &self.identity, true);
         let run = proc::Run {
             env: ssh_env(false),
-            stdin: Some(request_line(request, args).into_bytes()),
+            stdin: Some(NodeRequest::new(request, args.clone()).to_line().into_bytes()),
             timeout,
             max_output: MAX_OUTPUT,
             ..Default::default()
@@ -153,12 +153,6 @@ impl NodeClient for SshClient {
             Err(cause) => NodeResponse::failure(&internal(cause)),
         }
     }
-}
-
-/// A request as the gate reads it: one line of JSON on stdin.
-pub fn request_line(request: &str, args: &Map<String, Value>) -> String {
-    let request = NodeRequest { v: 1, request: request.into(), args: args.clone() };
-    format!("{}\n", serde_json::to_string(&request).expect("a request serializes"))
 }
 
 fn no_node(node: &str) -> LimenError {

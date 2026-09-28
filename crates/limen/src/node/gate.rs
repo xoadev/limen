@@ -168,11 +168,7 @@ fn conclude(role: Role, max_response: usize, outcome: Result<Done>) -> (&'static
 /// One of `limits.concurrency` places for a read request, whatever hub it comes from: a lock on `/run/limen/slot-<n>`,
 /// held while the request runs. Where those can't be made —limen not running as root— there is no limit.
 fn take_slot(slots: usize) -> Result<Option<std::fs::File>> {
-    let dir = if fs::stat("/run").is_some_and(|info| info.kind == fs::FileType::Directory) {
-        "/run/limen"
-    } else {
-        "/var/run/limen"
-    };
+    let dir = if fs::is_directory("/run") { "/run/limen" } else { "/var/run/limen" };
     if fs::mkdirs(dir, 0o700).is_err() {
         return Ok(None);
     }
@@ -199,10 +195,10 @@ fn parse(bytes: std::result::Result<Vec<u8>, String>) -> Result<NodeRequest> {
     let request: NodeRequest = serde_json::from_str(text).map_err(|malformed| {
         bad_request(format!("malformed request: {}", malformed.to_string().lines().next().unwrap_or("")))
     })?;
-    if !PROTOCOL_VERSIONS.contains(&request.v) {
+    if !PROTOCOL_VERSIONS.contains(&request.version) {
         let mut unsupported = error(
             ErrorCode::UnsupportedVersion,
-            format!("protocol version {} is not supported by limen on this node", request.v),
+            format!("protocol version {} is not supported by limen on this node", request.version),
         );
         unsupported.versions = Some(PROTOCOL_VERSIONS.to_vec());
         return Err(unsupported);
@@ -220,13 +216,13 @@ fn send(max_response: usize, response: &NodeResponse) {
         ));
         text = serde_json::to_string(&NodeResponse::failure(&too_large)).unwrap_or_default();
     }
-    sys::out(&format!("{text}\n"));
+    sys::say(&text);
 }
 
 /// Tells the client [failure]: a deploy client reads text on stderr and the exit code, a read client a JSON answer.
 fn fail(role: Role, max_response: usize, failure: &LimenError) -> i32 {
     if role == Role::Deploy {
-        sys::err(&format!("limen: {}: {}\n", failure.code.wire(), failure.message));
+        sys::log(&failure.summary());
         return 1;
     }
     send(max_response, &NodeResponse::failure(failure));
@@ -247,7 +243,7 @@ fn audit(pending: &Pending, result: &str) {
     let path = &pending.reporting.audit;
     let line = audit_record(pending, result).to_string();
     if let Err(failure) = append_rotating(path, pending.reporting.audit_max_bytes, &line) {
-        sys::err(&format!("limen: cannot write the audit log {path}: {failure}\n"));
+        sys::log(&format!("cannot write the audit log {path}: {failure}"));
     }
 }
 
@@ -271,7 +267,7 @@ fn audit_record(pending: &Pending, result: &str) -> Value {
 /// Appends [line] to the log at [path], moving it to `<path>.1` first once it is over [max_bytes]. One old file kept,
 /// no logrotate needed: OpenWrt has none, and its /var/log lives in RAM.
 fn append_rotating(path: &str, max_bytes: u64, line: &str) -> std::result::Result<(), String> {
-    let dir = path.rsplit_once('/').map_or("/", |(dir, _)| dir);
+    let dir = fs::parent(path);
     fs::mkdirs(dir, 0o700)?;
     if fs::stat(path).is_some_and(|info| info.size > max_bytes) {
         std::fs::rename(path, format!("{path}.1")).ok();

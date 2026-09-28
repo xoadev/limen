@@ -66,6 +66,11 @@ impl ProcResult {
     pub fn err(&self) -> String {
         String::from_utf8_lossy(&self.stderr).into_owned()
     }
+
+    /// Why it failed: the last line of its stderr, or its exit code when it wrote nothing there.
+    pub fn failure_reason(&self) -> String {
+        self.err().trim().lines().last().map_or_else(|| format!("exit {}", self.exit_code), String::from)
+    }
 }
 
 /// Sees every block of output as it arrives, fd 1 or 2.
@@ -351,6 +356,12 @@ fn read_some(pipe: &mut Option<impl Read>, buffer: &mut [u8]) -> Option<usize> {
 }
 
 /// The absolute path of [name] in [SYSTEM_ENV]'s PATH, or None.
+/// [argv] with its program found as [which] finds it; None when the program is not installed.
+pub fn located(argv: &[&str]) -> Option<Vec<String>> {
+    let (program, arguments) = argv.split_first()?;
+    Some(std::iter::once(which(program)?).chain(arguments.iter().map(ToString::to_string)).collect())
+}
+
 pub fn which(name: &str) -> Option<String> {
     if name.starts_with('/') {
         return crate::os::fs::is_executable(name).then(|| name.to_string());
