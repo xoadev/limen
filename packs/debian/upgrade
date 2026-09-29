@@ -8,11 +8,15 @@ trap '' HUP PIPE
 export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l
 log=/var/log/limen-upgrade.log
 
-status=0
-{
+# Not `{ ...; } || status=$?`: a command in that position runs with `set -e` off, and a failed update would go on.
+set +e
+(
+  set -e
   apt-get update --quiet=2
   apt-get upgrade --yes --with-new-pkgs --quiet=1 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold
-} > "$log" 2>&1 || status=$?
+) > "$log" 2>&1
+status=$?
+set -e
 
 grep -v "^(Reading database" "$log" | tail -n 25
 echo
