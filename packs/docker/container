@@ -7,8 +7,11 @@
 set -eu
 
 # Chosen fields, never the whole inspect: the environment and the command line can hold secrets.
+# `index .State "Health"` and not `.State.Health`: when the CLI's typed structs lack a field (a port binding's HostIp
+# is HostIP in Docker 29), it reruns the template over the raw JSON, where a container without a healthcheck has no
+# Health key and the plain form is an error. `index` gives nothing instead.
 # shellcheck disable=SC2016 # the $ are the template's variables
-format='{{slice .Name 1}}: {{.State.Status}}{{with .State.Health}} ({{.Status}}){{end}}, started {{.State.StartedAt}}, {{.RestartCount}} restarts
+format='{{slice .Name 1}}: {{.State.Status}}{{with index .State "Health"}} ({{.Status}}){{end}}, started {{.State.StartedAt}}, {{.RestartCount}} restarts
 image {{.Config.Image}} {{.Image}}
 restart policy {{.HostConfig.RestartPolicy.Name}}
 last exit code {{.State.ExitCode}}{{with .State.Error}}, error {{.}}{{end}}
