@@ -61,7 +61,8 @@ Each argument:
 
 A `pattern` is a Rust `regex` that must match the whole value: `\w`, `\d`, `\s` and `(?i)` are there, Unicode's
 `\p{…}` classes and look-around are not. The catalog reaches the model as text, so the hub leaves out a script
-whose description, arguments or patterns aren't short and plain.
+whose description, arguments or patterns aren't short and plain. Whatever the pattern, a string argument never holds
+a control character: a NUL, a newline or an `ESC` is refused before the pattern is applied.
 
 ## How it runs
 
@@ -77,7 +78,8 @@ whose description, arguments or patterns aren't short and plain.
   | `LIMEN_NODE` | The machine's hostname |
 
 - cwd `/`, stdin `/dev/null`, umask `022`.
-- What the agent gets back: the exit code, stdout and stderr, each redacted, and each cut to its last
+- What the agent gets back: the exit code, stdout and stderr, each stripped of terminal control sequences (colours
+  and other control characters but newline, tab and carriage return), then redacted, and each cut to its last
   `limits.max_lines` lines. `grep` and `tail`, when the agent asks for them, apply to stdout after redaction; a script
   never sees them. Both streams together are captured up to 16 MiB: past it the script is stopped. Whatever a limit
   cuts, the answer says so, and the answer as a whole is bounded by `limits.max_response`.

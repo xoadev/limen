@@ -20,6 +20,18 @@ const UCI_SECRET: &str =
 const SPACE: &str = r"[\t\n\x0B\x0C\r ]";
 const NOT_SPACE: &str = r"[^\t\n\x0B\x0C\r ]";
 
+/// Tokens their provider gives a shape of its own, masked wherever they appear, named or not: GitHub's, JWTs, Slack's,
+/// AWS access key ids, Stripe's secret keys and Google API keys. Joined into one pattern: one pass over the text.
+const PROVIDER_TOKENS: [&str; 7] = [
+    r"gh[pousr]_[A-Za-z0-9]{36,}",
+    r"github_pat_[A-Za-z0-9_]{22,}",
+    r"eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}",
+    r"xox[abprs]-[A-Za-z0-9-]{10,}",
+    r"(?-u:\b)(?:AKIA|ASIA)[0-9A-Z]{16}(?-u:\b)",
+    r"(?-u:\b)[sr]k_live_[A-Za-z0-9]{16,}",
+    r"AIza[0-9A-Za-z_-]{35}",
+];
+
 /// The value assigned to a name [name] matches: `key = value`, `key: value`, `--key=value`, `"key": "value"`. A quoted
 /// value is masked to its closing quote (or the end of the line), spaces included; a bare one to the next space or
 /// separator.
@@ -57,6 +69,7 @@ pub fn built_in() -> Vec<String> {
         r#"(?-u:\b)mysql(?:dump|admin)?(?-u:\b)[^\n]*?[\t ]-p(?<secret>[^\t\n '"]+)"#.into(),
         // Credentials inside a URL: scheme://user:password@host.
         r"[a-zA-Z][a-zA-Z0-9+.-]*://[^/\t\n\x0B\x0C\r :@]+:(?<secret>[^@\t\n\x0B\x0C\r /]+)@".into(),
+        format!("(?:{})", PROVIDER_TOKENS.join("|")),
         r"-----BEGIN [A-Z ]*PRIVATE KEY-----(?s:.)*?-----END [A-Z ]*PRIVATE KEY-----".into(),
         // A line of base64 alone, as a key's body is written: a window of lines that starts inside a key has no
         // markers to find it by.
@@ -189,6 +202,89 @@ mod tests {
             redact(&format!("Deleted Containers:\n{container}\n")),
             format!("Deleted Containers:\n{container}\n")
         );
+    }
+
+    /// [prefix] and then [length] alphanumerics, so no token is spelled out whole in this file.
+    fn with_tail(prefix: &str, length: usize) -> String {
+        format!("{prefix}{}", "a1B2".chars().cycle().take(length).collect::<String>())
+    }
+
+    #[test]
+    fn provider_tokens_are_masked_wherever_they_appear() {
+        let tokens = [
+            with_tail("ghp_", 36),
+            with_tail("gho_", 36),
+            with_tail("ghu_", 40),
+            with_tail("ghs_", 36),
+            with_tail("ghr_", 36),
+            with_tail("github_pat_", 22),
+            format!("{}_{}", with_tail("github_pat_11", 22), with_tail("", 40)),
+            format!("eyJ{0}.eyJ{0}.{0}-_", "a1B2c3D4"),
+            with_tail("xoxb-", 10),
+            "xoxp-1234567890-1234567890-abcdefABCDEF".into(),
+            "xoxa-".to_string() + &"1".repeat(12),
+            "AKIAIOSFODNN7EXAMPLE".into(),
+            "ASIAIOSFODNN7EXAMPLE".into(),
+            with_tail("sk_live_", 16),
+            with_tail("rk_live_", 30),
+            with_tail("AIza", 35),
+            format!("AIza{}-_", with_tail("", 33)),
+        ];
+        for token in tokens {
+            assert_eq!(redact(&format!("value {token} end")), "value [redacted] end", "{token}");
+            assert_eq!(redact(&token), "[redacted]", "{token}");
+            assert_eq!(redact(&format!("a: {token}\nb: {token}")), "a: [redacted]\nb: [redacted]", "{token}");
+        }
+    }
+
+    #[test]
+    fn a_provider_token_in_an_assignment_or_a_url_is_masked_once() {
+        let token = with_tail("ghp_", 40);
+        assert_eq!(redact(&format!("GITHUB_TOKEN={token}")), "GITHUB_TOKEN=[redacted]");
+        assert_eq!(redact(&format!("https://ana:{token}@github.com/x")), "https://ana:[redacted]@github.com/x");
+        assert_eq!(
+            redact(&format!("git clone https://{token}@github.com/x")),
+            "git clone https://[redacted]@github.com/x"
+        );
+    }
+
+    #[test]
+    fn near_misses_of_provider_tokens_are_left_alone() {
+        let near_misses = [
+            with_tail("ghp_", 35),
+            with_tail("ghx_", 40),
+            with_tail("gh_", 40),
+            with_tail("github_pat_", 21),
+            format!("eyJ{0}.eyJ{0}", "a1B2c3D4"),
+            format!("eyJ{0}.eyJ{0}.{1}", "a1B2c3D4", "short"),
+            format!("eyJ{0}.abc.{0}", "a1B2c3D4"),
+            with_tail("xoxb-", 9),
+            with_tail("xoxz-", 12),
+            "AKIAIOSFODNN7EXAMPL".into(),
+            "AKIAIOSFODNN7EXAMPLES".into(),
+            "XAKIAIOSFODNN7EXAMPLE".into(),
+            "akiaiosfodnn7example".into(),
+            "AKIA-IOSFODNN7EXAMPLE".into(),
+            with_tail("sk_live_", 15),
+            with_tail("sk_test_", 30),
+            with_tail("pk_live_", 30),
+            with_tail("disk_live_", 30),
+            with_tail("AIza", 34),
+            with_tail("AIzb", 35),
+        ];
+        for text in near_misses {
+            let line = format!("id {text} end");
+            assert_eq!(redact(&line), line);
+        }
+    }
+
+    #[test]
+    fn identifiers_are_not_tokens() {
+        let text = format!(
+            "container 123e4567-e89b-12d3-a456-426614174000 image sha256:{} commit 9fceb02d0ae598e95dc970b74767f19372d61af8",
+            "ab12".repeat(16)
+        );
+        assert_eq!(redact(&text), text);
     }
 
     #[test]

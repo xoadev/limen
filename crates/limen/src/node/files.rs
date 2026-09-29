@@ -54,7 +54,7 @@ fn file_range(node: &Node, opened: &fs::Opened, args: &Args) -> Result<Answer> {
             "from": from,
             "to": from + slice.lines.len() - 1,
             "eof": slice.eof,
-            "content": node.redactor.redact(&slice.lines.join("\n")),
+            "content": node.clean(&slice.lines.join("\n")),
         }),
         cut_by_bytes,
     ))
@@ -71,7 +71,7 @@ fn file_end(node: &Node, opened: &fs::Opened, grep: Option<&str>, tail: Option<u
         return Ok(Answer::of(json!({"path": path, "size_bytes": opened.info.size, "binary": true})));
     }
     // Redacted before it is cut into lines: a private key the window holds whole spans several of them.
-    let (lines, cut) = node.filter(&node.redactor.redact(&end.lines.join("\n")), grep, tail);
+    let (lines, cut) = node.filter(&node.clean(&end.lines.join("\n")), grep, tail);
     Ok(Answer::cut(json!({"path": path, "size_bytes": opened.info.size, "lines": lines}), cut))
 }
 
@@ -392,6 +392,23 @@ mod tests {
         assert_eq!(matching_lines("password=h"), 0, "a guess at the secret is not told apart");
         assert_eq!(matching_lines("password=[redacted]"), 1);
         assert_eq!(last_matching(vec!["token=x", "a", "A"], Some("a"), 1), ["A"]);
+    }
+
+    #[test]
+    fn terminal_control_sequences_are_removed_before_redaction_and_filters() {
+        let tree = tree();
+        let log = format!("{}/etc/colour.log", tree.dir);
+        std::fs::write(&log, "\x1b[31mred\x1b[0m\n\x1b]0;title\x07pass\x1b[0mword=hunter2\nbell\x07\x08end\x1b")
+            .unwrap();
+        let range = read_file(&tree.node, &path_args(&log)).unwrap();
+        assert_eq!(range.data["content"], "red\npassword=[redacted]\nbellend");
+        let lines_of = |extra: Value| {
+            let mut request = json!({"path": &log});
+            request.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            read_file(&tree.node, &args_of(request)).unwrap().data["lines"].clone()
+        };
+        assert_eq!(lines_of(json!({"tail": 3})), json!(["red", "password=[redacted]", "bellend"]));
+        assert_eq!(lines_of(json!({"grep": "bellend"})), json!(["bellend"]), "a filter sees the clean text");
     }
 
     #[test]

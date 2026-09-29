@@ -160,6 +160,10 @@ impl Param {
 
     fn check_string(&self, value: &Value) -> Result<()> {
         let text = self.text_of(value)?;
+        // Before the pattern: a permissive one such as `.{0,200}` would let a NUL through to fail at exec.
+        if text.chars().any(char::is_control) {
+            return Err(self.refusal("must not contain control characters"));
+        }
         if let Some(pattern) = &self.pattern {
             if !full_match(pattern).is_ok_and(|regex| regex.is_match(text)) {
                 return Err(self.refusal(&format!("does not match {pattern}")));
@@ -282,5 +286,45 @@ impl ArgsExt for Map<String, Value> {
 
     fn object(&self, name: &str) -> Map<String, Value> {
         self.get(name).and_then(Value::as_object).cloned().unwrap_or_default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn permissive() -> Param {
+        Param::new("text", ParamType::String, "").pattern("^.{0,200}$")
+    }
+
+    fn without_pattern() -> Param {
+        Param::new("text", ParamType::String, "")
+    }
+
+    #[test]
+    fn a_string_with_a_control_character_is_refused_before_its_pattern() {
+        for text in ["a\0b", "a\nb", "a\tb", "a\rb", "\u{1b}[31m", "a\u{7f}", "a\u{9b}31m"] {
+            for param in [permissive(), without_pattern()] {
+                let refusal = param.check(&json!(text)).expect_err(text);
+                assert_eq!(refusal.code, crate::protocol::ErrorCode::BadRequest, "{text:?}");
+                assert_eq!(refusal.message, "text must not contain control characters", "{text:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_string_without_control_characters_still_meets_its_pattern() {
+        assert!(permissive().check(&json!("café ñandú 日本 🙂")).is_ok());
+        assert!(permissive().check(&json!("")).is_ok());
+        let narrow = Param::new("text", ParamType::String, "").pattern("^[a-z]+$");
+        assert_eq!(narrow.check(&json!("ABC")).expect_err("no match").message, "text does not match ^[a-z]+$");
+    }
+
+    #[test]
+    fn validate_refuses_a_nul_in_an_argument() {
+        let params = [permissive().required()];
+        let args = json!({"text": "ok\0"}).as_object().unwrap().clone();
+        let refusal = validate(&params, &args).expect_err("refused");
+        assert_eq!(refusal.message, "text must not contain control characters");
     }
 }
