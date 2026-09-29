@@ -14,6 +14,7 @@ pub mod protocol;
 pub mod redactor;
 pub mod requests;
 pub mod scripts;
+pub mod terminal;
 pub mod time;
 pub mod trust;
 pub mod version;

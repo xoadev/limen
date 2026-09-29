@@ -13,6 +13,7 @@ use limen_core::config::node::NodeConfig;
 use limen_core::path_policy::PathPolicy;
 use limen_core::protocol::Result;
 use limen_core::redactor::Redactor;
+use limen_core::terminal::printable;
 use serde_json::Value;
 
 /// Everything a request on this node is answered with: its configuration and what derives from it.
@@ -38,6 +39,12 @@ impl Node {
         let unusable = |reason: String| internal(format!("{path}: {reason}"));
         let text = read_if_trusted(&real, sys::euid()).map_err(unusable)?;
         NodeConfig::parse(&text).map(Node::new).map_err(|reason| unusable(reason.to_string()))
+    }
+
+    /// [text] as a file's or a script's output may leave the node: terminal control sequences removed, then redacted.
+    /// In this order, so a sequence can't sit inside a secret's name and hide it from the patterns; filters go after.
+    pub fn clean(&self, text: &str) -> String {
+        self.redactor.redact(&printable(text))
     }
 
     /// The last [tail] lines of [text] (at most `limits.max_lines`) that hold [grep], case aside; and whether a limit

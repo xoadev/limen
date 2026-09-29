@@ -75,7 +75,8 @@ Each one had an alternative. Changing one is changing this table and the spec's 
 - **Security rules are code, not habits.** Every path `read_file` and `list_dir` open is walked by `files::walk` and
   opened once with `fs::open_exact`, every check made on that descriptor; every argument goes through
   `params::validate`; every script through `scripts::find` and `proc::run` with an argument array; every text leaving
-  the node through `Redactor`, and every filter after it (`Node::filter`).
+  the node through `Node::clean` (control sequences removed, then `Redactor`), and every filter after it
+  (`Node::filter`).
 - **Errors say what to do**: `no SSH key at /data/id_ed25519 ([ssh].identity in /data/limen.toml)`, not
   `file not found`.
 

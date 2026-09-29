@@ -111,7 +111,8 @@ is ignored.
 - Stdin, not the command line: no word splitting, typed arguments, and `sudo` passes stdin through
   while it drops the environment `SSH_ORIGINAL_COMMAND` lives in.
 - Arguments are validated against the request's schema, and a script's against its header, before
-  anything runs; unknown fields are rejected.
+  anything runs; unknown fields are rejected. A string argument holds no control character (a NUL, a
+  newline), whatever its `pattern` allows.
 - A script that ran answers `ok` with its exit code, whatever it is: a failure of the script is data, not
   an error of the request.
 - Error codes: `bad_request`, `denied`, `not_found`, `unavailable` (the node is at `limits.concurrency`, or the
@@ -240,12 +241,19 @@ max_bytes = 5242880
 - **Redaction** replaces a secret's value with `[redacted]` and keeps what names it: `DB_PASSWORD=[redacted]`.
   It applies to files, scripts' output and `history`. The built-in patterns catch `key=value` for the usual
   names of secrets (a quoted value up to its closing quote), UCI's `option key '…'`, `Authorization` headers,
-  credentials in URLs, `curl -u`, `sshpass -p`, `mysql -p`, PEM private keys and lines of base64 alone, as a
-  key's body is written, unless they are all hexadecimal: those are hashes and IDs, such as a container's.
+  credentials in URLs, `curl -u`, `sshpass -p`, `mysql -p`, the tokens whose provider gives them a shape of
+  their own wherever they appear (GitHub's `ghp_…` and `github_pat_…`, JWTs, Slack's `xox?-…`, AWS access key
+  ids `AKIA…`/`ASIA…`, Stripe's `sk_live_…`/`rk_live_…`, Google API keys `AIza…`), PEM private keys and lines of
+  base64 alone, as a key's body is written, unless they are all hexadecimal: those are hashes and IDs, such as a
+  container's.
   - `redact.names` adds names, case-insensitive: the value after `NAME=`, `NAME: ` or `"NAME": ` is replaced.
   - `redact.patterns` adds regular expressions; a group named `secret` limits what is replaced.
   - It is a safety net; the protection is not allowing files that hold secrets, and not writing scripts
     that print them.
+- **Control characters** never leave the node in a file's content or a script's output: `ESC` with the CSI or
+  OSC sequence after it (colours, a window's title) and every other control character but the newline, the tab
+  and the carriage return are removed, DEL and C1 included. It happens before redaction, so a sequence can't split
+  a secret's name, and before `grep` and `tail`.
 
 ### 7.2 Hub: `$LIMEN_HOME/limen.toml`
 

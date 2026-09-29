@@ -169,8 +169,8 @@ pub fn run(node: &Node, args: &Args) -> Result<Answer> {
         return Err(error(ErrorCode::Timeout, format!("{} did not finish in {}s", spec.name, spec.timeout_seconds)));
     }
     let tail = args.small_integer("tail")?.map(|tail| tail.max(1) as usize);
-    let (stdout, stdout_cut) = node.filter(&node.redactor.redact(&result.out()), args.string("grep"), tail);
-    let (stderr, stderr_cut) = node.filter(&node.redactor.redact(&result.err()), None, None);
+    let (stdout, stdout_cut) = node.filter(&node.clean(&result.out()), args.string("grep"), tail);
+    let (stderr, stderr_cut) = node.filter(&node.clean(&result.err()), None, None);
     let mut answer = json!({"script": spec.name, "exit": result.exit_code});
     if let Some(signal) = result.signal {
         answer["signal"] = json!(signal);
@@ -290,6 +290,34 @@ mod tests {
         assert_eq!(filtered.data["stdout"], "", "a guess at the secret is not told apart");
         let last = run(&packs.node, &run_args("say", &json!({"word": "hi"}), &json!({"tail": 1}))).unwrap();
         assert_eq!(last.data["stdout"], "password=[redacted]");
+    }
+
+    #[test]
+    fn terminal_control_sequences_in_the_output_are_removed_before_redaction_and_filters() {
+        let painted = "#!/bin/sh\n#: description = \"Paints\"\n\
+                       printf '\\033[31mred\\033[0m\\n'\n\
+                       printf 'pass\\033]0;title\\007word=hunter2\\n'\n\
+                       printf '\\033[1;31merror\\033[0m\\007\\n' >&2\n";
+        let packs = packs(&[("one/paint.sh", painted)]);
+        let answer = run(&packs.node, &run_args("paint", &json!({}), &json!({}))).unwrap();
+        assert_eq!(answer.data["stdout"], "red\npassword=[redacted]");
+        assert_eq!(answer.data["stderr"], "error");
+        let filtered = run(&packs.node, &run_args("paint", &json!({}), &json!({"grep": "password"}))).unwrap();
+        assert_eq!(filtered.data["stdout"], "password=[redacted]");
+    }
+
+    #[test]
+    fn a_control_character_in_an_argument_is_refused_whatever_its_pattern_allows() {
+        let permissive = "#!/bin/sh\n#: description = \"Says it\"\n#: [args.word]\n#: type = \"string\"\n\
+                          #: pattern = '^.{0,200}$'\necho \"$LIMEN_ARG_WORD\"\n";
+        let packs = packs(&[("one/say.sh", permissive)]);
+        for word in ["a\0b", "a\u{1b}[31m", "a\rb", "a\u{7f}"] {
+            let refusal = run(&packs.node, &run_args("say", &json!({"word": word}), &json!({}))).err().unwrap();
+            assert_eq!(refusal.code, ErrorCode::BadRequest, "{word:?}");
+            assert_eq!(refusal.message, "word must not contain control characters", "{word:?}");
+        }
+        let fine = run(&packs.node, &run_args("say", &json!({"word": "two words, ñ"}), &json!({}))).unwrap();
+        assert_eq!(fine.data["stdout"], "two words, ñ");
     }
 
     #[test]
