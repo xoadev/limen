@@ -1,0 +1,27 @@
+#!/bin/sh
+#: description = "Changes the machine: refreshes the package lists and upgrades the installed packages (apt-get upgrade: installs a new package only when an upgrade needs one, such as a kernel, and removes none), keeping the configuration files as they are. Says whether a reboot is then needed, and does not reboot. A package may restart its own services: upgrading Docker restarts its containers"
+#: timeout = "30m"
+set -eu
+
+# A dropped connection must not kill dpkg half way: ignore the signals it sends, and write to a file, not to the pipe.
+trap '' HUP PIPE
+export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l
+log=/var/log/limen-upgrade.log
+
+status=0
+{
+  apt-get update --quiet=2
+  apt-get upgrade --yes --with-new-pkgs --quiet=1 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold
+} > "$log" 2>&1 || status=$?
+
+grep -v "^(Reading database" "$log" | tail -n 25
+echo
+if [ "$status" -ne 0 ]; then
+  echo "apt failed with exit $status; the whole output is in $log"
+  exit "$status"
+fi
+if [ -e /run/reboot-required ]; then
+  echo "reboot required, asked for by: $(sort -u /run/reboot-required.pkgs 2>/dev/null | tr '\n' ' ')"
+else
+  echo "no reboot required"
+fi

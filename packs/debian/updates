@@ -1,0 +1,44 @@
+#!/bin/sh
+#: description = "Packages apt can upgrade, security ones marked, those apt keeps back, whether a reboot is pending, and how old the package lists are"
+#: timeout = "5m"
+#: [args.refresh]
+#: type = "bool"
+#: default = false
+#: description = "Refresh the package lists first: needs the network, and only the lists change"
+set -eu
+
+[ "$LIMEN_ARG_REFRESH" = false ] || apt-get update --quiet=2
+
+stamp=/var/lib/apt/periodic/update-success-stamp
+[ -e "$stamp" ] || stamp=/var/lib/apt/lists
+age=$(($(date +%s) - $(stat -c %Y "$stamp")))
+if [ -e /run/reboot-required ]; then reboot=yes; else reboot=no; fi
+
+# The same flags as upgrade: what this lists is what upgrade would do.
+apt-get --simulate --with-new-pkgs upgrade | awk -v age="$age" -v reboot="$reboot" '
+  kept && /^  / { held = held $0; next }
+  { kept = 0 }
+  /^The following packages have been kept back:/ { kept = 1 }
+  /^Inst / {
+    origin = $0
+    sub(/^[^(]*\(/, "", origin)
+    upgrade = ($3 ~ /^\[/)
+    old = upgrade ? $3 : "-"
+    new = upgrade ? $4 : $3
+    gsub(/[][]/, "", old)
+    sub(/^\(/, "", new)
+    total++
+    rows[total] = sprintf("%s %s %s %s", $2, old, new, (origin ~ /[Ss]ecurity/) ? "security" : "-")
+    if (origin ~ /[Ss]ecurity/) security++
+  }
+  END {
+    ago = (age < 3600) ? sprintf("%d min", age / 60) : (age < 86400) ? sprintf("%d h", age / 3600) : sprintf("%d d", age / 86400)
+    gsub(/ +/, " ", held)
+    sub(/^ /, "", held)
+    nheld = split(held, names, " ")
+    printf "%d package(s) to upgrade, %d from security, %d kept back; lists %s old; reboot required: %s\n", total, security, nheld, ago, reboot
+    if (total > 0) print "PACKAGE OLD NEW SECURITY"
+    for (n = 1; n <= total; n++) print rows[n]
+    if (nheld > 0) print "kept back: " held
+  }
+'

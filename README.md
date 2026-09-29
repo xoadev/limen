@@ -85,7 +85,8 @@ The hub talks to each machine (each *node*) with the system's `ssh`; nothing lis
 | *each script* | One tool per script in the machines' packs, with its own typed arguments, plus `grep` and `tail` to narrow its output |
 
 The packs in [`packs/`](packs/) are examples to copy: `system` (status, processes, ports), `systemd` (units, their
-logs, restarting one), `docker` (containers, their logs, restarting, purging) and `openwrt`.
+logs, restarting one), `debian` (upgradable packages, `apt-get upgrade`, rebooting), `docker` (containers, their logs,
+restarting, purging) and `openwrt`.
 
 ## Install
 
