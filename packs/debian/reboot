@@ -1,0 +1,16 @@
+#!/bin/sh
+#: description = "Changes the machine: reboots it after a delay, so this answer arrives first and the connection drops meanwhile; the machine is unreachable until it is back. Refuses while apt or dpkg is running. cancel_reboot undoes it before the time comes"
+#: timeout = "30s"
+#: [args.delay]
+#: type = "int"
+#: range = [1, 60]
+#: default = 1
+#: description = "Minutes until the reboot"
+set -eu
+
+if pgrep -x 'apt|apt-get|dpkg|unattended-upgr' > /dev/null; then
+  echo "apt or dpkg is running: a reboot now could leave a package half installed"
+  exit 1
+fi
+shutdown --reboot "+$LIMEN_ARG_DELAY" "reboot asked through limen" 2>&1
+echo "rebooting in $LIMEN_ARG_DELAY minute(s), at about $(date -d "+$LIMEN_ARG_DELAY minutes" +%H:%M:%S)"

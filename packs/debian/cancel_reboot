@@ -1,0 +1,11 @@
+#!/bin/sh
+#: description = "Changes the machine: cancels a reboot or shutdown scheduled by reboot, or by anyone"
+#: timeout = "30s"
+set -eu
+
+if [ ! -e /run/systemd/shutdown/scheduled ]; then
+  echo "no reboot or shutdown is scheduled"
+  exit 0
+fi
+shutdown -c
+echo "cancelled"

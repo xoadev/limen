@@ -21,7 +21,7 @@ limen/
   docs/spec.md          # this spec: the design and the reference, the single source of truth
   docs/scripts.md       # writing scripts and packs: the header, how they run, an example setup
   docs/openwrt.md       # OpenWrt as a node, and one binary for every Linux
-  packs/                # example packs, to copy: systemd, docker, openwrt, system
+  packs/                # example packs, to copy: systemd, debian, docker, openwrt, system
   AGENTS.md             # the working contract (CLAUDE.md points there); CONTRIBUTING.md is its short version
   SECURITY.md           # reporting vulnerabilities, and what counts as one
   install.sh            # the installer piped into `sh` on a new machine or a laptop hub
