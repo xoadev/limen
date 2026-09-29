@@ -241,7 +241,7 @@ max_bytes = 5242880
   It applies to files, scripts' output and `history`. The built-in patterns catch `key=value` for the usual
   names of secrets (a quoted value up to its closing quote), UCI's `option key '…'`, `Authorization` headers,
   credentials in URLs, `curl -u`, `sshpass -p`, `mysql -p`, PEM private keys and lines of base64 alone, as a
-  key's body is written.
+  key's body is written, unless they are all hexadecimal: those are hashes and IDs, such as a container's.
   - `redact.names` adds names, case-insensitive: the value after `NAME=`, `NAME: ` or `"NAME": ` is replaced.
   - `redact.patterns` adds regular expressions; a group named `secret` limits what is replaced.
   - It is a safety net; the protection is not allowing files that hold secrets, and not writing scripts

@@ -60,7 +60,7 @@ pub fn built_in() -> Vec<String> {
         r"-----BEGIN [A-Z ]*PRIVATE KEY-----(?s:.)*?-----END [A-Z ]*PRIVATE KEY-----".into(),
         // A line of base64 alone, as a key's body is written: a window of lines that starts inside a key has no
         // markers to find it by.
-        r"(?m)^[A-Za-z0-9+/]{64,}={0,2}\r?$".into(),
+        r"(?m)^(?<body>[A-Za-z0-9+/]{64,})={0,2}\r?$".into(),
     ]);
     patterns
 }
@@ -99,6 +99,11 @@ impl Redactor {
 /// A match with its `secret` group masked, or all of it when the pattern has no such group.
 fn masked(captures: &Captures) -> String {
     let whole = captures.get(0).expect("group 0 is the whole match");
+    // A line of hexadecimal alone is a hash or an ID —a container's, an image's—, not a key's body: 64 characters of
+    // base64 that happen to all be hexadecimal don't occur.
+    if captures.name("body").is_some_and(|body| body.as_str().bytes().all(|byte| byte.is_ascii_hexdigit())) {
+        return whole.as_str().to_string();
+    }
     match captures.name("secret") {
         Some(secret) => {
             let text = whole.as_str();
@@ -178,6 +183,12 @@ mod tests {
             "[redacted]\n[redacted]\n-----END OPENSSH PRIVATE KEY-----"
         );
         assert_eq!(redact("short line of text"), "short line of text");
+        // What `docker system prune` lists, a container's full ID, is not a key.
+        let container = "0e64f2360a448b389c83fcbc3705e1364ccf43f004bb55233c689e7ce59a1ae9";
+        assert_eq!(
+            redact(&format!("Deleted Containers:\n{container}\n")),
+            format!("Deleted Containers:\n{container}\n")
+        );
     }
 
     #[test]
