@@ -86,7 +86,7 @@ The hub talks to each machine (each *node*) with the system's `ssh`; nothing lis
 
 The packs in [`packs/`](packs/) are examples to copy: `system` (status, processes, ports), `systemd` (units, their
 logs, restarting one), `debian` (upgradable packages, `apt-get upgrade`, rebooting), `docker` (containers, their logs,
-restarting, purging) and `openwrt`.
+restarting, purging), `limen` (updating limen itself) and `openwrt`.
 
 ## Install
 

@@ -61,7 +61,7 @@ Each argument:
 
 A `pattern` is a Rust `regex` that must match the whole value: `\w`, `\d`, `\s` and `(?i)` are there, Unicode's
 `\p{…}` classes and look-around are not. The catalog reaches the model as text, so the hub leaves out a script
-whose description, arguments or patterns aren't short and plain. Whatever the pattern, a string argument never holds
+whose description (or an argument's) runs past 300 characters, or whose arguments or patterns aren't plain. Whatever the pattern, a string argument never holds
 a control character: a NUL, a newline or an `ESC` is refused before the pattern is applied.
 
 ## How it runs

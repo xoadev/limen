@@ -1,5 +1,5 @@
 #!/bin/sh
-#: description = "Changes the machine: refreshes the package lists and upgrades the installed packages (apt-get upgrade: installs a new package only when an upgrade needs one, such as a kernel, and removes none), keeping the configuration files as they are. Says whether a reboot is then needed, and does not reboot. A package may restart its own services: upgrading Docker restarts its containers"
+#: description = "Changes the machine: refreshes the package lists and upgrades the installed packages (new ones only when an upgrade needs them, such as a kernel; removes none), keeping config files. Says whether a reboot is then needed; does not reboot. Upgrading Docker restarts its containers"
 #: timeout = "30m"
 set -eu
 
