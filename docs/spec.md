@@ -355,7 +355,7 @@ command, and reads `sshd -T` to warn when `AllowUsers` or `AllowGroups` would ke
 checks it against `SHA256SUMS`, then:
 
 - no argument: `limen install`, for a machine whose packs and configuration come before the hub.
-- `--join <line>`: `limen join` with that line.
+- `--join <line>`: `limen join` with that line; `--address <address>` passes on where the hub reaches the machine.
 - `--hub-key <key> --name <name>`: the same, for a hub with no HTTP; it ends with the `limen trust` line.
 - `--hub`: the binary in `~/.local/bin` (or `/usr/local/bin` as root) and `limen init`, for a laptop hub.
 

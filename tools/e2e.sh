@@ -430,10 +430,11 @@ suite_join() {
   expect "the hub reaches it, no restart" '"ok": true' hub_exec call nas hello
   expect "the hub wrote it into limen.toml" "[nodes.nas]" hub_file limen.toml
 
-  echo "e2e/join: OpenWrt joins the same way"
+  echo "e2e/join: OpenWrt joins the same way, with its address given as a host name"
   line=$(join_line router)
-  expect "install.sh --join under ash" "router is on the hub" \
-    docker exec -e LIMEN_YES=1 -e LIMEN_BINARY=/tmp/limen -e LIMEN_JOIN="$line" "$router" sh /tmp/install.sh
+  expect "install.sh --join --address under ash" "router is on the hub, at $router" \
+    docker exec -e LIMEN_YES=1 -e LIMEN_BINARY=/tmp/limen "$router" sh /tmp/install.sh --join "$line" --address "$router"
+  expect "the hub files the address given, not the request's" "host = \"$router\"" hub_file limen.toml
   expect "the hub logs into it as root" 'user = "root"' hub_file limen.toml
   expect "and sees OpenWrt" '"os": "OpenWrt' hub_exec call router hello
 
