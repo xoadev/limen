@@ -6,6 +6,7 @@ apt packages and rebooting, on a Debian (or derived) machine with systemd.
 |---|---|---|
 | `updates` | Packages that can be upgraded, the security ones, those apt keeps back, whether a reboot is pending, the age of the package lists | no (with `refresh`, only the lists) |
 | `upgrade` | Upgrades the packages with `apt-get upgrade --with-new-pkgs`: a new package only when an upgrade needs one (a kernel), none removed, configuration files kept | **yes** |
+| `packages` | Every package dpkg knows with its version and state, or those matching a name pattern such as `docker*` | no |
 | `reboot` | Schedules a reboot 1 to 60 minutes away; refuses while apt or dpkg run | **yes** |
 | `cancel_reboot` | Cancels a scheduled reboot or shutdown | **yes** |
 
@@ -15,4 +16,4 @@ apt packages and rebooting, on a Debian (or derived) machine with systemd.
 - `reboot` waits so the answer arrives first; the machine is unreachable until it is back.
 - `updates` simulates with the flags `upgrade` uses: what it lists is what `upgrade` would do.
 
-Needs `apt-get`, `awk`, `pgrep` and `shutdown` (systemd).
+Needs `apt-get`, `dpkg-query`, `awk`, `pgrep` and `shutdown` (systemd).
