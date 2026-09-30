@@ -1,0 +1,31 @@
+#!/bin/sh
+#: description = "The installed limen version, the latest release published on GitHub, and whether limen_update would install something. Changes nothing"
+#: timeout = "1m"
+set -eu
+
+repo=xoadev/limen
+
+command -v curl > /dev/null 2>&1 || { echo "curl is needed to reach GitHub"; exit 1; }
+installed=$(limen --version | sed -n 's/^limen \([0-9][0-9.]*\).*/\1/p')
+[ -n "$installed" ] || { echo "cannot read the installed version from: $(limen --version)"; exit 1; }
+echo "installed: $installed"
+
+json=$(curl -fsS --proto '=https' --tlsv1.2 --retry 3 "https://api.github.com/repos/$repo/releases/latest") || { echo "cannot ask GitHub for the latest release"; exit 1; }
+latest=$(printf '%s\n' "$json" | sed -n 's/.*"tag_name": *"v\([0-9][0-9.]*\)".*/\1/p' | head -n 1)
+[ -n "$latest" ] || { echo "no release found at github.com/$repo"; exit 1; }
+echo "latest: $latest"
+
+# Numeric, field by field: 0.1.10 is newer than 0.1.9.
+order=$(awk -v a="$installed" -v b="$latest" 'BEGIN {
+  n = split(a, x, "."); m = split(b, y, ".")
+  for (i = 1; i <= (n > m ? n : m); i++) {
+    if (x[i] + 0 > y[i] + 0) { print 1; exit }
+    if (x[i] + 0 < y[i] + 0) { print -1; exit }
+  }
+  print 0
+}')
+case $order in
+  -1) echo "a newer release is available: limen_update installs it" ;;
+  0) echo "up to date" ;;
+  *) echo "the installed version is newer than the latest release" ;;
+esac
