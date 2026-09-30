@@ -158,9 +158,9 @@ nas is on the hub, at 100.64.0.5: Debian GNU/Linux 13, limen 0.1.0
   by key, and the installer warns when root has no password.
 
 The hub files the address the join request comes from. When the hub runs in Docker, or a NAT sits between, that is the
-gateway and not the machine, and the hub fails with `host_key_mismatch`. Then tell it where the machine is:
-`sudo env LIMEN_ADDRESS=100.64.0.5 sh -s -- --join '…'` on the installer, or `limen join '…' --address 100.64.0.5`
-once limen is there. Joining again with a new invitation replaces the entry.
+gateway and not the machine, and the hub fails with `host_key_mismatch`. Then tell it where the machine is, by
+address or by a name the hub resolves: `sudo sh -s -- --join '…' --address 100.64.0.5` on the installer, or
+`limen join '…' --address 100.64.0.5` once limen is there. Joining again with a new invitation replaces the entry.
 
 The hub needs no restart, and the invitation is spent: the next machine gets its own. How the join is protected
 against someone in between: [`docs/spec.md`](docs/spec.md#101-joining-a-node).
