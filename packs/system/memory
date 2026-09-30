@@ -1,0 +1,29 @@
+#!/bin/sh
+#: description = "Where the memory goes and whether it is short: /proc/meminfo in MiB, swap use, memory pressure (PSI), and the processes the kernel has killed for lack of memory since boot"
+set -eu
+
+awk '
+  { kib[$1] = $2 }
+  END {
+    count = split("MemTotal MemAvailable MemFree AnonPages Cached Buffers Shmem Slab SReclaimable SUnreclaim Dirty SwapTotal SwapFree SwapCached", keys, " ")
+    for (i = 1; i <= count; i++)
+      if ((keys[i] ":") in kib) printf "%-13s %7.0f MiB\n", keys[i], kib[keys[i] ":"] / 1024
+  }
+' /proc/meminfo
+
+echo
+if [ -r /proc/pressure/memory ]; then
+  echo "pressure, the share of time tasks waited for memory:"
+  cat /proc/pressure/memory
+else
+  echo "pressure: this kernel has no PSI"
+fi
+
+echo
+echo "since boot, in pages or events:"
+awk '$1 ~ /^(oom_kill|pswpin|pswpout|pgmajfault)$/ { printf "%-11s %s\n", $1, $2 }' /proc/vmstat
+
+if [ -r /proc/swaps ] && [ "$(wc -l < /proc/swaps)" -gt 1 ]; then
+  echo
+  cat /proc/swaps
+fi

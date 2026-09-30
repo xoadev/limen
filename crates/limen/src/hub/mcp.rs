@@ -7,7 +7,7 @@ use super::NodeClient;
 use limen_core::params::{self, Param, ParamType};
 use limen_core::protocol::{LimenError, NodeError, NodeResponse, pretty};
 use limen_core::requests::{self, RESERVED_ARGS, RequestDef};
-use limen_core::scripts::{self, Catalog, ScriptSpec};
+use limen_core::scripts::{self, Catalog, MAX_DESCRIPTION_CHARS, ScriptSpec};
 use limen_core::version::VERSION;
 use regex::RegexBuilder;
 use serde_json::{Map, Value, json};
@@ -33,7 +33,6 @@ const MAX_SCRIPT_SECONDS: u64 = 3600;
 const REFRESH_EVERY: Duration = Duration::from_secs(10);
 
 /// How much of a node's catalog the hub takes: text that reaches every MCP session, and patterns it compiles.
-const MAX_DESCRIPTION_CHARS: usize = 300;
 const MAX_PROBLEM_CHARS: usize = 1000;
 const MAX_PATTERN_BYTES: usize = 512;
 const MAX_COMPILED_PATTERN: usize = 1 << 20;

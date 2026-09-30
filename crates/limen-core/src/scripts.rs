@@ -16,6 +16,9 @@ use std::time::Duration;
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
 const MAX_TIMEOUT: Duration = Duration::from_secs(3600);
 
+/// The longest description of a script or an argument the hub takes: that text reaches every MCP session.
+pub const MAX_DESCRIPTION_CHARS: usize = 300;
+
 /// What a script says about itself in its header.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScriptSpec {
@@ -45,6 +48,17 @@ pub fn is_script_name(name: &str) -> bool {
 
 pub fn is_param_name(name: &str) -> bool {
     PARAM_NAME_REGEX.is_match(name)
+}
+
+/// Why the hub would leave the script out for the length of a description, or None when they all fit.
+pub fn too_long_description(spec: &ScriptSpec) -> Option<String> {
+    let described = std::iter::once(("the description".to_string(), &spec.description))
+        .chain(spec.params.iter().map(|param| (format!("the description of '{}'", param.name), &param.description)));
+    described.into_iter().find_map(|(what, text)| {
+        let length = text.chars().count();
+        (length > MAX_DESCRIPTION_CHARS)
+            .then(|| format!("{}: {what} has {length} characters and the hub takes {MAX_DESCRIPTION_CHARS}", spec.name))
+    })
 }
 
 /// The script name of a file: its name without the extension, or None when that is not a script's name.
@@ -233,6 +247,29 @@ set -euo pipefail
         assert!(!threshold.required);
         let mount = spec.params.iter().find(|param| param.name == "mount").unwrap();
         assert!(mount.required);
+    }
+
+    #[test]
+    fn a_description_over_the_limit_is_told_by_script_and_argument() {
+        let fits = "x".repeat(MAX_DESCRIPTION_CHARS);
+        let long = "x".repeat(MAX_DESCRIPTION_CHARS + 1);
+        let script = |description: &str, arg_description: &str| {
+            format!(
+                "#!/bin/sh\n#: description = \"{description}\"\n#: [args.word]\n#: type = \"string\"\n#: description = \"{arg_description}\"\n"
+            )
+        };
+        let spec = parse("say", &script(&fits, &fits)).unwrap().unwrap();
+        assert_eq!(too_long_description(&spec), None);
+        let spec = parse("say", &script(&long, &fits)).unwrap().unwrap();
+        assert_eq!(
+            too_long_description(&spec).unwrap(),
+            "say: the description has 301 characters and the hub takes 300"
+        );
+        let spec = parse("say", &script(&fits, &long)).unwrap().unwrap();
+        assert_eq!(
+            too_long_description(&spec).unwrap(),
+            "say: the description of 'word' has 301 characters and the hub takes 300"
+        );
     }
 
     #[test]

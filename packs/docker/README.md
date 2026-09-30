@@ -6,6 +6,7 @@ Containers, their logs, and cleaning up after them.
 |---|---|---|
 | `containers` | Every container with its image, state and health | no |
 | `container` | One container: image, state, health, restarts, mounts, ports, networks, labels | no |
+| `container_stats` | What each running container uses right now: CPU, memory and processes, the hungriest first | no |
 | `container_logs` | One container's log over a period, stdout and stderr together | no |
 | `restart_container` | Restarts one container as it is | **yes** |
 | `purge` | Deletes stopped containers, unused networks, dangling images and build cache; with `images`, every unused image. Never volumes | **yes** |

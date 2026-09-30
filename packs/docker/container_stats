@@ -1,0 +1,9 @@
+#!/bin/sh
+#: description = "What each running container uses right now: CPU, memory against its limit, and processes, the hungriest for memory first"
+#: timeout = "30s"
+set -eu
+
+stats=$(docker stats --no-stream --format '{{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.MemPerc}}\t{{.PIDs}}')
+[ -n "$stats" ] || { echo "no running containers"; exit 0; }
+printf 'NAME\tCPU\tMEMORY\tMEM%%\tPIDS\n'
+printf '%s\n' "$stats" | sort -t "$(printf '\t')" -k4 -rn

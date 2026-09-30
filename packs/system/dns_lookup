@@ -1,0 +1,32 @@
+#!/bin/sh
+#: description = "Resolves a name and says who answered: the machine's own resolver, or the DNS server given in `server`. Asks for one record type; without dig or nslookup it only lists addresses"
+#: timeout = "30s"
+#: [args.name]
+#: type = "string"
+#: pattern = '^[A-Za-z0-9][A-Za-z0-9._-]{0,252}$'
+#: description = "The name to resolve"
+#: [args.type]
+#: type = "enum"
+#: default = "A"
+#: values = ["A", "AAAA", "CNAME", "MX", "NS", "SOA", "SRV", "TXT"]
+#: description = "The record type"
+#: [args.server]
+#: type = "string"
+#: required = false
+#: pattern = '^[0-9A-Fa-f:.]{2,45}$'
+#: description = "A DNS server to ask, by IP address, instead of the machine's resolver"
+set -eu
+
+if command -v dig >/dev/null 2>&1; then
+  set -- +nocmd +time=5 +tries=1
+  [ -z "${LIMEN_ARG_SERVER:-}" ] || set -- "$@" "@$LIMEN_ARG_SERVER"
+  exec dig "$@" "$LIMEN_ARG_NAME" "$LIMEN_ARG_TYPE"
+fi
+if command -v nslookup >/dev/null 2>&1; then
+  exec nslookup -type="$LIMEN_ARG_TYPE" "$LIMEN_ARG_NAME" ${LIMEN_ARG_SERVER:+"$LIMEN_ARG_SERVER"}
+fi
+if [ -n "${LIMEN_ARG_SERVER:-}" ] || [ "$LIMEN_ARG_TYPE" != A ]; then
+  echo "dns_lookup: neither dig nor nslookup here, so it can't ask a server or for a record type" >&2
+  exit 2
+fi
+exec getent ahosts "$LIMEN_ARG_NAME"
