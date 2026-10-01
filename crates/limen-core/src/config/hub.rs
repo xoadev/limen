@@ -102,6 +102,15 @@ impl HubConfig {
         self.nodes.iter().find(|node| node.name == name)
     }
 
+    /// `ssh.identity` as a path: absolute, or under the hub's directory [home]. Its public key is this with `.pub`.
+    pub fn identity_path(&self, home: &str) -> String {
+        if self.identity.starts_with('/') {
+            self.identity.clone()
+        } else {
+            format!("{}/{}", home.trim_end_matches('/'), self.identity)
+        }
+    }
+
     pub fn parse(text: &str) -> ConfigResult<HubConfig> {
         let file: File = super::from_str(text)?;
         let defaults = HubConfig::default();
@@ -115,6 +124,9 @@ impl HubConfig {
             return fail("http.listen", format!("'{listen}': expected host:port"));
         }
         let public_url = public_url(file.http.public_url)?;
+        if file.ssh.identity.as_deref().is_some_and(|identity| identity.is_empty() || identity.ends_with('/')) {
+            return fail("ssh.identity", "a key file: relative to the hub's directory, or absolute");
+        }
         Ok(HubConfig {
             identity: file.ssh.identity.unwrap_or(defaults.identity),
             connect_timeout: duration("ssh.connect_timeout", file.ssh.connect_timeout)?
@@ -204,6 +216,18 @@ host_key = "ecdsa-sha2-nistp256 AAAAE2VjZHNh="
         assert_eq!(config.node("router").unwrap().user, "reader");
         // Only the local machine unless told otherwise.
         assert_eq!(config.listen, "127.0.0.1:7341");
+    }
+
+    #[test]
+    fn the_identity_is_under_the_hub_unless_absolute() {
+        let identity = |text: &str| HubConfig::parse(text).map(|config| config.identity_path("/data/"));
+        assert_eq!(identity("").unwrap(), "/data/id_ed25519");
+        assert_eq!(identity("[ssh]\nidentity = \"keys/limen\"").unwrap(), "/data/keys/limen");
+        assert_eq!(identity("[ssh]\nidentity = \"/etc/limen-hub/key\"").unwrap(), "/etc/limen-hub/key");
+        for not_a_file in ["", "keys/"] {
+            let error = identity(&format!("[ssh]\nidentity = \"{not_a_file}\"")).unwrap_err();
+            assert!(error.0.starts_with("ssh.identity: "), "{error}");
+        }
     }
 
     #[test]

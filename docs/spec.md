@@ -279,8 +279,12 @@ user = "root"
 host_key = "ssh-ed25519 AAAA…"
 ```
 
-- The directory holds `id_ed25519` (the hub's key, made with `ssh-keygen` by `init`), `limen.toml`, `token`
-  (for HTTP clients, unless `LIMEN_TOKEN` is set) and `invites/`. `limen.toml` is read again whenever it changes: a
+- The directory holds `limen.toml`, the hub's SSH key, `token` (for HTTP clients, unless `LIMEN_TOKEN` is set) and
+  `invites/`.
+- `ssh.identity` is the hub's SSH key: a path relative to the hub's directory (`--home`, else `LIMEN_HOME`), or
+  absolute. `init` makes it with `ssh-keygen` when it is missing. Its public key is the same path with `.pub`: the
+  one `invite` hands out, whose fingerprint `init`, `serve` and the join line show.
+- `limen.toml` is read again whenever it changes: a
   node that joins is there for the next request. `[http]` is read once, when `serve` starts. A broken
   `limen.toml` makes the MCP answer errors, not stop.
 - `[http] public_url` (or `LIMEN_PUBLIC_URL`) is where nodes reach the hub to join: an address, not a name,
