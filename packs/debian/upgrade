@@ -1,7 +1,30 @@
 #!/bin/sh
-#: description = "Changes the machine: refreshes the package lists and upgrades the installed packages (new ones only when an upgrade needs them, such as a kernel; removes none), keeping config files. Says whether a reboot is then needed; does not reboot. Upgrading Docker restarts its containers"
+#: description = "Changes the machine: refreshes the package lists and upgrades the installed packages (new ones only when an upgrade needs them, such as a kernel), keeping config files; full also takes those apt keeps back. Says whether a reboot is needed; does not reboot. Upgrading Docker restarts its containers"
 #: timeout = "30m"
+#: [args.full]
+#: type = "bool"
+#: default = false
+#: description = "apt-get full-upgrade: also the packages apt keeps back. Removes none unless remove is true too"
+#: [args.remove]
+#: type = "bool"
+#: default = false
+#: description = "With full: let it remove the packages it needs to. Without it, a full upgrade that would remove one does nothing and lists them"
 set -eu
+
+# Arguments may be missing when another script runs this one.
+full=${LIMEN_ARG_FULL:-false}
+remove=${LIMEN_ARG_REMOVE:-false}
+if [ "$remove" = true ] && [ "$full" = false ]; then
+  echo "remove only applies with full"
+  exit 2
+fi
+if [ "$full" = false ]; then
+  set -- upgrade --with-new-pkgs
+elif [ "$remove" = false ]; then
+  set -- full-upgrade --no-remove
+else
+  set -- full-upgrade
+fi
 
 # A dropped connection must not kill dpkg half way: ignore the signals it sends, and write to a file, not to the pipe.
 trap '' HUP PIPE
@@ -13,7 +36,7 @@ set +e
 (
   set -e
   apt-get update --quiet=2
-  apt-get upgrade --yes --with-new-pkgs --quiet=1 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold
+  apt-get "$@" --yes --quiet=1 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold
 ) > "$log" 2>&1
 status=$?
 set -e
@@ -21,7 +44,12 @@ set -e
 grep -v "^(Reading database" "$log" | tail -n 25
 echo
 if [ "$status" -ne 0 ]; then
-  echo "apt failed with exit $status; the whole output is in $log"
+  if grep -q "remove is disabled" "$log"; then
+    echo "the full upgrade would remove these packages, so nothing was done (run it with remove to allow it):"
+    awk '/^The following packages will be REMOVED:/ { listing = 1; next } listing && /^  / { print; next } { listing = 0 }' "$log"
+  else
+    echo "apt failed with exit $status; the whole output is in $log"
+  fi
   exit "$status"
 fi
 if [ -e /run/reboot-required ]; then
