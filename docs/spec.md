@@ -262,7 +262,10 @@ max_bytes = 5242880
   base64 alone, as a key's body is written, unless they are all hexadecimal: those are hashes and IDs, such as a
   container's.
   - `redact.names` adds names, case-insensitive: the value after `NAME=`, `NAME: ` or `"NAME": ` is replaced.
-  - `redact.patterns` adds regular expressions; a group named `secret` limits what is replaced.
+  - `redact.patterns` adds regular expressions; a group named `secret` limits what is replaced. Each runs over a
+    whole text —a file's range or window, a script's stdout—, not line by line: `^` and `$` are its start and end
+    unless the pattern says `(?m)`. They are Rust `regex`, as a script's `pattern` is ([scripts.md](scripts.md)):
+    no look-around, no `\p{…}` classes.
   - It is a safety net; the protection is not allowing files that hold secrets, and not writing scripts
     that print them.
 - **Control characters** never leave the node in a file's content or a script's output: `ESC` with the CSI or
@@ -370,21 +373,24 @@ host_key = "ssh-ed25519 AAAA…"
 
 | Command | Where | What |
 |---|---|---|
-| `limen init [--serve]` | hub | The hub's directory: key, `limen.toml`, and with `--serve` the token. Keeps what exists |
-| `limen mcp` | hub | MCP over stdio |
-| `limen serve` | hub | MCP over HTTP and the join endpoints; `init --serve` first if needed |
-| `limen connect [--url]` | hub | The `claude mcp add` line: HTTP when there is a public URL and a token, stdio otherwise |
-| `limen invite <name> [--ttl 1h]` | hub | The line that joins a machine (§10.1) |
-| `limen trust <name> <address> <host-key> [--user] [--port]` | hub | A node added by hand |
-| `limen forget <name>` | hub | A node taken off the hub |
-| `limen call <node> <request \| script> [--arg k=v]… [--grep] [--tail]` | hub | One request over SSH; prints the JSON. A script's arguments are typed by its header, from the node's catalog |
+| `limen init [--serve] [--home <dir>]` | hub | The hub's directory: key, `limen.toml`, and with `--serve` the token. Keeps what exists |
+| `limen mcp [--home <dir>]` | hub | MCP over stdio |
+| `limen serve [--listen <host:port>] [--home <dir>]` | hub | MCP over HTTP and the join endpoints; `init --serve` first if needed |
+| `limen connect [--url <url>] [--home <dir>]` | hub | The `claude mcp add` line: HTTP when there is a public URL and a token, stdio otherwise |
+| `limen invite <name> [--ttl 1h] [--home <dir>]` | hub | The line that joins a machine (§10.1) |
+| `limen trust <name> <address> <host-key> [--user] [--port] [--home <dir>]` | hub | A node added by hand |
+| `limen forget <name> [--home <dir>]` | hub | A node taken off the hub |
+| `limen call <node> <request \| script> [--arg k=v]… [--grep] [--tail] [--home <dir>]` | hub | One request over SSH; prints the JSON. A script's arguments are typed by its header, from the node's catalog |
 | `limen join <line> \| --hub-key <key> --name <name> [--from …] [--address …] [--ssh-port …]` | node, root | Joins the hub (§10.1): install with the hub's key, then report |
 | `limen install [--hub-key <key>] [--from <addresses>] [--dry-run]` | node, root | Debian: binary in `/usr/local/bin`, the `limen` user, `authorized_keys`, `sudoers` (validated with `visudo -c` first) and, where systemd runs, the user's `user@<uid>.service` masked. OpenWrt: binary in `/usr/bin`, root's dropbear keys, sysupgrade keep list. Both: `/etc/limen/` and a `limen.toml` if there is none. Without `--hub-key` nothing opens to SSH yet. Idempotent |
-| `limen uninstall [--purge]` | node, root | Undoes `install`; keeps `/etc/limen/` and the logs unless `--purge` |
-| `limen gate` | node | The forced command. Not for people |
-| `limen run <script> [--arg k=v]… [--grep] [--tail]` | node, root | One script, as the hub would run it; prints its output and exits with its exit code |
-| `limen lint` | node | Packs, script names, headers and permissions, without running anything |
+| `limen uninstall [--purge] [--dry-run]` | node, root | Undoes `install`; keeps `/etc/limen/` and the logs unless `--purge` |
+| `limen gate [--config <file>]` | node | The forced command. Not for people |
+| `limen run <script> [--arg k=v]… [--grep] [--tail] [--config <file>]` | node, root | One script, as the hub would run it; prints its output and exits with its exit code |
+| `limen lint [--config <file>]` | node | Packs, script names, headers and permissions, without running anything |
 | `limen version` | both | The version |
+
+`--home` is the hub's directory: `LIMEN_HOME` without it, `~/.limen` without either (§7.2). `--config` is the
+node's configuration, `/etc/limen/limen.toml` unless given.
 
 The `limen` user needs no user manager. Without the mask, `pam_systemd` starts one for every login of the hub, and
 with it whatever the machine starts for each user: on a machine with a desktop, sound servers, which fail and fill the

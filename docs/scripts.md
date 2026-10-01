@@ -44,7 +44,7 @@ exec journalctl --no-pager -o short-iso --since "-$LIMEN_ARG_SINCE" -u "$LIMEN_A
 | Key | | |
 |---|---|---|
 | `description` | required | What the model reads to choose the tool. One line, what it does and what it answers |
-| `timeout` | default `60s`, at most `1h` | `30s`, `5m`, `1h`. `SIGTERM` to the script's process group when it runs out, `SIGKILL` after a grace period |
+| `timeout` | default `60s`, at most `1h` | `30s`, `5m`, `1h`, in whole seconds: a fraction is dropped, and under `1s` is `1s`. `SIGTERM` to the script's process group when it runs out, `SIGKILL` after a grace period |
 | `[args.<name>]` | one per argument | `name` is `^[a-z][a-z0-9_]{0,31}$`; `node`, `grep` and `tail` are taken |
 
 Each argument:

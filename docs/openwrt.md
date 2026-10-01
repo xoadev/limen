@@ -28,7 +28,7 @@ static binary; its arm64 build couldn't start processes under qemu. The Rust one
 | A forced command only holds a login **by key** | OpenWrt ships root without a password, and dropbear lets anyone in without a key then. `install` warns, and says how to turn password logins off (`uci set dropbear.@dropbear[0].PasswordAuth=off`, `RootPasswordAuth=off`) |
 | `sysupgrade` wipes what it isn't told to keep | `/lib/upgrade/keep.d/limen` keeps the binary and `/etc/limen` |
 | Services are procd's, logs are `logread`, tools are busybox's | The `openwrt` example pack in [`packs/`](../packs/) uses `ubus`, `/etc/init.d` and `logread`; scripts are POSIX `sh`, which busybox's `ash` runs |
-| `/var/log` is RAM | The audit log rotates at 5 MB and doesn't survive a reboot |
+| `/var/log` is RAM | The audit log rotates at `audit.max_bytes` and doesn't survive a reboot. `audit.path` can put it on flash, where every request writes to it ([spec §7.1](spec.md#71-node-etclimenlimentoml)) |
 | The hub logs in as root | Its entry says `user = "root"`; a join sets it |
 
 ## What is tested, and what is not
