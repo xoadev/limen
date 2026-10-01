@@ -308,8 +308,18 @@ host_key = "ssh-ed25519 AAAA…"
   node that changes address keeps its key.
 - `user` defaults to `limen` (`root` on OpenWrt, which the join fills in) and `port` to 22.
 - A script's call waits for the script's own timeout and a margin, not `ssh.request_timeout`.
-- `LIMEN_HOME` defaults to `~/.limen`; the image sets `/data`.
-- Environment overrides: `LIMEN_TOKEN` (§9) and `LIMEN_LISTEN`.
+- `http.listen` is where `serve` listens, as `host:port`. `--listen` wins over `LIMEN_LISTEN`, and that over the
+  file; each is checked the same way. The image's command is `serve --listen 0.0.0.0:7341`, so in the image the
+  address changes by overriding the command: `LIMEN_LISTEN` and the file don't reach it.
+- What the hub reads from its environment, where a blank value counts as unset:
+
+  | Variable | |
+  |---|---|
+  | `LIMEN_HOME` | The hub's directory when there is no `--home`; `$HOME/.limen` without either. The image sets `/data` |
+  | `LIMEN_TOKEN` | The HTTP clients' token, instead of the `token` file (§9) |
+  | `LIMEN_PUBLIC_URL` | Over `http.public_url`, checked the same way |
+  | `LIMEN_LISTEN` | Over `http.listen`, under `--listen` |
+  | `XDG_RUNTIME_DIR` | Where ssh's control sockets go (§12) |
 
 ## 8. Audit
 
@@ -337,7 +347,7 @@ host_key = "ssh-ed25519 AAAA…"
     and 15 seconds for the whole request. The token and `Origin` are checked before the body is read, and a body
     is read only with its `Content-Length`, up to 1 MiB (16 KiB for a join): `Transfer-Encoding` gets `411`.
   - Validates `Origin` against `http.origins` (§7.2), against DNS rebinding.
-  - Listens on `127.0.0.1:7341` unless told otherwise. The image listens on every interface;
+  - Listens on `127.0.0.1:7341` unless told otherwise (§7.2). The image listens on every interface;
     whoever publishes the port decides who gets in.
 - `GET /join/<code>` and `POST /join/<code>` (§10.1) need no token: the one-time code is the authorisation.
 - Catalogs are fetched when the set of nodes changes, and when a session starts (`initialize`) or `nodes`

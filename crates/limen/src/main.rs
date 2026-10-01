@@ -341,17 +341,12 @@ fn serve(home: Option<&str>, listen: Option<String>) -> Exit {
     }
     let token = hub.token()?;
     let live = Arc::new(LiveHub::new(hub.clone()));
-    let address = listen_address(listen, &live)?;
+    let address = live
+        .config()?
+        .listen_address(listen, sys::env_setting("LIMEN_LISTEN"))
+        .map_err(|cause| Stop::Message(cause.to_string()))?;
     transports::http(hub, live, &address, token)?;
     Ok(0)
-}
-
-/// `--listen`, else `LIMEN_LISTEN` when it says something, else `[http].listen`.
-fn listen_address(listen: Option<String>, live: &LiveHub) -> Result<String, LimenError> {
-    match listen.or_else(|| sys::env_setting("LIMEN_LISTEN")) {
-        Some(address) => Ok(address),
-        None => live.config().map(|config| config.listen),
-    }
 }
 
 /// Prints the command that adds this hub to Claude Code: over HTTP when the hub has an address and a token, else

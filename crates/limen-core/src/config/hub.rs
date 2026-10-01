@@ -111,6 +111,16 @@ impl HubConfig {
         }
     }
 
+    /// Where `serve` listens: [option] (`--listen`), else [env] (`LIMEN_LISTEN`), else `http.listen`; any of them
+    /// checked as the file's key is.
+    pub fn listen_address(&self, option: Option<String>, env: Option<String>) -> ConfigResult<String> {
+        match (option, env) {
+            (Some(address), _) => checked_listen("--listen", address),
+            (None, Some(address)) => checked_listen("LIMEN_LISTEN", address),
+            (None, None) => Ok(self.listen.clone()),
+        }
+    }
+
     pub fn parse(text: &str) -> ConfigResult<HubConfig> {
         let file: File = super::from_str(text)?;
         let defaults = HubConfig::default();
@@ -120,9 +130,7 @@ impl HubConfig {
             Some(_) => return fail("ssh.per_node_concurrency", "must be between 1 and 64"),
             None => defaults.per_node_concurrency,
         };
-        if let Some(listen) = file.http.listen.as_ref().filter(|listen| !is(LISTEN, listen)) {
-            return fail("http.listen", format!("'{listen}': expected host:port"));
-        }
+        let listen = file.http.listen.map(|listen| checked_listen("http.listen", listen)).transpose()?;
         let public_url = public_url(file.http.public_url)?;
         if file.ssh.identity.as_deref().is_some_and(|identity| identity.is_empty() || identity.ends_with('/')) {
             return fail("ssh.identity", "a key file: relative to the hub's directory, or absolute");
@@ -134,7 +142,7 @@ impl HubConfig {
             request_timeout: duration("ssh.request_timeout", file.ssh.request_timeout)?
                 .unwrap_or(defaults.request_timeout),
             per_node_concurrency,
-            listen: file.http.listen.unwrap_or(defaults.listen),
+            listen: listen.unwrap_or(defaults.listen),
             origins: file.http.origins,
             public_url,
             nodes,
@@ -166,6 +174,14 @@ fn node_entry(name: String, node: Node) -> ConfigResult<NodeEntry> {
         return fail(&key("host_key"), "expected '<type> <base64>', as in known_hosts without the host");
     }
     Ok(NodeEntry { name, host, port, user, host_key })
+}
+
+/// [address] if it is `host:port`; [key] says where it came from.
+fn checked_listen(key: &str, address: String) -> ConfigResult<String> {
+    if !is(LISTEN, &address) {
+        return fail(key, format!("'{address}': expected host:port"));
+    }
+    Ok(address)
 }
 
 /// `[http].public_url` without a trailing slash, if it is an address.
@@ -216,6 +232,21 @@ host_key = "ecdsa-sha2-nistp256 AAAAE2VjZHNh="
         assert_eq!(config.node("router").unwrap().user, "reader");
         // Only the local machine unless told otherwise.
         assert_eq!(config.listen, "127.0.0.1:7341");
+    }
+
+    #[test]
+    fn listen_comes_from_the_option_the_environment_or_the_file_each_checked() {
+        let config = HubConfig::parse("[http]\nlisten = \"127.0.0.1:1\"").unwrap();
+        let given = |text: &str| Some(text.to_string());
+        assert_eq!(config.listen_address(None, None).unwrap(), "127.0.0.1:1");
+        assert_eq!(config.listen_address(None, given("0.0.0.0:2")).unwrap(), "0.0.0.0:2");
+        assert_eq!(config.listen_address(given("[::]:3"), given("0.0.0.0:2")).unwrap(), "[::]:3");
+        let error = config.listen_address(None, given("7341")).unwrap_err();
+        assert_eq!(error.0, "LIMEN_LISTEN: '7341': expected host:port");
+        let error = config.listen_address(given("0.0.0.0"), None).unwrap_err();
+        assert_eq!(error.0, "--listen: '0.0.0.0': expected host:port");
+        let error = HubConfig::parse("[http]\nlisten = \"localhost\"").unwrap_err();
+        assert_eq!(error.0, "http.listen: 'localhost': expected host:port");
     }
 
     #[test]
