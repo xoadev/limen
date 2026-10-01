@@ -53,8 +53,8 @@ Each argument:
 |---|---|
 | `type` | `int`, `bool`, `enum` or `string` |
 | `description` | What the model reads |
-| `default` | Makes it optional |
-| `required = false` | Optional with no default: the variable is unset |
+| `default` | Makes it optional: a call that leaves it out gets this value |
+| `required` | `true` without a `default`: a call must give it. `required = false` makes it optional with no default, and the variable is unset when a call leaves it out. `required = true` with a `default` is refused: the default makes it optional |
 | `range = [min, max]` | For `int` |
 | `values = ["a", "b"]` | For `enum` |
 | `pattern` | For `string`. By default `^[A-Za-z0-9_][A-Za-z0-9._-]{0,63}$`: never an option, `.` or `..` |

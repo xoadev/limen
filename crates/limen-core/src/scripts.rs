@@ -205,6 +205,10 @@ impl Arg {
         if self.default.as_ref().is_some_and(|default| !fits_a_type(default)) {
             return Err("default must be a string, integer or boolean".into());
         }
+        // The schema would say required while the node fills the default in: the model can't tell which holds.
+        if self.required == Some(true) && self.default.is_some() {
+            return Err("required = true and a default: the default makes it optional".into());
+        }
         let param = Param {
             name: name.into(),
             kind,
@@ -382,6 +386,10 @@ set -euo pipefail
             ("#: description = \"x\"\n#: [args.n]\n#: type = \"int\"\n#: default = \"x\"", "the default does not fit"),
             ("#: description = \"x\"\n#: [args.Bad]\n#: type = \"int\"", "argument name 'Bad'"),
             ("#: description = \"x\"\n#: [args.grep]\n#: type = \"int\"", "'grep' is limen's own"),
+            (
+                "#: description = \"x\"\n#: [args.n]\n#: type = \"int\"\n#: default = 1\n#: required = true",
+                "argument 'n': required = true and a default: the default makes it optional",
+            ),
         ] {
             let error = parse("s", text).unwrap().unwrap_err();
             assert!(error.contains(expected), "{error} should contain {expected}");
