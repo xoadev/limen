@@ -140,7 +140,7 @@ Every tool takes a `node` argument.
   guess at a secret would be told apart by whether a line comes back— and filters before `tail` applies:
   the answer is the last N matching lines. A script never sees `grep` or `tail`, and can't declare
   arguments with those names.
-- `lines` and `tail` above `limits.max_lines` are cut to it, and the answer says it was truncated.
+- `lines` (500 unless given) and `tail` above `limits.max_lines` are cut to it, and the answer says it was truncated.
   `read_file` with `grep` or `tail` scans at most the last `limits.scan_lines` lines, and 16 MiB.
 - A node's catalog is not trusted: a script whose name, description, arguments or patterns aren't plain and
   bounded, that declares a `node`, `grep` or `tail` argument, or whose name is a built-in tool's, is left out
