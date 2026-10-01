@@ -219,6 +219,16 @@ max_bytes = 5242880
 
 - **Nothing is readable by default.** `files.allow` starts empty. Everything readable ends up in a model
   provider's context, so the operator decides it path by path.
+- `files.allow` and `files.deny` are path patterns, each starting with `/` or `**`. `**` as a whole segment is any
+  number of segments, none included, so `/etc/nginx/**` matches `/etc/nginx` too; `*` is any run of characters within
+  a segment, a leading dot included; `?` is one character. Nothing else is special: `{a,b}` and `[…]` are literal
+  text. A pattern for a directory doesn't reach inside it; `/dir/**` does. A path is readable when an `allow` pattern
+  matches it and no `deny` pattern does: `deny` wins. Both match the resolved target —links followed, `..` taken, as
+  below—, never the path as asked.
+- `files.max_bytes`, 256 KiB by default, caps what one range (`from` and `lines`) returns: bytes of text as read,
+  newlines included. The range stops before the line that would pass it and says it was truncated. `grep` and `tail`
+  don't go by it: they read the file's end, at most `limits.scan_lines` lines and 1 KiB for each line looked for, up
+  to 16 MiB, and answer at most `limits.max_lines` lines (§5). Every answer is bounded by `limits.max_response`.
 - A built-in deny list applies on top and can't be overridden: `/etc/shadow`, `/etc/gshadow` and their
   backups in `/var/backups/`, `/etc/sudoers*`, SSH and dropbear private keys, `/etc/ssl/private/`,
   `/etc/wireguard/`, NetworkManager connections, OpenWrt's `/etc/config/wireless`, systemd's
