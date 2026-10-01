@@ -88,7 +88,8 @@ jobs:
             echo "::error title=Version::convco said '$TAG', not vX.Y.Z" >&2
             exit 1
           fi
-          gh release list --limit 100 --json tagName,isDraft --jq '.[] | select(.isDraft) | .tagName' |
+          # Only limen's own drafts, vX.Y.Z: the packs' are packs.yml's.
+          gh release list --limit 100 --json tagName,isDraft --jq '.[] | select(.isDraft and (.tagName | test("^v[0-9]"))) | .tagName' |
             while read -r stale; do
               if [[ "$stale" != "$TAG" || "$HAS_CHANGES" != true ]]; then
                 gh release delete "$stale" --yes
@@ -129,7 +130,7 @@ jobs:
           GH_REPO: ${{ github.repository }}
           PUBLISH: ${{ inputs.publish }}
         run: |
-          tag=$(gh release list --limit 100 --json tagName,isDraft --jq '[.[] | select(.isDraft) | .tagName] | first // empty')
+          tag=$(gh release list --limit 100 --json tagName,isDraft --jq '[.[] | select(.isDraft and (.tagName | test("^v[0-9]"))) | .tagName] | first // empty')
           if [[ -z "$tag" ]]; then
             if [[ "$PUBLISH" == true ]]; then
               echo "::error title=No draft::there is no draft release to publish: nothing changed since the last one" >&2
@@ -365,8 +366,9 @@ jobs:
           } > "$notes"
           gh release upload "$TAG" release/* --clobber
           gh release edit "$TAG" --notes-file "$notes"
-          # Publishing creates the tag, at the commit the draft points at.
-          gh release edit "$TAG" --draft=false
+          # Publishing creates the tag, at the commit the draft points at. Latest, said outright: install.sh,
+          # limen_version and limen_update ask GitHub for the latest release, and the packs' never are (packs.yml).
+          gh release edit "$TAG" --draft=false --latest
           echo "published: $TAG at $SHA"
 
       - name: The image is the latest

@@ -460,6 +460,12 @@ hub:   [nodes.nas] with the request's source address, then `hello`  →  {"reach
   `vX.Y.Z` tag. A release is never public without its files, and releases are immutable: once published, neither
   its files nor its tag change. The version exists only from the tag: `limen --version` says
   `X.Y.Z · build <run> · <date>`, or `dev` for a local build.
+- **Each pack under `packs/` is released on its own**, apart from limen and from the other packs: its tag is
+  `pack-<pack>-vX.Y.Z`, its version comes from the conventional commits that touched `packs/<pack>/`, and the
+  same workflow by hand publishes it with `limen-pack-<pack>-<version>.tar.gz` —reproducible from the commit, owned
+  by root, writable only by its owner— and `SHA256SUMS`. It is never the latest release: that one is limen's, which
+  `install.sh` and the `limen` pack ask GitHub for. limen does not fetch it (§14): the operator unpacks it where
+  `scripts.packs` lists it, pinning the tarball's hash, not only its tag ([docs/scripts.md](scripts.md#released-packs)).
 - No job that runs someone else's code —convco, the compiler and the crates' build scripts, QEMU, BuildKit— holds
   a token that writes, nor keeps credentials on disk, and the release builds without caches. The jobs that write
   run only `gh`, `skopeo` and GitHub's `attest` on what the others handed over; QEMU's and BuildKit's images are
@@ -533,7 +539,8 @@ hub:   [nodes.nas] with the request's source address, then `hello`  →  {"reach
 | Everything but files lives in scripts | Built-in readers for systemd, procd and Docker | limen stays one mechanism with no init system, runtime or tool to follow; supporting one more is a pack, not a release |
 | Files stay built in | A script that reads files | The walk, the single open and the checks on the open file are what stop a local user's links; a script would redo them, or not |
 | limen fetches nothing | A built-in `sync` from Git | How a machine gets its packs is the operator's: Git, rsync, a configuration manager. The first fetch comes before limen can run any script, so the operator's setup does it anyway |
-| Example packs, copied | Packs installed with limen | A pack changes with the machines it runs on, not with limen's releases |
+| Packs released on their own, fetched by the operator | Packs installed with limen; or examples to copy | A pack changes with the machines it runs on, not with limen's releases; a copy drifts from the original and loses its fixes. A version per pack, from its own commits, lets a machine pin each one and move it alone |
+| A pack's tag `pack-<pack>-vX.Y.Z`, and limen's `vX.Y.Z` | One version for everything; or `packs/<pack>/vX.Y.Z` | Each has its own history and its own changelog, and the nodes already deployed keep finding limen's releases as `vX.Y.Z`. No slash: a tag's name is also a path in its download URLs |
 | Filters after redaction, in limen | Scripts taking `grep` | A filter on the raw text tells a secret apart letter by letter by whether a line comes back |
 | Empty allowlist by default | A broad default such as `/etc/**` | `/etc` holds Wi-Fi passwords, VPN keys and TLS keys |
 | Rust | Kotlin/Native (the first implementation), Go | Static musl binaries of about 3 MB built by the toolchain itself, arm64 without a cross compiler, and memory safety without a garbage collector in what runs as root. Kotlin/Native had no musl target: a static glibc needed its own linker script, no NSS, and an own HTTP client where glibc's iconv was missing |
