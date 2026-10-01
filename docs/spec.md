@@ -294,11 +294,14 @@ host_key = "ssh-ed25519 AAAA…"
 - `ssh.identity` is the hub's SSH key: a path relative to the hub's directory (`--home`, else `LIMEN_HOME`), or
   absolute. `init` makes it with `ssh-keygen` when it is missing. Its public key is the same path with `.pub`: the
   one `invite` hands out, whose fingerprint `init`, `serve` and the join line show.
-- `limen.toml` is read again whenever it changes: a
-  node that joins is there for the next request. `[http]` is read once, when `serve` starts. A broken
-  `limen.toml` makes the MCP answer errors, not stop.
+- `limen.toml` is read again whenever it changes: a node that joins is there for the next request. `[http]` is read
+  once, when `serve` starts. A broken `limen.toml` makes the MCP answer errors, not stop.
 - `[http] public_url` (or `LIMEN_PUBLIC_URL`) is where nodes reach the hub to join: an address, not a name,
   because the static binary resolves no names.
+- `http.origins` lists the web pages that may call `/mcp`, each compared whole with the request's `Origin` header:
+  scheme, host and port as a browser sends them, `http://localhost:6274`, with no path or trailing slash. Empty by
+  default: a request that carries an `Origin` gets `403`, and one without —an MCP client that isn't a browser—
+  passes. The join endpoints don't look at it.
 - `host_key` is required: limen writes its own `known_hosts`, filing each key under the node's name
   (`HostKeyAlias`), and runs `ssh` with `StrictHostKeyChecking=yes`. There is no trust on first use:
   `limen install` prints the node's key, or get it with `ssh-keyscan` and verify it out of band. A
@@ -333,7 +336,7 @@ host_key = "ssh-ed25519 AAAA…"
   - Its own small HTTP/1.1 server, one request per connection: at most 64 connections, 16 KiB of head
     and 15 seconds for the whole request. The token and `Origin` are checked before the body is read, and a body
     is read only with its `Content-Length`, up to 1 MiB (16 KiB for a join): `Transfer-Encoding` gets `411`.
-  - Validates `Origin`, against DNS rebinding.
+  - Validates `Origin` against `http.origins` (§7.2), against DNS rebinding.
   - Listens on `127.0.0.1:7341` unless told otherwise. The image listens on every interface;
     whoever publishes the port decides who gets in.
 - `GET /join/<code>` and `POST /join/<code>` (§10.1) need no token: the one-time code is the authorisation.
