@@ -340,12 +340,17 @@ host_key = "ssh-ed25519 AAAA…"
 | `limen forget <name>` | hub | A node taken off the hub |
 | `limen call <node> <request \| script> [--arg k=v]… [--grep] [--tail]` | hub | One request over SSH; prints the JSON. A script's arguments are typed by its header, from the node's catalog |
 | `limen join <line> \| --hub-key <key> --name <name> [--from …] [--address …] [--ssh-port …]` | node, root | Joins the hub (§10.1): install with the hub's key, then report |
-| `limen install [--hub-key <key>] [--from <cidr>] [--dry-run]` | node, root | Debian: binary in `/usr/local/bin`, the `limen` user, `authorized_keys`, `sudoers` (validated with `visudo -c` first). OpenWrt: binary in `/usr/bin`, root's dropbear keys, sysupgrade keep list. Both: `/etc/limen/` and a `limen.toml` if there is none. Without `--hub-key` nothing opens to SSH yet. Idempotent |
+| `limen install [--hub-key <key>] [--from <cidr>] [--dry-run]` | node, root | Debian: binary in `/usr/local/bin`, the `limen` user, `authorized_keys`, `sudoers` (validated with `visudo -c` first) and, where systemd runs, the user's `user@<uid>.service` masked. OpenWrt: binary in `/usr/bin`, root's dropbear keys, sysupgrade keep list. Both: `/etc/limen/` and a `limen.toml` if there is none. Without `--hub-key` nothing opens to SSH yet. Idempotent |
 | `limen uninstall [--purge]` | node, root | Undoes `install`; keeps `/etc/limen/` and the logs unless `--purge` |
 | `limen gate` | node | The forced command. Not for people |
 | `limen run <script> [--arg k=v]… [--grep] [--tail]` | node, root | One script, as the hub would run it; prints its output and exits with its exit code |
 | `limen lint` | node | Packs, script names, headers and permissions, without running anything |
 | `limen version` | both | The version |
+
+The `limen` user needs no user manager. Without the mask, `pam_systemd` starts one for every login of the hub, and
+with it whatever the machine starts for each user: on a machine with a desktop, sound servers, which fail and fill the
+journal. logind takes a masked `user@<uid>.service` as none. `uninstall` unmasks it before removing the user, so the
+uid is left as it was for whoever gets it next.
 
 `install` refuses a hub key that already opens root's `authorized_keys`, or dropbear's, without limen's forced
 command, and reads `sshd -T` to warn when `AllowUsers` or `AllowGroups` would keep the `limen` user out.

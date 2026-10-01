@@ -188,6 +188,7 @@ impl Installer {
             self.write_authorized_keys(NODE_USER, key, from)?;
         }
         self.write_sudoers()?;
+        self.mask_user_manager(NODE_USER)?;
         self.check_sshd(NODE_USER);
         Ok(())
     }
@@ -198,6 +199,7 @@ impl Installer {
     }
 
     fn unwire_openssh(&self) -> Outcome<()> {
+        self.unmask_user_manager(NODE_USER)?;
         self.remove_user(NODE_USER)?;
         self.remove_file(SUDOERS)
     }
@@ -238,6 +240,28 @@ impl Installer {
             })?;
         }
         Ok(())
+    }
+
+    /// The hub's logins need no user manager, and pam_systemd would start one for each, with whatever the machine
+    /// starts for every user: sound servers on a desktop, which fail and fill the journal. logind takes a masked
+    /// `user@<uid>.service` as none.
+    fn mask_user_manager(&self, user: &str) -> Outcome<()> {
+        let Some(unit) = user_manager(user) else { return Ok(()) };
+        if masked(&unit) {
+            return Ok(());
+        }
+        self.act(&format!("mask {unit}: {user} needs no user manager, and each login would start one"), || {
+            exec(&["systemctl", "mask", &unit])
+        })
+    }
+
+    /// Before the user goes: a uid given to someone else later must not come without a user manager.
+    fn unmask_user_manager(&self, user: &str) -> Outcome<()> {
+        let Some(unit) = user_manager(user) else { return Ok(()) };
+        if !masked(&unit) {
+            return Ok(());
+        }
+        self.act(&format!("unmask {unit}"), || exec(&["systemctl", "unmask", &unit]))
     }
 
     fn remove_user(&self, user: &str) -> Outcome<()> {
@@ -562,6 +586,23 @@ fn home_of(user: &str) -> String {
     fs::account(user).map_or_else(|| default_home(user), |account| account.home)
 }
 
+/// [user]'s `user@<uid>.service`, where systemd runs and the user exists.
+fn user_manager(user: &str) -> Option<String> {
+    if !fs::is_directory("/run/systemd/system") {
+        return None;
+    }
+    fs::account(user).map(|account| user_manager_unit(account.uid))
+}
+
+fn user_manager_unit(uid: u32) -> String {
+    format!("user@{uid}.service")
+}
+
+/// Whether `systemctl mask` linked [unit] to /dev/null.
+fn masked(unit: &str) -> bool {
+    fs::read_link(&format!("/etc/systemd/system/{unit}")).as_deref() == Some("/dev/null")
+}
+
 /// A system program by name, with a minute to finish; what it says on stderr is the error.
 fn exec(argv: &[&str]) -> Outcome<()> {
     let located = proc::located(argv).ok_or(format!("{} is not installed", argv[0]))?;
@@ -615,6 +656,11 @@ mod tests {
         let config = node_config::NodeConfig::parse(CONFIG_TEMPLATE).unwrap();
         assert!(config.allow.is_empty() && config.packs.is_empty());
         assert_eq!(config.deny, ["**/*.env"]);
+    }
+
+    #[test]
+    fn the_user_manager_is_the_unit_of_the_uid() {
+        assert_eq!(user_manager_unit(996), "user@996.service");
     }
 
     #[test]
