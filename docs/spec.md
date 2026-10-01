@@ -212,6 +212,9 @@ max_bytes = 5242880
   request answer `internal` with the reason.
 - `limen.toml` may be a link to a file kept elsewhere; the file it leads to must pass the same ownership
   rule as a script (§6).
+- Sizes are bytes: `files.max_bytes`, `limits.max_response` and `audit.max_bytes`, which is 1024 at least. Every
+  other limit counts lines (`max_lines`, `scan_lines`) or requests (`concurrency`), and none may be zero.
+  `audit.path` and every entry of `scripts.packs` are absolute paths.
 - An answer bigger than `limits.max_response` is replaced by a `bad_request` asking to narrow it.
 - The node bounds its requests itself, whatever hub sends them: at most `limits.concurrency` at once (a lock
   on one of `/run/limen/slot-<n>`; one more gets `unavailable`), ten seconds to send the request, and two minutes

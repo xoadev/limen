@@ -625,7 +625,7 @@ allow = [
 deny = [
   "**/*.env",
 ]
-# max_bytes = 262144
+# max_bytes = 262144          # bytes one range of read_file returns
 
 [scripts]
 # The packs this node offers: directories of scripts, each a tool the agent can run. Offer only what you
@@ -641,10 +641,15 @@ names = []
 patterns = []
 
 [limits]
-# max_lines = 2000
-# scan_lines = 100000
-# max_response = 1048576
-# concurrency = 8
+# max_lines = 2000            # lines in one answer
+# scan_lines = 100000         # lines grep and tail look through, from the end of a file
+# max_response = 1048576      # bytes of a whole answer
+# concurrency = 8             # requests at once, from every hub together
+
+# [audit]
+# Every request, appended; never readable through limen.
+# path = "/var/log/limen/audit.jsonl"   # an absolute path
+# max_bytes = 5242880                   # bytes before it becomes audit.jsonl.1; 1024 at least
 "#;
 
 #[cfg(test)]
@@ -656,6 +661,23 @@ mod tests {
         let config = node_config::NodeConfig::parse(CONFIG_TEMPLATE).unwrap();
         assert!(config.allow.is_empty() && config.packs.is_empty());
         assert_eq!(config.deny, ["**/*.env"]);
+    }
+
+    #[test]
+    fn the_template_comments_out_every_default() {
+        let is_setting = |line: &&str| {
+            line.starts_with('[')
+                || line.split_once(" = ").is_some_and(|(key, _)| {
+                    key.chars().all(|character| character.is_ascii_lowercase() || character == '_')
+                })
+        };
+        let uncommented: String = CONFIG_TEMPLATE
+            .lines()
+            .map(|line| format!("{}\n", line.strip_prefix("# ").filter(is_setting).unwrap_or(line)))
+            .collect();
+        assert!(uncommented.contains("\n[audit]\n"), "{uncommented}");
+        let defaults = node_config::NodeConfig { deny: vec!["**/*.env".into()], ..Default::default() };
+        assert_eq!(node_config::NodeConfig::parse(&uncommented).unwrap(), defaults);
     }
 
     #[test]
