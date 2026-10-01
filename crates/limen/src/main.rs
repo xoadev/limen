@@ -172,10 +172,12 @@ struct JoinArgs {
     /// This machine's name on the hub, with --hub-key
     #[arg(long)]
     name: Option<String>,
-    /// Addresses or CIDRs the hub's key may connect from, e.g. 100.64.0.0/10 (not OpenWrt)
+    /// Addresses or CIDRs the hub's key may connect from, comma-separated, with sshd's `*`, `?` and `!`: e.g.
+    /// 100.64.0.0/10,!100.64.0.9 (not OpenWrt)
     #[arg(long)]
     from: Option<String>,
-    /// Where the hub reaches this machine (default: where the join request comes from)
+    /// Where the hub reaches this machine: sent with a join line (default: where the request comes from), or put in
+    /// the `limen trust` line with --hub-key
     #[arg(long)]
     address: Option<String>,
     /// This machine's SSH port, as the hub reaches it
@@ -188,7 +190,8 @@ struct InstallArgs {
     /// The hub's public key; without it there is no hub yet, and a join adds one later
     #[arg(long)]
     hub_key: Option<String>,
-    /// Addresses or CIDRs the hub's key may connect from, e.g. 100.64.0.0/10 (not OpenWrt)
+    /// Addresses or CIDRs the hub's key may connect from, comma-separated, with sshd's `*`, `?` and `!`: e.g.
+    /// 100.64.0.0/10,!100.64.0.9 (not OpenWrt)
     #[arg(long)]
     from: Option<String>,
     /// Say what would change and change nothing
@@ -472,7 +475,7 @@ fn join_with_line(line: &str, args: &JoinArgs) -> Exit {
 fn join_with_key(hub_key: &str, args: &JoinArgs) -> Exit {
     let name = args.name.as_deref().ok_or_else(|| Stop::Usage("--hub-key needs --name".into()))?;
     Joiner { installer: Installer::new(false) }
-        .with_key(hub_key, name, args.from.as_deref(), args.ssh_port)
+        .with_key(hub_key, name, args.from.as_deref(), args.address.as_deref(), args.ssh_port)
         .map_err(failed("join"))
 }
 

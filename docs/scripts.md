@@ -147,8 +147,8 @@ packs = ["/opt/state/packs/systemd", "/opt/state/packs/docker", "/opt/state/node
 
 ```sh
 umask 022
-curl -fsSL https://raw.githubusercontent.com/xoadev/limen/main/install.sh | sh     # binary, user, sudoers
-install -m 0600 /dev/null /etc/limen/repo-token && cat > /etc/limen/repo-token     # a read-only token
+curl -fsSL https://raw.githubusercontent.com/xoadev/limen/main/install.sh | LIMEN_YES=1 sh   # binary, user, sudoers
+install -m 0600 /dev/null /etc/limen/repo-token && cat > /etc/limen/repo-token         # a read-only token
 header="Authorization: Basic $(printf 'x-access-token:%s' "$(cat /etc/limen/repo-token)" | base64 | tr -d '\n')"
 GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.https://github.com/.extraHeader GIT_CONFIG_VALUE_0="$header" \
   git clone --depth 1 https://github.com/you/infra /opt/state

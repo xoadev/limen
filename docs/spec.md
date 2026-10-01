@@ -70,8 +70,9 @@ node:  sshd ──forced command──▶ sudo limen gate ──▶ allowed file
 
 - **One user, `limen`, and one key, the hub's.** Nothing else calls a node: a person on the machine runs
   `limen` as root directly.
-- Its `authorized_keys`: `restrict,command="sudo -n /usr/local/bin/limen gate"`, plus `from="<cidr>"` when
-  given. `.ssh` and the file belong to root.
+- Its `authorized_keys`: `restrict,command="sudo -n /usr/local/bin/limen gate"`, plus `from="<addresses>"` when
+  `--from` gives them: addresses and CIDRs, comma-separated, with sshd's `*`, `?` and `!`. `.ssh` and the file belong
+  to root.
 - `sudoers`: `limen` may run exactly that command as root, nothing else.
 - `gate` runs as root because the journal, the Docker socket and root-owned configuration need it. The
   boundary is the `gate` code, not Unix permissions: it never runs a shell, never opens a path outside the
@@ -378,7 +379,7 @@ host_key = "ssh-ed25519 AAAA…"
 | `limen forget <name>` | hub | A node taken off the hub |
 | `limen call <node> <request \| script> [--arg k=v]… [--grep] [--tail]` | hub | One request over SSH; prints the JSON. A script's arguments are typed by its header, from the node's catalog |
 | `limen join <line> \| --hub-key <key> --name <name> [--from …] [--address …] [--ssh-port …]` | node, root | Joins the hub (§10.1): install with the hub's key, then report |
-| `limen install [--hub-key <key>] [--from <cidr>] [--dry-run]` | node, root | Debian: binary in `/usr/local/bin`, the `limen` user, `authorized_keys`, `sudoers` (validated with `visudo -c` first) and, where systemd runs, the user's `user@<uid>.service` masked. OpenWrt: binary in `/usr/bin`, root's dropbear keys, sysupgrade keep list. Both: `/etc/limen/` and a `limen.toml` if there is none. Without `--hub-key` nothing opens to SSH yet. Idempotent |
+| `limen install [--hub-key <key>] [--from <addresses>] [--dry-run]` | node, root | Debian: binary in `/usr/local/bin`, the `limen` user, `authorized_keys`, `sudoers` (validated with `visudo -c` first) and, where systemd runs, the user's `user@<uid>.service` masked. OpenWrt: binary in `/usr/bin`, root's dropbear keys, sysupgrade keep list. Both: `/etc/limen/` and a `limen.toml` if there is none. Without `--hub-key` nothing opens to SSH yet. Idempotent |
 | `limen uninstall [--purge]` | node, root | Undoes `install`; keeps `/etc/limen/` and the logs unless `--purge` |
 | `limen gate` | node | The forced command. Not for people |
 | `limen run <script> [--arg k=v]… [--grep] [--tail]` | node, root | One script, as the hub would run it; prints its output and exits with its exit code |
@@ -397,9 +398,13 @@ command, and reads `sshd -T` to warn when `AllowUsers` or `AllowGroups` would ke
 `sh`, because OpenWrt has only busybox's `ash`. It downloads the binary of the latest release for `uname -m` and
 checks it against `SHA256SUMS`, then:
 
-- no argument: `limen install`, for a machine whose packs and configuration come before the hub.
-- `--join <line>`: `limen join` with that line; `--address <address>` passes on where the hub reaches the machine.
+- no argument: on a terminal, it asks for the join line or the hub's key. With neither, or unattended
+  (`LIMEN_YES=1`, or no terminal), `limen install`, for a machine whose packs and configuration come before the hub.
+- `--join <line>`: `limen join` with that line.
 - `--hub-key <key> --name <name>`: the same, for a hub with no HTTP; it ends with the `limen trust` line.
+- With either, `limen join` gets `--from <addresses>`, where the hub's key may connect from (not OpenWrt);
+  `--address <address>`, where the hub reaches the machine, sent to the hub with a join line and printed in the
+  `limen trust` line with a key; and `--ssh-port <port>`, when it isn't 22.
 - `--hub`: the binary in `~/.local/bin` (or `/usr/local/bin` as root) and `limen init`, for a laptop hub.
 
 Every answer can come from a `LIMEN_*` variable instead, for unattended installs; the list is at the top of
@@ -433,7 +438,7 @@ hub:   [nodes.nas] with the request's source address, then `hello`  →  {"reach
   `authorized_keys`, and `limen.toml` stays the operator's.
 - `limen join` talks HTTP to an address, never a name, so a join line means the same wherever it is pasted.
 - Without an HTTP hub, `invite` prints the hub's key in the line (`--hub-key`) and the node prints
-  `limen trust <name> <address> '<host key>'` for the hub.
+  `limen trust <name> <address> '<host key>'` for the hub, with its `--address` in it when given.
 
 ## 11. Distribution and platforms
 

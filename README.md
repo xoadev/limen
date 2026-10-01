@@ -232,11 +232,12 @@ agent can run, are in [`docs/scripts.md`](docs/scripts.md).
 - **The hub on your laptop**, for Claude Code there (stdio, nothing listening):
   `curl -fsSL …/install.sh | sh -s -- --hub` installs `limen` in `~/.local/bin`, creates `~/.limen` and prints the
   `claude mcp add` line. Without an HTTP hub to call back, `limen invite nas` prints a line with the hub's key in it
-  (`--hub-key`), and the machine ends printing the `limen trust nas <address> '<host key>'` to run on the laptop.
+  (`--hub-key`), and the machine ends printing the `limen trust nas <address> '<host key>'` to run on the laptop
+  (`--address` on the installer fills the address in).
 - **Unattended**, every answer comes from the environment: `sudo env LIMEN_YES=1 LIMEN_JOIN='…' sh install.sh`.
-  `LIMEN_FROM` limits where the hub's key may connect from (not on OpenWrt), and `LIMEN_ADDRESS` is where the hub
-  reaches this machine. The whole list is at the top of
-  [`install.sh`](install.sh).
+  `LIMEN_FROM` (`--from`) limits where the hub's key may connect from (not on OpenWrt), `LIMEN_ADDRESS`
+  (`--address`) is where the hub reaches this machine, and `LIMEN_SSH_PORT` (`--ssh-port`) its SSH port when it isn't
+  22. The whole list is at the top of [`install.sh`](install.sh).
 - **By hand**: download `limen-<version>-linux-$(uname -m)` from the [releases](https://github.com/xoadev/limen/releases)
   and run `sudo ./limen-… join '<line>'`. Where there is `gh`, `gh attestation verify limen-… --repo xoadev/limen`
   checks that the release workflow built it; the image, likewise with `oci://ghcr.io/xoadev/limen:<version>`.
