@@ -111,6 +111,11 @@ impl HubConfig {
         }
     }
 
+    /// `ssh.connect_timeout` as ssh's `ConnectTimeout` takes it: whole seconds, rounded up.
+    pub fn connect_timeout_seconds(&self) -> u128 {
+        self.connect_timeout.as_millis().div_ceil(1000)
+    }
+
     /// Where `serve` listens: [option] (`--listen`), else [env] (`LIMEN_LISTEN`), else `http.listen`; any of them
     /// checked as the file's key is.
     pub fn listen_address(&self, option: Option<String>, env: Option<String>) -> ConfigResult<String> {
@@ -196,6 +201,7 @@ fn public_url(url: Option<String>) -> ConfigResult<Option<String>> {
 fn duration(key: &str, text: Option<String>) -> ConfigResult<Option<Duration>> {
     let Some(text) = text else { return Ok(None) };
     match durations::parse(&text) {
+        Some(duration) if duration.is_zero() => fail(key, "must be more than zero"),
         Some(duration) => Ok(Some(duration)),
         None => fail(key, "expected a duration like 5s or 1m"),
     }
@@ -247,6 +253,20 @@ host_key = "ecdsa-sha2-nistp256 AAAAE2VjZHNh="
         assert_eq!(error.0, "--listen: '0.0.0.0': expected host:port");
         let error = HubConfig::parse("[http]\nlisten = \"localhost\"").unwrap_err();
         assert_eq!(error.0, "http.listen: 'localhost': expected host:port");
+    }
+
+    #[test]
+    fn timeouts_are_more_than_zero_and_connecting_takes_whole_seconds() {
+        for key in ["connect_timeout", "request_timeout"] {
+            for zero in ["0s", "0ms"] {
+                let error = HubConfig::parse(&format!("[ssh]\n{key} = \"{zero}\"")).unwrap_err();
+                assert_eq!(error.0, format!("ssh.{key}: must be more than zero"));
+            }
+        }
+        let connect = |timeout: &str| {
+            HubConfig::parse(&format!("[ssh]\nconnect_timeout = \"{timeout}\"")).unwrap().connect_timeout_seconds()
+        };
+        assert_eq!([connect("1ms"), connect("1500ms"), connect("2s")], [1, 2, 2]);
     }
 
     #[test]

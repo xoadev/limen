@@ -307,7 +307,14 @@ host_key = "ssh-ed25519 AAAA…"
   `limen install` prints the node's key, or get it with `ssh-keyscan` and verify it out of band. A
   node that changes address keeps its key.
 - `user` defaults to `limen` (`root` on OpenWrt, which the join fills in) and `port` to 22.
-- A script's call waits for the script's own timeout and a margin, not `ssh.request_timeout`.
+- `ssh.connect_timeout` is how long ssh may take to connect to a node: ssh's `ConnectTimeout`, in whole seconds
+  rounded up. `ssh.request_timeout` is how long the hub waits for the answer to a request that isn't a script's run
+  —`hello`, `read_file`, `list_dir`, `history`—; a script's run waits for the script's own timeout and 45 seconds
+  instead. Past two minutes `request_timeout` changes nothing: the node ends such a request then (§7.1). Both are
+  durations above zero: `500ms`, `5s`, `1m`.
+- `ssh.per_node_concurrency`, 1 to 64, is how many requests the hub sends one node at once; the rest wait on the
+  hub for their turn. The node's own `limits.concurrency` (§7.1) counts the requests of every hub together and
+  answers `unavailable` past it instead of waiting: keep the hub's at or below it.
 - `http.listen` is where `serve` listens, as `host:port`. `--listen` wins over `LIMEN_LISTEN`, and that over the
   file; each is checked the same way. The image's command is `serve --listen 0.0.0.0:7341`, so in the image the
   address changes by overriding the command: `LIMEN_LISTEN` and the file don't reach it.

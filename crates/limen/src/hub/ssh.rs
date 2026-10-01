@@ -96,7 +96,7 @@ impl SshClient {
             format!("UserKnownHostsFile={}", self.known_hosts),
             "GlobalKnownHostsFile=/dev/null".into(),
             format!("HostKeyAlias={}", alias(entry)),
-            format!("ConnectTimeout={}", self.config.connect_timeout.as_secs().max(1)),
+            format!("ConnectTimeout={}", self.config.connect_timeout_seconds()),
             "ServerAliveInterval=15".into(),
             "LogLevel=ERROR".into(),
             "ControlMaster=auto".into(),
