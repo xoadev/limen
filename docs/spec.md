@@ -213,9 +213,9 @@ max_bytes = 5242880
   request answer `internal` with the reason.
 - `limen.toml` may be a link to a file kept elsewhere; the file it leads to must pass the same ownership
   rule as a script (§6).
-- Sizes are bytes: `files.max_bytes`, `limits.max_response` and `audit.max_bytes`, which is 1024 at least. Every
-  other limit counts lines (`max_lines`, `scan_lines`) or requests (`concurrency`), and none may be zero.
-  `audit.path` and every entry of `scripts.packs` are absolute paths.
+- Sizes are bytes: `files.max_bytes`, `limits.max_response`, and `audit.max_bytes`, 1024 at least. `max_lines` and
+  `scan_lines` count lines, `concurrency` requests. No limit may be zero. `audit.path` and every entry of
+  `scripts.packs` are absolute paths.
 - An answer bigger than `limits.max_response` is replaced by a `bad_request` asking to narrow it.
 - The node bounds its requests itself, whatever hub sends them: at most `limits.concurrency` at once (a lock
   on one of `/run/limen/slot-<n>`; one more gets `unavailable`), ten seconds to send the request, and two minutes
@@ -232,8 +232,8 @@ max_bytes = 5242880
   below—, never the path as asked.
 - `files.max_bytes`, 256 KiB by default, caps what one range (`from` and `lines`) returns: bytes of text as read,
   newlines included. The range stops before the line that would pass it and says it was truncated. `grep` and `tail`
-  don't go by it: they read the file's end, at most `limits.scan_lines` lines and 1 KiB for each line looked for, up
-  to 16 MiB, and answer at most `limits.max_lines` lines (§5). Every answer is bounded by `limits.max_response`.
+  don't go by it: they read the file's end, at most `limits.scan_lines` lines and 1 KiB for each of them up to
+  16 MiB, and answer at most `limits.max_lines` lines (§5). Every answer is bounded by `limits.max_response`.
 - A built-in deny list applies on top and can't be overridden: `/etc/shadow`, `/etc/gshadow` and their
   backups in `/var/backups/`, `/etc/sudoers*`, SSH and dropbear private keys, `/etc/ssl/private/`,
   `/etc/wireguard/`, NetworkManager connections, OpenWrt's `/etc/config/wireless`, systemd's
