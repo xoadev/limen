@@ -60,10 +60,17 @@ Each argument:
 | `pattern` | For `string`. By default `^[A-Za-z0-9_][A-Za-z0-9._-]{0,63}$`: never an option, `.` or `..` |
 
 A `pattern` is a Rust `regex` that must match the whole value: `\w`, `\d`, `\s` and `(?i)` are there, Unicode's
-`\p{…}` classes and look-around are not. The catalog reaches the model as text, so the hub leaves out a script
-whose description (or an argument's) runs past 300 characters, or whose arguments or patterns aren't plain.
-Whatever the pattern, a string argument never holds a control character: a NUL, a newline or an `ESC` is refused
-before the pattern is applied.
+`\p{…}` classes and look-around are not. Whatever the pattern, a string argument never holds a control character: a
+NUL, a newline or an `ESC` is refused before the pattern is applied.
+
+The catalog reaches every MCP session as text, and the hub doesn't take it on trust. It leaves out a script:
+
+- named as one of its own tools or the node's requests: `nodes`, `hello`, `read_file`, `list_dir`, `history`, `run`;
+- whose description, or an argument's, runs past 300 characters or holds a control character;
+- with a `pattern` over 512 bytes, or that compiles to more than 1 MiB. A bounded repetition unrolls: `\w{1,300}`
+  —Unicode's `\w`, hundreds of ranges, 300 times— is too big; `[A-Za-z0-9_]{1,300}` is not.
+
+The hub only counts these in `nodes`; `limen lint` on the node says which and why.
 
 ## How it runs
 

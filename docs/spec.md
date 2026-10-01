@@ -143,8 +143,9 @@ Every tool takes a `node` argument.
 - `lines` (500 unless given) and `tail` above `limits.max_lines` are cut to it, and the answer says it was truncated.
   `read_file` with `grep` or `tail` scans at most the last `limits.scan_lines` lines, and 16 MiB.
 - A node's catalog is not trusted: a script whose name, description, arguments or patterns aren't plain and
-  bounded, that declares a `node`, `grep` or `tail` argument, or whose name is a built-in tool's, is left out
-  and reported in `nodes`. Its text reaches the model as it is, so it is kept short.
+  bounded, that declares a `node`, `grep` or `tail` argument, or whose name is a built-in tool's or request's, is
+  left out and counted in `nodes`; `limen lint` on the node names each and says why, by the same rules
+  ([scripts.md](scripts.md)). Its text reaches the model as it is, so it is kept short.
 - A script's tool accepts only the nodes whose catalog has it; the hub refuses the others itself. The same
   name on several nodes must declare the same arguments; if it doesn't, the hub reports the conflict in
   `nodes` and exposes no tool for it until it's fixed.

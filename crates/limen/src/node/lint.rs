@@ -3,7 +3,7 @@
 use super::Node;
 use super::scripts::{self, ScriptEntry};
 use crate::os::sys;
-use limen_core::scripts::too_long_description;
+use limen_core::scripts::hub_refusal;
 
 /// A line of the report: a script that would run, a file that is not a script, or a problem.
 enum Finding {
@@ -49,7 +49,7 @@ fn entry_finding(entry: &ScriptEntry) -> Option<Finding> {
     match (&entry.spec, &entry.problem) {
         (_, Some(problem)) if entry.ignored => Some(Finding::Skipped(problem.clone())),
         (_, Some(problem)) => Some(Finding::Failed(problem.clone())),
-        (Some(spec), None) => Some(match too_long_description(spec) {
+        (Some(spec), None) => Some(match hub_refusal(spec) {
             Some(problem) => Finding::Failed(problem),
             None => Finding::Usable(format!(
                 "{}: {} ({} argument(s), timeout {}s)",
