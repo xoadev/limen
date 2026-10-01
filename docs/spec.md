@@ -70,8 +70,9 @@ node:  sshd ──forced command──▶ sudo limen gate ──▶ allowed file
 
 - **One user, `limen`, and one key, the hub's.** Nothing else calls a node: a person on the machine runs
   `limen` as root directly.
-- Its `authorized_keys`: `restrict,command="sudo -n /usr/local/bin/limen gate"`, plus `from="<cidr>"` when
-  given. `.ssh` and the file belong to root.
+- Its `authorized_keys`: `restrict,command="sudo -n /usr/local/bin/limen gate"`, plus `from="<addresses>"` when
+  `--from` gives them: addresses and CIDRs, comma-separated, with sshd's `*`, `?` and `!`. `.ssh` and the file belong
+  to root.
 - `sudoers`: `limen` may run exactly that command as root, nothing else.
 - `gate` runs as root because the journal, the Docker socket and root-owned configuration need it. The
   boundary is the `gate` code, not Unix permissions: it never runs a shell, never opens a path outside the
@@ -140,11 +141,12 @@ Every tool takes a `node` argument.
   guess at a secret would be told apart by whether a line comes back— and filters before `tail` applies:
   the answer is the last N matching lines. A script never sees `grep` or `tail`, and can't declare
   arguments with those names.
-- `lines` and `tail` above `limits.max_lines` are cut to it, and the answer says it was truncated.
+- `lines` (500 unless given) and `tail` above `limits.max_lines` are cut to it, and the answer says it was truncated.
   `read_file` with `grep` or `tail` scans at most the last `limits.scan_lines` lines, and 16 MiB.
 - A node's catalog is not trusted: a script whose name, description, arguments or patterns aren't plain and
-  bounded, that declares a `node`, `grep` or `tail` argument, or whose name is a built-in tool's, is left out
-  and reported in `nodes`. Its text reaches the model as it is, so it is kept short.
+  bounded, that declares a `node`, `grep` or `tail` argument, or whose name is a built-in tool's or request's, is
+  left out and counted in `nodes`; `limen lint` on the node names each and says why, by the same rules
+  ([scripts.md](scripts.md)). Its text reaches the model as it is, so it is kept short.
 - A script's tool accepts only the nodes whose catalog has it; the hub refuses the others itself. The same
   name on several nodes must declare the same arguments; if it doesn't, the hub reports the conflict in
   `nodes` and exposes no tool for it until it's fixed.
@@ -211,6 +213,9 @@ max_bytes = 5242880
   request answer `internal` with the reason.
 - `limen.toml` may be a link to a file kept elsewhere; the file it leads to must pass the same ownership
   rule as a script (§6).
+- Sizes are bytes: `files.max_bytes`, `limits.max_response`, and `audit.max_bytes`, 1024 at least. `max_lines` and
+  `scan_lines` count lines, `concurrency` requests. No limit may be zero. `audit.path` and every entry of
+  `scripts.packs` are absolute paths.
 - An answer bigger than `limits.max_response` is replaced by a `bad_request` asking to narrow it.
 - The node bounds its requests itself, whatever hub sends them: at most `limits.concurrency` at once (a lock
   on one of `/run/limen/slot-<n>`; one more gets `unavailable`), ten seconds to send the request, and two minutes
@@ -219,6 +224,16 @@ max_bytes = 5242880
 
 - **Nothing is readable by default.** `files.allow` starts empty. Everything readable ends up in a model
   provider's context, so the operator decides it path by path.
+- `files.allow` and `files.deny` are path patterns, each starting with `/` or `**`. `**` as a whole segment is any
+  number of segments, none included, so `/etc/nginx/**` matches `/etc/nginx` too; `*` is any run of characters within
+  a segment, a leading dot included; `?` is one character. Nothing else is special: `{a,b}` and `[…]` are literal
+  text. A pattern for a directory doesn't reach inside it; `/dir/**` does. A path is readable when an `allow` pattern
+  matches it and no `deny` pattern does: `deny` wins. Both match the resolved target —links followed, `..` taken, as
+  below—, never the path as asked.
+- `files.max_bytes`, 256 KiB by default, caps what one range (`from` and `lines`) returns: bytes of text as read,
+  newlines included. The range stops before the line that would pass it and says it was truncated. `grep` and `tail`
+  don't go by it: they read the file's end, at most `limits.scan_lines` lines and 1 KiB for each of them up to
+  16 MiB, and answer at most `limits.max_lines` lines (§5). Every answer is bounded by `limits.max_response`.
 - A built-in deny list applies on top and can't be overridden: `/etc/shadow`, `/etc/gshadow` and their
   backups in `/var/backups/`, `/etc/sudoers*`, SSH and dropbear private keys, `/etc/ssl/private/`,
   `/etc/wireguard/`, NetworkManager connections, OpenWrt's `/etc/config/wireless`, systemd's
@@ -247,7 +262,10 @@ max_bytes = 5242880
   base64 alone, as a key's body is written, unless they are all hexadecimal: those are hashes and IDs, such as a
   container's.
   - `redact.names` adds names, case-insensitive: the value after `NAME=`, `NAME: ` or `"NAME": ` is replaced.
-  - `redact.patterns` adds regular expressions; a group named `secret` limits what is replaced.
+  - `redact.patterns` adds regular expressions; a group named `secret` limits what is replaced. Each runs over a
+    whole text —a file's range or window, a script's stdout—, not line by line: `^` and `$` are its start and end
+    unless the pattern says `(?m)`. They are Rust `regex`, as a script's `pattern` is ([scripts.md](scripts.md)):
+    no look-around, no `\p{…}` classes.
   - It is a safety net; the protection is not allowing files that hold secrets, and not writing scripts
     that print them.
 - **Control characters** never leave the node in a file's content or a script's output: `ESC` with the CSI or
@@ -279,20 +297,44 @@ user = "root"
 host_key = "ssh-ed25519 AAAA…"
 ```
 
-- The directory holds `id_ed25519` (the hub's key, made with `ssh-keygen` by `init`), `limen.toml`, `token`
-  (for HTTP clients, unless `LIMEN_TOKEN` is set) and `invites/`. `limen.toml` is read again whenever it changes: a
-  node that joins is there for the next request. `[http]` is read once, when `serve` starts. A broken
-  `limen.toml` makes the MCP answer errors, not stop.
+- The directory holds `limen.toml`, the hub's SSH key, `token` (for HTTP clients, unless `LIMEN_TOKEN` is set) and
+  `invites/`.
+- `ssh.identity` is the hub's SSH key: a path relative to the hub's directory (`--home`, else `LIMEN_HOME`), or
+  absolute. `init` makes it with `ssh-keygen` when it is missing. Its public key is the same path with `.pub`: the
+  one `invite` hands out, whose fingerprint `init`, `serve` and the join line show.
+- `limen.toml` is read again whenever it changes: a node that joins is there for the next request. `[http]` is read
+  once, when `serve` starts. A broken `limen.toml` makes the MCP answer errors, not stop.
 - `[http] public_url` (or `LIMEN_PUBLIC_URL`) is where nodes reach the hub to join: an address, not a name,
   because the static binary resolves no names.
+- `http.origins` lists the web pages that may call `/mcp`, each compared whole with the request's `Origin` header:
+  scheme, host and port as a browser sends them, `http://localhost:6274`, with no path or trailing slash. Empty by
+  default: a request that carries an `Origin` gets `403`, and one without —an MCP client that isn't a browser—
+  passes. The join endpoints don't look at it.
 - `host_key` is required: limen writes its own `known_hosts`, filing each key under the node's name
   (`HostKeyAlias`), and runs `ssh` with `StrictHostKeyChecking=yes`. There is no trust on first use:
   `limen install` prints the node's key, or get it with `ssh-keyscan` and verify it out of band. A
   node that changes address keeps its key.
 - `user` defaults to `limen` (`root` on OpenWrt, which the join fills in) and `port` to 22.
-- A script's call waits for the script's own timeout and a margin, not `ssh.request_timeout`.
-- `LIMEN_HOME` defaults to `~/.limen`; the image sets `/data`.
-- Environment overrides: `LIMEN_TOKEN` (§9) and `LIMEN_LISTEN`.
+- `ssh.connect_timeout` is how long ssh may take to connect to a node: ssh's `ConnectTimeout`, in whole seconds
+  rounded up. `ssh.request_timeout` is how long the hub waits for the answer to a request that isn't a script's run
+  —`hello`, `read_file`, `list_dir`, `history`—; a script's run waits for the script's own timeout and 45 seconds
+  instead. Past two minutes `request_timeout` changes nothing: the node ends such a request then (§7.1). Both are
+  durations above zero: `500ms`, `5s`, `1m`.
+- `ssh.per_node_concurrency`, 1 to 64, is how many requests the hub sends one node at once; the rest wait on the
+  hub for their turn. The node's own `limits.concurrency` (§7.1) counts the requests of every hub together and
+  answers `unavailable` past it instead of waiting: keep the hub's at or below it.
+- `http.listen` is where `serve` listens, as `host:port`. `--listen` wins over `LIMEN_LISTEN`, and that over the
+  file; each is checked the same way. The image's command is `serve --listen 0.0.0.0:7341`, so in the image the
+  address changes by overriding the command: `LIMEN_LISTEN` and the file don't reach it.
+- What the hub reads from its environment, where a blank value counts as unset:
+
+  | Variable | |
+  |---|---|
+  | `LIMEN_HOME` | The hub's directory when there is no `--home`; `$HOME/.limen` without either. The image sets `/data` |
+  | `LIMEN_TOKEN` | The HTTP clients' token, instead of the `token` file (§9) |
+  | `LIMEN_PUBLIC_URL` | Over `http.public_url`, checked the same way |
+  | `LIMEN_LISTEN` | Over `http.listen`, under `--listen` |
+  | `XDG_RUNTIME_DIR` | Where ssh's control sockets go (§12) |
 
 ## 8. Audit
 
@@ -319,8 +361,8 @@ host_key = "ssh-ed25519 AAAA…"
   - Its own small HTTP/1.1 server, one request per connection: at most 64 connections, 16 KiB of head
     and 15 seconds for the whole request. The token and `Origin` are checked before the body is read, and a body
     is read only with its `Content-Length`, up to 1 MiB (16 KiB for a join): `Transfer-Encoding` gets `411`.
-  - Validates `Origin`, against DNS rebinding.
-  - Listens on `127.0.0.1:7341` unless told otherwise. The image listens on every interface;
+  - Validates `Origin` against `http.origins` (§7.2), against DNS rebinding.
+  - Listens on `127.0.0.1:7341` unless told otherwise (§7.2). The image listens on every interface;
     whoever publishes the port decides who gets in.
 - `GET /join/<code>` and `POST /join/<code>` (§10.1) need no token: the one-time code is the authorisation.
 - Catalogs are fetched when the set of nodes changes, and when a session starts (`initialize`) or `nodes`
@@ -331,21 +373,29 @@ host_key = "ssh-ed25519 AAAA…"
 
 | Command | Where | What |
 |---|---|---|
-| `limen init [--serve]` | hub | The hub's directory: key, `limen.toml`, and with `--serve` the token. Keeps what exists |
-| `limen mcp` | hub | MCP over stdio |
-| `limen serve` | hub | MCP over HTTP and the join endpoints; `init --serve` first if needed |
-| `limen connect [--url]` | hub | The `claude mcp add` line: HTTP when there is a public URL and a token, stdio otherwise |
-| `limen invite <name> [--ttl 1h]` | hub | The line that joins a machine (§10.1) |
-| `limen trust <name> <address> <host-key> [--user] [--port]` | hub | A node added by hand |
-| `limen forget <name>` | hub | A node taken off the hub |
-| `limen call <node> <request \| script> [--arg k=v]… [--grep] [--tail]` | hub | One request over SSH; prints the JSON. A script's arguments are typed by its header, from the node's catalog |
+| `limen init [--serve] [--home <dir>]` | hub | The hub's directory: key, `limen.toml`, and with `--serve` the token. Keeps what exists |
+| `limen mcp [--home <dir>]` | hub | MCP over stdio |
+| `limen serve [--listen <host:port>] [--home <dir>]` | hub | MCP over HTTP and the join endpoints; `init --serve` first if needed |
+| `limen connect [--url <url>] [--home <dir>]` | hub | The `claude mcp add` line: HTTP when there is a public URL and a token, stdio otherwise |
+| `limen invite <name> [--ttl 1h] [--home <dir>]` | hub | The line that joins a machine (§10.1) |
+| `limen trust <name> <address> <host-key> [--user] [--port] [--home <dir>]` | hub | A node added by hand |
+| `limen forget <name> [--home <dir>]` | hub | A node taken off the hub |
+| `limen call <node> <request \| script> [--arg k=v]… [--grep] [--tail] [--home <dir>]` | hub | One request over SSH; prints the JSON. A script's arguments are typed by its header, from the node's catalog |
 | `limen join <line> \| --hub-key <key> --name <name> [--from …] [--address …] [--ssh-port …]` | node, root | Joins the hub (§10.1): install with the hub's key, then report |
-| `limen install [--hub-key <key>] [--from <cidr>] [--dry-run]` | node, root | Debian: binary in `/usr/local/bin`, the `limen` user, `authorized_keys`, `sudoers` (validated with `visudo -c` first). OpenWrt: binary in `/usr/bin`, root's dropbear keys, sysupgrade keep list. Both: `/etc/limen/` and a `limen.toml` if there is none. Without `--hub-key` nothing opens to SSH yet. Idempotent |
-| `limen uninstall [--purge]` | node, root | Undoes `install`; keeps `/etc/limen/` and the logs unless `--purge` |
-| `limen gate` | node | The forced command. Not for people |
-| `limen run <script> [--arg k=v]… [--grep] [--tail]` | node, root | One script, as the hub would run it; prints its output and exits with its exit code |
-| `limen lint` | node | Packs, script names, headers and permissions, without running anything |
+| `limen install [--hub-key <key>] [--from <addresses>] [--dry-run]` | node, root | Debian: binary in `/usr/local/bin`, the `limen` user, `authorized_keys`, `sudoers` (validated with `visudo -c` first) and, where systemd runs, the user's `user@<uid>.service` masked. OpenWrt: binary in `/usr/bin`, root's dropbear keys, sysupgrade keep list. Both: `/etc/limen/` and a `limen.toml` if there is none. Without `--hub-key` nothing opens to SSH yet. Idempotent |
+| `limen uninstall [--purge] [--dry-run]` | node, root | Undoes `install`; keeps `/etc/limen/` and the logs unless `--purge` |
+| `limen gate [--config <file>]` | node | The forced command. Not for people |
+| `limen run <script> [--arg k=v]… [--grep] [--tail] [--config <file>]` | node, root | One script, as the hub would run it; prints its output and exits with its exit code |
+| `limen lint [--config <file>]` | node | Packs, script names, headers and permissions, without running anything |
 | `limen version` | both | The version |
+
+`--home` is the hub's directory: `LIMEN_HOME` without it, `~/.limen` without either (§7.2). `--config` is the
+node's configuration, `/etc/limen/limen.toml` unless given.
+
+The `limen` user needs no user manager. Without the mask, `pam_systemd` starts one for every login of the hub, and
+with it whatever the machine starts for each user: on a machine with a desktop, sound servers, which fail and fill the
+journal. logind takes a masked `user@<uid>.service` as none. `uninstall` unmasks it before removing the user, so the
+uid is left as it was for whoever gets it next.
 
 `install` refuses a hub key that already opens root's `authorized_keys`, or dropbear's, without limen's forced
 command, and reads `sshd -T` to warn when `AllowUsers` or `AllowGroups` would keep the `limen` user out.
@@ -354,9 +404,13 @@ command, and reads `sshd -T` to warn when `AllowUsers` or `AllowGroups` would ke
 `sh`, because OpenWrt has only busybox's `ash`. It downloads the binary of the latest release for `uname -m` and
 checks it against `SHA256SUMS`, then:
 
-- no argument: `limen install`, for a machine whose packs and configuration come before the hub.
+- no argument: on a terminal, it asks for the join line or the hub's key. With neither, or unattended
+  (`LIMEN_YES=1`, or no terminal), `limen install`, for a machine whose packs and configuration come before the hub.
 - `--join <line>`: `limen join` with that line.
 - `--hub-key <key> --name <name>`: the same, for a hub with no HTTP; it ends with the `limen trust` line.
+- With either, `limen join` gets `--from <addresses>`, where the hub's key may connect from (not OpenWrt);
+  `--address <address>`, where the hub reaches the machine, sent to the hub with a join line and printed in the
+  `limen trust` line with a key; and `--ssh-port <port>`, when it isn't 22.
 - `--hub`: the binary in `~/.local/bin` (or `/usr/local/bin` as root) and `limen init`, for a laptop hub.
 
 Every answer can come from a `LIMEN_*` variable instead, for unattended installs; the list is at the top of
@@ -390,7 +444,7 @@ hub:   [nodes.nas] with the request's source address, then `hello`  →  {"reach
   `authorized_keys`, and `limen.toml` stays the operator's.
 - `limen join` talks HTTP to an address, never a name, so a join line means the same wherever it is pasted.
 - Without an HTTP hub, `invite` prints the hub's key in the line (`--hub-key`) and the node prints
-  `limen trust <name> <address> '<host key>'` for the hub.
+  `limen trust <name> <address> '<host key>'` for the hub, with its `--address` in it when given.
 
 ## 11. Distribution and platforms
 

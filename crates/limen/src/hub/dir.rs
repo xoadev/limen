@@ -26,6 +26,8 @@ const CONFIG_TEMPLATE: &str = r#"# limen hub (docs/spec.md §7.2). Nodes are add
 # public_url = "http://100.64.0.2:7341"
 
 [ssh]
+# The hub's SSH key, under this directory unless absolute; `limen init` creates it when it is missing. Its public
+# key, the one nodes trust, is the same path with `.pub`.
 identity = "id_ed25519"
 "#;
 
@@ -38,7 +40,6 @@ pub struct IssuedInvite {
 pub struct Hub {
     pub home: String,
     pub config_path: String,
-    pub key_path: String,
     pub token_path: String,
     invites_dir: String,
     arrivals: Mutex<()>,
@@ -49,7 +50,6 @@ impl Hub {
         let home = home.trim_end_matches('/').to_string();
         Hub {
             config_path: format!("{home}/limen.toml"),
-            key_path: format!("{home}/id_ed25519"),
             token_path: format!("{home}/token"),
             invites_dir: format!("{home}/invites"),
             home,
@@ -69,10 +69,19 @@ impl Hub {
         Hub::new(&Hub::home(option))
     }
 
+    /// The hub's SSH key, `[ssh].identity`: what `ssh -i` gets, and with `.pub` what nodes trust.
+    pub fn key_path(&self) -> Result<String> {
+        Ok(self.config()?.identity_path(&self.home))
+    }
+
     pub fn public_key(&self) -> Result<String> {
-        fs::read_following(&format!("{}.pub", self.key_path))
-            .map(|key| key.trim().to_string())
-            .ok_or_else(|| error(ErrorCode::Unavailable, "no hub key; run `limen init`"))
+        let public = format!("{}.pub", self.key_path()?);
+        fs::read_following(&public).map(|key| key.trim().to_string()).ok_or_else(|| {
+            error(
+                ErrorCode::Unavailable,
+                format!("no hub key at {public} ([ssh].identity in {}); run `limen init`", self.config_path),
+            )
+        })
     }
 
     pub fn config(&self) -> Result<HubConfig> {
@@ -86,18 +95,19 @@ impl Hub {
         Ok(config)
     }
 
-    /// Creates what is missing and leaves what exists: the key pair, `limen.toml` and, for `serve`, the token of the
-    /// HTTP clients. Returns what it created.
+    /// Creates what is missing and leaves what exists: `limen.toml`, the key pair it names and, for `serve`, the token
+    /// of the HTTP clients. Returns what it created.
     pub fn init(&self, serve: bool) -> Result<Vec<String>> {
         let mut created = Vec::new();
         fs::mkdirs(&self.home, 0o700).map_err(internal)?;
-        if !fs::exists(&self.key_path) {
-            self.generate_key()?;
-            created.push(self.key_path.clone());
-        }
         if !fs::exists(&self.config_path) {
             fs::write_atomic(&self.config_path, CONFIG_TEMPLATE.as_bytes(), 0o600).map_err(internal)?;
             created.push(self.config_path.clone());
+        }
+        let key_path = self.key_path()?;
+        if !fs::exists(&key_path) {
+            generate_key(&key_path)?;
+            created.push(key_path);
         }
         if serve && !fs::exists(&self.token_path) && sys::env_setting("LIMEN_TOKEN").is_none() {
             let token = format!("{}\n", random(TOKEN_LENGTH)?);
@@ -105,19 +115,6 @@ impl Hub {
             created.push(self.token_path.clone());
         }
         Ok(created)
-    }
-
-    fn generate_key(&self) -> Result<()> {
-        let keygen =
-            proc::which("ssh-keygen").ok_or_else(|| error(ErrorCode::Unavailable, "ssh-keygen is not installed"))?;
-        let comment = format!("limen-hub@{}", sys::hostname());
-        let argv =
-            [keygen.as_str(), "-q", "-t", "ed25519", "-N", "", "-C", &comment, "-f", &self.key_path].map(String::from);
-        let result = proc::run(&argv, proc::Run::default()).map_err(internal)?;
-        if result.exit_code != 0 {
-            return Err(internal(format!("ssh-keygen: {}", result.err().trim())));
-        }
-        Ok(())
     }
 
     /// The HTTP clients' token: `LIMEN_TOKEN`, or the one `init` wrote.
@@ -245,6 +242,19 @@ fn public_url_from_env() -> Result<Option<String>> {
     Ok(Some(url))
 }
 
+/// An ed25519 key pair at [path] and [path]`.pub`, without a passphrase: ssh runs in batch mode.
+fn generate_key(path: &str) -> Result<()> {
+    let keygen =
+        proc::which("ssh-keygen").ok_or_else(|| error(ErrorCode::Unavailable, "ssh-keygen is not installed"))?;
+    let comment = format!("limen-hub@{}", sys::hostname());
+    let argv = [keygen.as_str(), "-q", "-t", "ed25519", "-N", "", "-C", &comment, "-f", path].map(String::from);
+    let result = proc::run(&argv, proc::Run::default()).map_err(internal)?;
+    if result.exit_code != 0 {
+        return Err(internal(format!("ssh-keygen: {}", result.err().trim())));
+    }
+    Ok(())
+}
+
 /// [text] without the whitespace around it, unless nothing is left.
 fn trimmed(text: Option<String>) -> Option<String> {
     text.map(|text| text.trim().to_string()).filter(|text| !text.is_empty())
@@ -368,11 +378,29 @@ mod tests {
     fn init_creates_what_is_missing_only() {
         let hub = TempHub::uninitialised();
         let created = hub.init(true).unwrap();
-        assert_eq!(created, [hub.key_path.clone(), hub.config_path.clone(), hub.token_path.clone()]);
+        assert_eq!(created, [hub.config_path.clone(), format!("{}/id_ed25519", hub.home), hub.token_path.clone()]);
         assert!(join::fingerprint(&hub.public_key().unwrap()).unwrap().starts_with("SHA256:"));
         assert_eq!(hub.token().unwrap().len(), 32);
         assert!(hub.init(true).unwrap().is_empty());
         assert!(hub.config().unwrap().nodes.is_empty());
+    }
+
+    #[test]
+    fn the_key_is_where_ssh_identity_says() {
+        let hub = TempHub::uninitialised();
+        let elsewhere = format!("{}/keys", hub.home.rsplit_once('/').unwrap().0);
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        for (identity, key) in [
+            ("hub_key".to_string(), format!("{}/hub_key", hub.home)),
+            (format!("{elsewhere}/hub"), format!("{elsewhere}/hub")),
+        ] {
+            std::fs::create_dir_all(&hub.home).unwrap();
+            std::fs::write(&hub.config_path, format!("[ssh]\nidentity = \"{identity}\"\n")).unwrap();
+            assert_eq!(hub.init(false).unwrap(), std::slice::from_ref(&key));
+            assert!(!std::path::Path::new(&format!("{}/id_ed25519", hub.home)).exists());
+            let public = std::fs::read_to_string(format!("{key}.pub")).unwrap();
+            assert_eq!(hub.public_key().unwrap(), public.trim());
+        }
     }
 
     #[test]

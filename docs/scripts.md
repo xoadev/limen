@@ -44,7 +44,7 @@ exec journalctl --no-pager -o short-iso --since "-$LIMEN_ARG_SINCE" -u "$LIMEN_A
 | Key | | |
 |---|---|---|
 | `description` | required | What the model reads to choose the tool. One line, what it does and what it answers |
-| `timeout` | default `60s`, at most `1h` | `30s`, `5m`, `1h`. `SIGTERM` to the script's process group when it runs out, `SIGKILL` after a grace period |
+| `timeout` | default `60s`, at most `1h` | `30s`, `5m`, `1h`, in whole seconds: a fraction is dropped, and under `1s` is `1s`. `SIGTERM` to the script's process group when it runs out, `SIGKILL` after a grace period |
 | `[args.<name>]` | one per argument | `name` is `^[a-z][a-z0-9_]{0,31}$`; `node`, `grep` and `tail` are taken |
 
 Each argument:
@@ -53,16 +53,24 @@ Each argument:
 |---|---|
 | `type` | `int`, `bool`, `enum` or `string` |
 | `description` | What the model reads |
-| `default` | Makes it optional |
-| `required = false` | Optional with no default: the variable is unset |
+| `default` | Makes it optional: a call that leaves it out gets this value |
+| `required` | `true` without a `default`: a call must give it. `required = false` makes it optional with no default, and the variable is unset when a call leaves it out. `required = true` with a `default` is refused: the default makes it optional |
 | `range = [min, max]` | For `int` |
 | `values = ["a", "b"]` | For `enum` |
 | `pattern` | For `string`. By default `^[A-Za-z0-9_][A-Za-z0-9._-]{0,63}$`: never an option, `.` or `..` |
 
 A `pattern` is a Rust `regex` that must match the whole value: `\w`, `\d`, `\s` and `(?i)` are there, Unicode's
-`\p{…}` classes and look-around are not. The catalog reaches the model as text, so the hub leaves out a script
-whose description, arguments or patterns aren't short and plain. Whatever the pattern, a string argument never holds
-a control character: a NUL, a newline or an `ESC` is refused before the pattern is applied.
+`\p{…}` classes and look-around are not. Whatever the pattern, a string argument never holds a control character: a
+NUL, a newline or an `ESC` is refused before the pattern is applied.
+
+The catalog reaches every MCP session as text, and the hub doesn't take it on trust. It leaves out a script:
+
+- named as one of its own tools or the node's requests: `nodes`, `hello`, `read_file`, `list_dir`, `history`, `run`;
+- whose description, or an argument's, runs past 300 characters or holds a control character;
+- with a `pattern` over 512 bytes, or that compiles to more than 1 MiB. A bounded repetition unrolls: `\w{1,300}`
+  —Unicode's `\w`, hundreds of ranges, 300 times— is too big; `[A-Za-z0-9_]{1,300}` is not.
+
+The hub only counts these in `nodes`; `limen lint` on the node says which and why.
 
 ## How it runs
 
@@ -139,8 +147,8 @@ packs = ["/opt/state/packs/systemd", "/opt/state/packs/docker", "/opt/state/node
 
 ```sh
 umask 022
-curl -fsSL https://raw.githubusercontent.com/xoadev/limen/main/install.sh | sh     # binary, user, sudoers
-install -m 0600 /dev/null /etc/limen/repo-token && cat > /etc/limen/repo-token     # a read-only token
+curl -fsSL https://raw.githubusercontent.com/xoadev/limen/main/install.sh | LIMEN_YES=1 sh   # binary, user, sudoers
+install -m 0600 /dev/null /etc/limen/repo-token && cat > /etc/limen/repo-token         # a read-only token
 header="Authorization: Basic $(printf 'x-access-token:%s' "$(cat /etc/limen/repo-token)" | base64 | tr -d '\n')"
 GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.https://github.com/.extraHeader GIT_CONFIG_VALUE_0="$header" \
   git clone --depth 1 https://github.com/you/infra /opt/state

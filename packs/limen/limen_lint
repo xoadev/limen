@@ -1,0 +1,6 @@
+#!/bin/sh
+#: description = "Checks this machine's packs without running anything: script names, headers and permissions. Lists every problem, so run it after a sync or a change to limen.toml. Changes nothing"
+#: timeout = "30s"
+set -eu
+
+exec limen lint 2>&1

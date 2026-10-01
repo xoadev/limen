@@ -3,6 +3,7 @@
 #
 # A machine, joining a hub (spec §10.1), as root — the hub's `limen invite <name>` prints this line:
 #   curl -fsSL https://raw.githubusercontent.com/xoadev/limen/main/install.sh | sudo sh -s -- --join '<line>'
+# with --address <address> after it when the hub can't see where the machine is (a hub in Docker, a NAT between).
 # A machine with no hub yet, whose configuration and packs come first (a hub joins it later with the line above):
 #   curl -fsSL https://raw.githubusercontent.com/xoadev/limen/main/install.sh | sudo env LIMEN_YES=1 sh
 # A hub for this user, for Claude Code on this machine (stdio):
@@ -17,9 +18,11 @@
 #   LIMEN_JOIN         the line of `limen invite` (or --join)
 #   LIMEN_HUB_KEY      the hub's public key or its .pub file, when the hub has no HTTP (or --hub-key)
 #   LIMEN_NAME         this machine's name on the hub, with LIMEN_HUB_KEY (or --name; default: its hostname)
-#   LIMEN_FROM         addresses or CIDRs the hub's key may connect from (not OpenWrt)
-#   LIMEN_ADDRESS      where the hub reaches this machine, with LIMEN_JOIN (default: where it saw the request come from)
-#   LIMEN_SSH_PORT     this machine's SSH port, when it is not 22
+#   LIMEN_FROM         addresses or CIDRs the hub's key may connect from, comma-separated, with sshd's *, ? and !
+#                      (or --from; not OpenWrt)
+#   LIMEN_ADDRESS      where the hub reaches this machine (or --address): sent with LIMEN_JOIN (default: where the hub
+#                      saw the request come from), or put in the `limen trust` line with LIMEN_HUB_KEY
+#   LIMEN_SSH_PORT     this machine's SSH port, when it is not 22 (or --ssh-port)
 #   LIMEN_VERSION      the release to install, X.Y.Z (default: the latest)
 #   LIMEN_BINARY       a limen binary already on this machine, instead of downloading one
 #   LIMEN_YES=1        ask nothing: with no join line nor key, there is no hub yet
@@ -78,8 +81,11 @@ main() {
       --join) LIMEN_JOIN=${2:-}; shift 2 ;;
       --hub-key) LIMEN_HUB_KEY=${2:-}; shift 2 ;;
       --name) LIMEN_NAME=${2:-}; shift 2 ;;
+      --address) LIMEN_ADDRESS=${2:-}; shift 2 ;;
+      --from) LIMEN_FROM=${2:-}; shift 2 ;;
+      --ssh-port) LIMEN_SSH_PORT=${2:-}; shift 2 ;;
       --hub) mode=hub; shift ;;
-      *) die "unknown option $1 (--join <line>, --hub-key <key> --name <name>, or --hub)" ;;
+      *) die "unknown option $1 (--join <line> or --hub-key <key> --name <name>, with [--address <address>] [--from <addresses>] [--ssh-port <port>]; or --hub)" ;;
     esac
   done
 

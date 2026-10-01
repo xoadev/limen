@@ -430,19 +430,24 @@ suite_join() {
   expect "the hub reaches it, no restart" '"ok": true' hub_exec call nas hello
   expect "the hub wrote it into limen.toml" "[nodes.nas]" hub_file limen.toml
 
-  echo "e2e/join: OpenWrt joins the same way"
+  echo "e2e/join: OpenWrt joins the same way, with its address given as a host name"
   line=$(join_line router)
-  expect "install.sh --join under ash" "router is on the hub" \
-    docker exec -e LIMEN_YES=1 -e LIMEN_BINARY=/tmp/limen -e LIMEN_JOIN="$line" "$router" sh /tmp/install.sh
+  expect "install.sh --join --address under ash" "router is on the hub, at $router" \
+    docker exec -e LIMEN_YES=1 -e LIMEN_BINARY=/tmp/limen "$router" sh /tmp/install.sh --join "$line" --address "$router"
+  expect "the hub files the address given, not the request's" "host = \"$router\"" hub_file limen.toml
   expect "the hub logs into it as root" 'user = "root"' hub_file limen.toml
   expect "and sees OpenWrt" '"os": "OpenWrt' hub_exec call router hello
 
   echo "e2e/join: without a hub on HTTP, --hub-key and limen trust"
   key=$(hub_file id_ed25519.pub)
-  trust=$(docker exec -e LIMEN_YES=1 -e LIMEN_BINARY=/tmp/limen -e LIMEN_HUB_KEY="$key" -e LIMEN_NAME=spare "$spare" sh /tmp/install.sh | grep 'limen trust')
+  trust=$(docker exec -e LIMEN_YES=1 -e LIMEN_BINARY=/tmp/limen -e LIMEN_HUB_KEY="$key" -e LIMEN_NAME=spare "$spare" sh /tmp/install.sh --ssh-port 2222 | grep 'limen trust')
   expect "the machine prints the line for the hub" "limen trust spare <address>" echo "$trust"
+  expect "install.sh --ssh-port: the port goes in it" "--port 2222" echo "$trust"
   spare_ip=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$spare")
-  read -ra trust_args <<< "$(echo "$trust" | sed "s/<address>/$spare_ip/; s/^ *limen trust //" | tr -d "'")"
+  trust=$(docker exec -e LIMEN_YES=1 -e LIMEN_BINARY=/tmp/limen "$spare" sh /tmp/install.sh --hub-key "$key" --name spare --address "$spare_ip" --from "$hub_ip" | grep 'limen trust')
+  expect "install.sh --address: the address goes in it" "limen trust spare $spare_ip '" echo "$trust"
+  expect "install.sh --from: the key, only from the hub" "from=\"$hub_ip\"" docker exec "$spare" cat /var/lib/limen/.ssh/authorized_keys
+  read -ra trust_args <<< "$(echo "$trust" | sed "s/^ *limen trust //" | tr -d "'")"
   expect "limen trust on the hub" "spare added" docker exec "$hub" limen trust "${trust_args[0]}" "${trust_args[1]}" "${trust_args[2]} ${trust_args[3]}"
   expect "the hub reaches it" '"ok": true' hub_exec call spare hello
 

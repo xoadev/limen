@@ -102,6 +102,30 @@ impl HubConfig {
         self.nodes.iter().find(|node| node.name == name)
     }
 
+    /// `ssh.identity` as a path: absolute, or under the hub's directory [home]. Its public key is this with `.pub`.
+    pub fn identity_path(&self, home: &str) -> String {
+        if self.identity.starts_with('/') {
+            self.identity.clone()
+        } else {
+            format!("{}/{}", home.trim_end_matches('/'), self.identity)
+        }
+    }
+
+    /// `ssh.connect_timeout` as ssh's `ConnectTimeout` takes it: whole seconds, rounded up.
+    pub fn connect_timeout_seconds(&self) -> u128 {
+        self.connect_timeout.as_millis().div_ceil(1000)
+    }
+
+    /// Where `serve` listens: [option] (`--listen`), else [env] (`LIMEN_LISTEN`), else `http.listen`; any of them
+    /// checked as the file's key is.
+    pub fn listen_address(&self, option: Option<String>, env: Option<String>) -> ConfigResult<String> {
+        match (option, env) {
+            (Some(address), _) => checked_listen("--listen", address),
+            (None, Some(address)) => checked_listen("LIMEN_LISTEN", address),
+            (None, None) => Ok(self.listen.clone()),
+        }
+    }
+
     pub fn parse(text: &str) -> ConfigResult<HubConfig> {
         let file: File = super::from_str(text)?;
         let defaults = HubConfig::default();
@@ -111,10 +135,11 @@ impl HubConfig {
             Some(_) => return fail("ssh.per_node_concurrency", "must be between 1 and 64"),
             None => defaults.per_node_concurrency,
         };
-        if let Some(listen) = file.http.listen.as_ref().filter(|listen| !is(LISTEN, listen)) {
-            return fail("http.listen", format!("'{listen}': expected host:port"));
-        }
+        let listen = file.http.listen.map(|listen| checked_listen("http.listen", listen)).transpose()?;
         let public_url = public_url(file.http.public_url)?;
+        if file.ssh.identity.as_deref().is_some_and(|identity| identity.is_empty() || identity.ends_with('/')) {
+            return fail("ssh.identity", "a key file: relative to the hub's directory, or absolute");
+        }
         Ok(HubConfig {
             identity: file.ssh.identity.unwrap_or(defaults.identity),
             connect_timeout: duration("ssh.connect_timeout", file.ssh.connect_timeout)?
@@ -122,7 +147,7 @@ impl HubConfig {
             request_timeout: duration("ssh.request_timeout", file.ssh.request_timeout)?
                 .unwrap_or(defaults.request_timeout),
             per_node_concurrency,
-            listen: file.http.listen.unwrap_or(defaults.listen),
+            listen: listen.unwrap_or(defaults.listen),
             origins: file.http.origins,
             public_url,
             nodes,
@@ -156,6 +181,14 @@ fn node_entry(name: String, node: Node) -> ConfigResult<NodeEntry> {
     Ok(NodeEntry { name, host, port, user, host_key })
 }
 
+/// [address] if it is `host:port`; [key] says where it came from.
+fn checked_listen(key: &str, address: String) -> ConfigResult<String> {
+    if !is(LISTEN, &address) {
+        return fail(key, format!("'{address}': expected host:port"));
+    }
+    Ok(address)
+}
+
 /// `[http].public_url` without a trailing slash, if it is an address.
 fn public_url(url: Option<String>) -> ConfigResult<Option<String>> {
     let url = url.map(|url| url.trim_end_matches('/').to_string());
@@ -168,6 +201,7 @@ fn public_url(url: Option<String>) -> ConfigResult<Option<String>> {
 fn duration(key: &str, text: Option<String>) -> ConfigResult<Option<Duration>> {
     let Some(text) = text else { return Ok(None) };
     match durations::parse(&text) {
+        Some(duration) if duration.is_zero() => fail(key, "must be more than zero"),
         Some(duration) => Ok(Some(duration)),
         None => fail(key, "expected a duration like 5s or 1m"),
     }
@@ -204,6 +238,47 @@ host_key = "ecdsa-sha2-nistp256 AAAAE2VjZHNh="
         assert_eq!(config.node("router").unwrap().user, "reader");
         // Only the local machine unless told otherwise.
         assert_eq!(config.listen, "127.0.0.1:7341");
+    }
+
+    #[test]
+    fn listen_comes_from_the_option_the_environment_or_the_file_each_checked() {
+        let config = HubConfig::parse("[http]\nlisten = \"127.0.0.1:1\"").unwrap();
+        let given = |text: &str| Some(text.to_string());
+        assert_eq!(config.listen_address(None, None).unwrap(), "127.0.0.1:1");
+        assert_eq!(config.listen_address(None, given("0.0.0.0:2")).unwrap(), "0.0.0.0:2");
+        assert_eq!(config.listen_address(given("[::]:3"), given("0.0.0.0:2")).unwrap(), "[::]:3");
+        let error = config.listen_address(None, given("7341")).unwrap_err();
+        assert_eq!(error.0, "LIMEN_LISTEN: '7341': expected host:port");
+        let error = config.listen_address(given("0.0.0.0"), None).unwrap_err();
+        assert_eq!(error.0, "--listen: '0.0.0.0': expected host:port");
+        let error = HubConfig::parse("[http]\nlisten = \"localhost\"").unwrap_err();
+        assert_eq!(error.0, "http.listen: 'localhost': expected host:port");
+    }
+
+    #[test]
+    fn timeouts_are_more_than_zero_and_connecting_takes_whole_seconds() {
+        for key in ["connect_timeout", "request_timeout"] {
+            for zero in ["0s", "0ms"] {
+                let error = HubConfig::parse(&format!("[ssh]\n{key} = \"{zero}\"")).unwrap_err();
+                assert_eq!(error.0, format!("ssh.{key}: must be more than zero"));
+            }
+        }
+        let connect = |timeout: &str| {
+            HubConfig::parse(&format!("[ssh]\nconnect_timeout = \"{timeout}\"")).unwrap().connect_timeout_seconds()
+        };
+        assert_eq!([connect("1ms"), connect("1500ms"), connect("2s")], [1, 2, 2]);
+    }
+
+    #[test]
+    fn the_identity_is_under_the_hub_unless_absolute() {
+        let identity = |text: &str| HubConfig::parse(text).map(|config| config.identity_path("/data/"));
+        assert_eq!(identity("").unwrap(), "/data/id_ed25519");
+        assert_eq!(identity("[ssh]\nidentity = \"keys/limen\"").unwrap(), "/data/keys/limen");
+        assert_eq!(identity("[ssh]\nidentity = \"/etc/limen-hub/key\"").unwrap(), "/etc/limen-hub/key");
+        for not_a_file in ["", "keys/"] {
+            let error = identity(&format!("[ssh]\nidentity = \"{not_a_file}\"")).unwrap_err();
+            assert!(error.0.starts_with("ssh.identity: "), "{error}");
+        }
     }
 
     #[test]

@@ -96,7 +96,7 @@ impl SshClient {
             format!("UserKnownHostsFile={}", self.known_hosts),
             "GlobalKnownHostsFile=/dev/null".into(),
             format!("HostKeyAlias={}", alias(entry)),
-            format!("ConnectTimeout={}", self.config.connect_timeout.as_secs().max(1)),
+            format!("ConnectTimeout={}", self.config.connect_timeout_seconds()),
             "ServerAliveInterval=15".into(),
             "LogLevel=ERROR".into(),
             "ControlMaster=auto".into(),
@@ -183,8 +183,7 @@ fn ssh_env() -> Vec<String> {
 
 /// `[ssh].identity`, under the hub's directory unless absolute; an error when there is no key there.
 fn identity_file(config: &HubConfig, home: &str) -> Result<String> {
-    let identity =
-        if config.identity.starts_with('/') { config.identity.clone() } else { format!("{home}/{}", config.identity) };
+    let identity = config.identity_path(home);
     if fs::stat(&identity).map(|info| info.kind) != Some(fs::FileType::File) {
         return Err(error(
             ErrorCode::Unavailable,

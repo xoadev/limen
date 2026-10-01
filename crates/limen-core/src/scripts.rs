@@ -5,9 +5,9 @@ use crate::config;
 use crate::durations;
 use crate::own_regex;
 use crate::params::{self, DEFAULT_STRING_PATTERN, PARAM_NAME, Param, ParamType};
-use crate::requests::{RESERVED_ARGS, SCRIPT_NAME};
+use crate::requests::{self, RESERVED_ARGS, SCRIPT_NAME};
 use indexmap::IndexMap;
-use regex::Regex;
+use regex::{Regex, RegexBuilder};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::LazyLock;
@@ -15,6 +15,13 @@ use std::time::Duration;
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
 const MAX_TIMEOUT: Duration = Duration::from_secs(3600);
+
+/// The longest description of a script or an argument the hub takes: that text reaches every MCP session.
+pub const MAX_DESCRIPTION_CHARS: usize = 300;
+/// The longest `pattern` the hub takes, and the most it may compile to: the hub compiles the patterns of nodes it
+/// doesn't trust.
+pub const MAX_PATTERN_BYTES: usize = 512;
+const MAX_COMPILED_PATTERN: usize = 1 << 20;
 
 /// What a script says about itself in its header.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -45,6 +52,63 @@ pub fn is_script_name(name: &str) -> bool {
 
 pub fn is_param_name(name: &str) -> bool {
     PARAM_NAME_REGEX.is_match(name)
+}
+
+/// Whether [name] is one of the hub's own tools or the node's requests: a script with it would take its place.
+pub fn is_reserved_name(name: &str) -> bool {
+    name == "nodes" || requests::find(name).is_some()
+}
+
+/// Why the hub leaves [spec] out of its tools, or None when it takes it. A node's catalog is not trusted, and what
+/// becomes a tool's name, schema or description reaches every MCP session: the hub takes only what limen itself would
+/// write, bounded. `limen lint` says the same of a node's own scripts.
+pub fn hub_refusal(spec: &ScriptSpec) -> Option<String> {
+    let name = &spec.name;
+    if !is_script_name(name) {
+        return Some(format!("{name:?} is not a script's name"));
+    }
+    if is_reserved_name(name) {
+        return Some(format!("{name}: the hub has a tool or request of that name"));
+    }
+    if !(1..=MAX_TIMEOUT.as_secs()).contains(&spec.timeout_seconds) {
+        return Some(format!("{name}: timeout is 1s to 1h"));
+    }
+    let described = std::iter::once(("the description".to_string(), &spec.description))
+        .chain(spec.params.iter().map(|param| (format!("the description of '{}'", param.name), &param.description)));
+    described
+        .into_iter()
+        .find_map(|(what, text)| text_refusal(&what, text))
+        .or_else(|| spec.params.iter().find_map(param_refusal))
+        .map(|why| format!("{name}: {why}"))
+}
+
+/// Why the hub doesn't take [text] as a description: too long, or with control characters.
+fn text_refusal(what: &str, text: &str) -> Option<String> {
+    let length = text.chars().count();
+    if length > MAX_DESCRIPTION_CHARS {
+        return Some(format!("{what} has {length} characters and the hub takes {MAX_DESCRIPTION_CHARS}"));
+    }
+    text.chars().any(char::is_control).then(|| format!("{what} holds a control character"))
+}
+
+/// Why the hub doesn't take [param]: a name that isn't an argument's, or limen's own, or a pattern too big for it.
+fn param_refusal(param: &Param) -> Option<String> {
+    let name = &param.name;
+    if !is_param_name(name) {
+        return Some(format!("argument name {name:?} must match {PARAM_NAME}"));
+    }
+    if RESERVED_ARGS.contains(&name.as_str()) {
+        return Some(format!("argument name '{name}' is limen's own"));
+    }
+    let pattern = param.pattern.as_deref()?;
+    if pattern.len() > MAX_PATTERN_BYTES {
+        return Some(format!(
+            "the pattern of '{name}' has {} bytes and the hub takes {MAX_PATTERN_BYTES}",
+            pattern.len()
+        ));
+    }
+    let compiles = RegexBuilder::new(pattern).size_limit(MAX_COMPILED_PATTERN).build().is_ok();
+    (!compiles).then(|| format!("the pattern of '{name}' compiles to more than 1 MiB"))
 }
 
 /// The script name of a file: its name without the extension, or None when that is not a script's name.
@@ -141,6 +205,10 @@ impl Arg {
         if self.default.as_ref().is_some_and(|default| !fits_a_type(default)) {
             return Err("default must be a string, integer or boolean".into());
         }
+        // The schema would say required while the node fills the default in: the model can't tell which holds.
+        if self.required == Some(true) && self.default.is_some() {
+            return Err("required = true and a default: the default makes it optional".into());
+        }
         let param = Param {
             name: name.into(),
             kind,
@@ -236,6 +304,63 @@ set -euo pipefail
     }
 
     #[test]
+    fn a_description_over_the_limit_is_told_by_script_and_argument() {
+        let fits = "x".repeat(MAX_DESCRIPTION_CHARS);
+        let long = "x".repeat(MAX_DESCRIPTION_CHARS + 1);
+        let script = |description: &str, arg_description: &str| {
+            format!(
+                "#!/bin/sh\n#: description = \"{description}\"\n#: [args.word]\n#: type = \"string\"\n#: description = \"{arg_description}\"\n"
+            )
+        };
+        let spec = parse("say", &script(&fits, &fits)).unwrap().unwrap();
+        assert_eq!(hub_refusal(&spec), None);
+        let spec = parse("say", &script(&long, &fits)).unwrap().unwrap();
+        assert_eq!(hub_refusal(&spec).unwrap(), "say: the description has 301 characters and the hub takes 300");
+        let spec = parse("say", &script(&fits, &long)).unwrap().unwrap();
+        assert_eq!(
+            hub_refusal(&spec).unwrap(),
+            "say: the description of 'word' has 301 characters and the hub takes 300"
+        );
+    }
+
+    #[test]
+    fn the_hub_leaves_out_a_script_that_would_take_one_of_its_names() {
+        let named =
+            |name: &str| ScriptSpec { name: name.into(), description: "x".into(), timeout_seconds: 60, params: vec![] };
+        assert_eq!(hub_refusal(&named("disk")), None);
+        for reserved in ["nodes", "hello", "read_file", "list_dir", "history", "run"] {
+            assert_eq!(
+                hub_refusal(&named(reserved)).unwrap(),
+                format!("{reserved}: the hub has a tool or request of that name")
+            );
+        }
+    }
+
+    #[test]
+    fn the_hub_leaves_out_text_and_patterns_it_would_not_write() {
+        let with_pattern = |pattern: &str| ScriptSpec {
+            name: "say".into(),
+            description: "x".into(),
+            timeout_seconds: 60,
+            params: vec![Param::new("word", ParamType::String, "").pattern(pattern)],
+        };
+        assert_eq!(hub_refusal(&with_pattern(&format!("^{}$", "a".repeat(MAX_PATTERN_BYTES - 2)))), None);
+        assert_eq!(
+            hub_refusal(&with_pattern(&format!("^{}$", "a".repeat(MAX_PATTERN_BYTES - 1)))).unwrap(),
+            "say: the pattern of 'word' has 513 bytes and the hub takes 512"
+        );
+        assert_eq!(hub_refusal(&with_pattern("^[A-Za-z0-9_]{1,300}$")), None);
+        let unrolled = r"^\w{1,300}$";
+        assert!(params::full_match(unrolled).is_ok(), "the node itself takes it");
+        assert_eq!(
+            hub_refusal(&with_pattern(unrolled)).unwrap(),
+            "say: the pattern of 'word' compiles to more than 1 MiB"
+        );
+        let bell = ScriptSpec { description: "ring\u{7}".into(), ..with_pattern("^a$") };
+        assert_eq!(hub_refusal(&bell).unwrap(), "say: the description holds a control character");
+    }
+
+    #[test]
     fn a_minute_by_default_an_hour_at_most() {
         let text = "#!/bin/sh\n#: description = \"x\"\n";
         assert_eq!(parse("a", text).unwrap().unwrap().timeout_seconds, 60);
@@ -261,6 +386,10 @@ set -euo pipefail
             ("#: description = \"x\"\n#: [args.n]\n#: type = \"int\"\n#: default = \"x\"", "the default does not fit"),
             ("#: description = \"x\"\n#: [args.Bad]\n#: type = \"int\"", "argument name 'Bad'"),
             ("#: description = \"x\"\n#: [args.grep]\n#: type = \"int\"", "'grep' is limen's own"),
+            (
+                "#: description = \"x\"\n#: [args.n]\n#: type = \"int\"\n#: default = 1\n#: required = true",
+                "argument 'n': required = true and a default: the default makes it optional",
+            ),
         ] {
             let error = parse("s", text).unwrap().unwrap_err();
             assert!(error.contains(expected), "{error} should contain {expected}");

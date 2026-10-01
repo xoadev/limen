@@ -1,10 +1,15 @@
 #!/bin/sh
-#: description = "The whole system journal, every unit and the kernel, over the last while"
+#: description = "The whole system journal, every unit and the kernel, over the last while, or all of an earlier boot's (`boot`), which is how to see what happened before a crash or reboot"
 #: [args.since]
 #: type = "string"
 #: default = "1h"
 #: pattern = '^[0-9]{1,4}[smhd]$'
 #: description = "How far back: 30m, 6h, 2d"
+#: [args.boot]
+#: type = "int"
+#: default = 0
+#: range = [-9, 0]
+#: description = "0 is this boot; -1 the one before, and so on. For an earlier boot `since` is ignored and the whole boot is shown"
 #: [args.priority]
 #: type = "enum"
 #: required = false
@@ -12,6 +17,11 @@
 #: description = "Only entries of this priority or more severe"
 set -eu
 
-set -- --no-pager --output=short-iso --since="-$LIMEN_ARG_SINCE"
+set -- --no-pager --output=short-iso
+if [ "$LIMEN_ARG_BOOT" -eq 0 ]; then
+  set -- "$@" --since="-$LIMEN_ARG_SINCE"
+else
+  set -- "$@" --boot="$LIMEN_ARG_BOOT"
+fi
 [ -z "${LIMEN_ARG_PRIORITY:-}" ] || set -- "$@" --priority="$LIMEN_ARG_PRIORITY"
 exec journalctl "$@"

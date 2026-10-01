@@ -20,7 +20,7 @@ next session, another agent or a person can't read it.
 | Folder | What |
 |---|---|
 | `docs/` | `spec.md`; `scripts.md`, writing scripts and packs; `openwrt.md`, OpenWrt as a node and the one binary for every Linux |
-| `packs/` | Example packs of scripts, to copy: `system`, `systemd`, `docker`, `openwrt`. Not installed with limen |
+| `packs/` | Example packs of scripts, to copy: `system`, `systemd`, `debian`, `docker`, `limen`, `openwrt`. Not installed with limen |
 | `Cargo.toml`, `rust-toolchain.toml` | The workspace and the Rust version it is built with, targets included; `.cargo/config.toml` links the musl targets with `rust-lld` |
 | `rustfmt.toml`, `clippy.toml`, `[workspace.lints]` | The layout and the lints `make lint` applies (see [Code](#code)) |
 | `.claude/settings.json` | Claude Code's hooks for this repository: an edited Rust file is formatted at once |

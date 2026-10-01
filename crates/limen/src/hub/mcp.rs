@@ -6,10 +6,9 @@
 use super::NodeClient;
 use limen_core::params::{self, Param, ParamType};
 use limen_core::protocol::{LimenError, NodeError, NodeResponse, pretty};
-use limen_core::requests::{self, RESERVED_ARGS, RequestDef};
+use limen_core::requests::{self, RequestDef};
 use limen_core::scripts::{self, Catalog, ScriptSpec};
 use limen_core::version::VERSION;
-use regex::RegexBuilder;
 use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -26,17 +25,12 @@ pub const INTERNAL_ERROR: i64 = -32603;
 
 /// ssh and the node's own work on top of a script's timeout.
 const SCRIPT_MARGIN: Duration = Duration::from_secs(45);
-/// The longest a script may declare, as a node reports it to the hub.
-const MAX_SCRIPT_SECONDS: u64 = 3600;
 /// How often the nodes are asked for their catalogs at most, whatever clients ask: one session can't make the hub
 /// flood every node.
 const REFRESH_EVERY: Duration = Duration::from_secs(10);
 
-/// How much of a node's catalog the hub takes: text that reaches every MCP session, and patterns it compiles.
-const MAX_DESCRIPTION_CHARS: usize = 300;
+/// How much of a node's list of problems the hub takes: text that reaches every MCP session.
 const MAX_PROBLEM_CHARS: usize = 1000;
-const MAX_PATTERN_BYTES: usize = 512;
-const MAX_COMPILED_PATTERN: usize = 1 << 20;
 
 const NODES_DESCRIPTION: &str = "The machines this server reaches: whether each answers, its OS and limen version, and the \
      scripts it offers, each a tool of its own.";
@@ -396,41 +390,20 @@ fn catalogs(hellos: &Hellos) -> BTreeMap<String, Catalog> {
         .collect()
 }
 
-/// A catalog as a node sent it, which the hub doesn't take on trust: what becomes a tool name, a schema or a
-/// description reaches every MCP session, so a spec that is not what limen itself would write is left out.
+/// A catalog as a node sent it, which the hub doesn't take on trust: a spec that is not what limen itself would write
+/// is left out ([scripts::hub_refusal]).
 fn sane(mut catalog: Catalog) -> Catalog {
     catalog.problems.retain(|problem| plain(problem, MAX_PROBLEM_CHARS));
     let before = catalog.scripts.len();
-    catalog.scripts.retain(sane_spec);
+    catalog.scripts.retain(|spec| scripts::hub_refusal(spec).is_none());
     let dropped = before - catalog.scripts.len();
     if dropped > 0 {
-        // Without their names: those may be what wasn't plain.
-        catalog
-            .problems
-            .push(format!("{dropped} script(s) left out by the hub: a name, text or pattern not plain and bounded"));
+        // Without their names: those may be what wasn't plain. `limen lint` on the node says which and why.
+        catalog.problems.push(format!(
+            "{dropped} script(s) left out by the hub: a name, text or pattern not plain and bounded (see `limen lint`)"
+        ));
     }
     catalog
-}
-
-fn sane_spec(spec: &ScriptSpec) -> bool {
-    scripts::is_script_name(&spec.name)
-        // A script can't take the place of a tool of the hub's own.
-        && spec.name != "nodes"
-        && requests::find(&spec.name).is_none()
-        && plain(&spec.description, MAX_DESCRIPTION_CHARS)
-        && (1..=MAX_SCRIPT_SECONDS).contains(&spec.timeout_seconds)
-        && spec.params.iter().all(sane_param)
-}
-
-fn sane_param(param: &Param) -> bool {
-    scripts::is_param_name(&param.name)
-        // `node`, `grep` and `tail` are the hub's and limen's own: a script's must not take their place.
-        && !RESERVED_ARGS.contains(&param.name.as_str())
-        && plain(&param.description, MAX_DESCRIPTION_CHARS)
-        && param.pattern.as_deref().is_none_or(|pattern| {
-            pattern.len() <= MAX_PATTERN_BYTES
-                && RegexBuilder::new(pattern).size_limit(MAX_COMPILED_PATTERN).build().is_ok()
-        })
 }
 
 /// Text of at most [max] characters and no control characters.

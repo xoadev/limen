@@ -188,6 +188,7 @@ impl Installer {
             self.write_authorized_keys(NODE_USER, key, from)?;
         }
         self.write_sudoers()?;
+        self.mask_user_manager(NODE_USER)?;
         self.check_sshd(NODE_USER);
         Ok(())
     }
@@ -198,6 +199,7 @@ impl Installer {
     }
 
     fn unwire_openssh(&self) -> Outcome<()> {
+        self.unmask_user_manager(NODE_USER)?;
         self.remove_user(NODE_USER)?;
         self.remove_file(SUDOERS)
     }
@@ -238,6 +240,28 @@ impl Installer {
             })?;
         }
         Ok(())
+    }
+
+    /// The hub's logins need no user manager, and pam_systemd would start one for each, with whatever the machine
+    /// starts for every user: sound servers on a desktop, which fail and fill the journal. logind takes a masked
+    /// `user@<uid>.service` as none.
+    fn mask_user_manager(&self, user: &str) -> Outcome<()> {
+        let Some(unit) = user_manager(user) else { return Ok(()) };
+        if masked(&unit) {
+            return Ok(());
+        }
+        self.act(&format!("mask {unit}: {user} needs no user manager, and each login would start one"), || {
+            exec(&["systemctl", "mask", &unit])
+        })
+    }
+
+    /// Before the user goes: a uid given to someone else later must not come without a user manager.
+    fn unmask_user_manager(&self, user: &str) -> Outcome<()> {
+        let Some(unit) = user_manager(user) else { return Ok(()) };
+        if !masked(&unit) {
+            return Ok(());
+        }
+        self.act(&format!("unmask {unit}"), || exec(&["systemctl", "unmask", &unit]))
     }
 
     fn remove_user(&self, user: &str) -> Outcome<()> {
@@ -562,6 +586,23 @@ fn home_of(user: &str) -> String {
     fs::account(user).map_or_else(|| default_home(user), |account| account.home)
 }
 
+/// [user]'s `user@<uid>.service`, where systemd runs and the user exists.
+fn user_manager(user: &str) -> Option<String> {
+    if !fs::is_directory("/run/systemd/system") {
+        return None;
+    }
+    fs::account(user).map(|account| user_manager_unit(account.uid))
+}
+
+fn user_manager_unit(uid: u32) -> String {
+    format!("user@{uid}.service")
+}
+
+/// Whether `systemctl mask` linked [unit] to /dev/null.
+fn masked(unit: &str) -> bool {
+    fs::read_link(&format!("/etc/systemd/system/{unit}")).as_deref() == Some("/dev/null")
+}
+
 /// A system program by name, with a minute to finish; what it says on stderr is the error.
 fn exec(argv: &[&str]) -> Outcome<()> {
     let located = proc::located(argv).ok_or(format!("{} is not installed", argv[0]))?;
@@ -584,7 +625,7 @@ allow = [
 deny = [
   "**/*.env",
 ]
-# max_bytes = 262144
+# max_bytes = 262144          # bytes one range of read_file returns
 
 [scripts]
 # The packs this node offers: directories of scripts, each a tool the agent can run. Offer only what you
@@ -600,10 +641,15 @@ names = []
 patterns = []
 
 [limits]
-# max_lines = 2000
-# scan_lines = 100000
-# max_response = 1048576
-# concurrency = 8
+# max_lines = 2000            # lines in one answer
+# scan_lines = 100000         # lines grep and tail look through, from the end of a file
+# max_response = 1048576      # bytes of a whole answer
+# concurrency = 8             # requests at once, from every hub together
+
+# [audit]
+# Every request, appended; never readable through limen.
+# path = "/var/log/limen/audit.jsonl"   # an absolute path
+# max_bytes = 5242880                   # bytes before it becomes audit.jsonl.1; 1024 at least
 "#;
 
 #[cfg(test)]
@@ -615,6 +661,28 @@ mod tests {
         let config = node_config::NodeConfig::parse(CONFIG_TEMPLATE).unwrap();
         assert!(config.allow.is_empty() && config.packs.is_empty());
         assert_eq!(config.deny, ["**/*.env"]);
+    }
+
+    #[test]
+    fn the_template_comments_out_every_default() {
+        let is_setting = |line: &&str| {
+            line.starts_with('[')
+                || line.split_once(" = ").is_some_and(|(key, _)| {
+                    key.chars().all(|character| character.is_ascii_lowercase() || character == '_')
+                })
+        };
+        let uncommented: String = CONFIG_TEMPLATE
+            .lines()
+            .map(|line| format!("{}\n", line.strip_prefix("# ").filter(is_setting).unwrap_or(line)))
+            .collect();
+        assert!(uncommented.contains("\n[audit]\n"), "{uncommented}");
+        let defaults = node_config::NodeConfig { deny: vec!["**/*.env".into()], ..Default::default() };
+        assert_eq!(node_config::NodeConfig::parse(&uncommented).unwrap(), defaults);
+    }
+
+    #[test]
+    fn the_user_manager_is_the_unit_of_the_uid() {
+        assert_eq!(user_manager_unit(996), "user@996.service");
     }
 
     #[test]

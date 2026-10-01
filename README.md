@@ -84,9 +84,9 @@ The hub talks to each machine (each *node*) with the system's `ssh`; nothing lis
 | `history` | The machine's audit log |
 | *each script* | One tool per script in the machines' packs, with its own typed arguments, plus `grep` and `tail` to narrow its output |
 
-The packs in [`packs/`](packs/) are examples to copy: `system` (status, processes, ports), `systemd` (units, their
-logs, restarting one), `debian` (upgradable packages, `apt-get upgrade`, rebooting), `docker` (containers, their logs,
-restarting, purging) and `openwrt`.
+The packs in [`packs/`](packs/) are examples to copy: `system` (status, memory, processes, ports, DNS lookups),
+`systemd` (units, their logs, restarting one), `debian` (upgradable packages, `apt-get upgrade`, rebooting), `docker`
+(containers, their stats and logs, restarting, purging), `limen` (updating limen itself) and `openwrt`.
 
 ## Install
 
@@ -156,6 +156,11 @@ nas is on the hub, at 100.64.0.5: Debian GNU/Linux 13, limen 0.1.0
 - **OpenWrt**: the hub's key in root's dropbear `authorized_keys`, held to `limen gate`, next to the keys already
   there; limen survives `sysupgrade`. **Turn off dropbear's password logins**: a forced command only holds a login
   by key, and the installer warns when root has no password.
+
+The hub files the address the join request comes from. When the hub runs in Docker, or a NAT sits between, that is the
+gateway and not the machine, and the hub fails with `host_key_mismatch`. Then tell it where the machine is, by
+address or by a name the hub resolves: `sudo sh -s -- --join '…' --address 100.64.0.5` on the installer, or
+`limen join '…' --address 100.64.0.5` once limen is there. Joining again with a new invitation replaces the entry.
 
 The hub needs no restart, and the invitation is spent: the next machine gets its own. How the join is protected
 against someone in between: [`docs/spec.md`](docs/spec.md#101-joining-a-node).
@@ -227,10 +232,12 @@ agent can run, are in [`docs/scripts.md`](docs/scripts.md).
 - **The hub on your laptop**, for Claude Code there (stdio, nothing listening):
   `curl -fsSL …/install.sh | sh -s -- --hub` installs `limen` in `~/.local/bin`, creates `~/.limen` and prints the
   `claude mcp add` line. Without an HTTP hub to call back, `limen invite nas` prints a line with the hub's key in it
-  (`--hub-key`), and the machine ends printing the `limen trust nas <address> '<host key>'` to run on the laptop.
+  (`--hub-key`), and the machine ends printing the `limen trust nas <address> '<host key>'` to run on the laptop
+  (`--address` on the installer fills the address in).
 - **Unattended**, every answer comes from the environment: `sudo env LIMEN_YES=1 LIMEN_JOIN='…' sh install.sh`.
-  `LIMEN_FROM` limits where the hub's key may connect from (not on OpenWrt). The whole list is at the top of
-  [`install.sh`](install.sh).
+  `LIMEN_FROM` (`--from`) limits where the hub's key may connect from (not on OpenWrt), `LIMEN_ADDRESS`
+  (`--address`) is where the hub reaches this machine, and `LIMEN_SSH_PORT` (`--ssh-port`) its SSH port when it isn't
+  22. The whole list is at the top of [`install.sh`](install.sh).
 - **By hand**: download `limen-<version>-linux-$(uname -m)` from the [releases](https://github.com/xoadev/limen/releases)
   and run `sudo ./limen-… join '<line>'`. Where there is `gh`, `gh attestation verify limen-… --repo xoadev/limen`
   checks that the release workflow built it; the image, likewise with `oci://ghcr.io/xoadev/limen:<version>`.

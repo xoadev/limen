@@ -26,10 +26,22 @@ impl Joiner {
         Ok(announce_welcome(&welcome, ssh_port))
     }
 
-    pub fn with_key(&self, hub_key: &str, name: &str, from: Option<&str>, ssh_port: u16) -> Outcome<i32> {
+    /// Installs with [hub_key] and prints the `limen trust` line for the hub, with [address] when it is given.
+    pub fn with_key(
+        &self,
+        hub_key: &str,
+        name: &str,
+        from: Option<&str>,
+        address: Option<&str>,
+        ssh_port: u16,
+    ) -> Outcome<i32> {
         join::fingerprint(hub_key).map_err(|failure| format!("--hub-key: {}", failure.message))?;
         if !is(hub::NODE_NAME, name) {
             return Err(format!("--name '{name}' is not a node name"));
+        }
+        // Checked as the hub checks a node's host: the line is pasted into a shell there.
+        if let Some(address) = address.filter(|address| !is(hub::HOST, address)) {
+            return Err(format!("--address '{address}' is not a host name or address"));
         }
         self.installer.install(Some(hub_key), from, false)?;
         let host_key = self
@@ -37,18 +49,28 @@ impl Joiner {
             .host_key()
             .map(|key| join::without_comment(&key))
             .ok_or("cannot read this machine's SSH host key")?;
-        let mut trust_options = String::new();
-        if self.installer.node_user() != hub::NODE_USER {
-            trust_options.push_str(&format!(" --user {}", self.installer.node_user()));
-        }
-        if ssh_port != 22 {
-            trust_options.push_str(&format!(" --port {ssh_port}"));
-        }
         sys::say("");
-        sys::say("limen is installed. On the hub, with this machine's address:");
-        sys::say(&format!("  limen trust {name} <address> '{host_key}'{trust_options}"));
+        sys::say(if address.is_some() {
+            "limen is installed. On the hub:"
+        } else {
+            "limen is installed. On the hub, with this machine's address:"
+        });
+        let line = trust_line(name, address, &host_key, &self.installer.node_user(), ssh_port);
+        sys::say(&format!("  {line}"));
         Ok(0)
     }
+}
+
+/// The line that adds this machine to the hub by hand: [address], or a placeholder for it.
+fn trust_line(name: &str, address: Option<&str>, host_key: &str, user: &str, ssh_port: u16) -> String {
+    let mut line = format!("limen trust {name} {} '{host_key}'", address.unwrap_or("<address>"));
+    if user != hub::NODE_USER {
+        line.push_str(&format!(" --user {user}"));
+    }
+    if ssh_port != 22 {
+        line.push_str(&format!(" --port {ssh_port}"));
+    }
+    line
 }
 
 fn fetch_invitation(url: &JoinUrl) -> Outcome<Invitation> {
@@ -127,4 +149,19 @@ fn hub_error(body: &str) -> Option<String> {
 /// What the hub says, without control characters: it goes to root's terminal, where they would be commands.
 fn printable(text: &str) -> String {
     text.chars().filter(|character| !character.is_control()).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_trust_line_has_the_address_when_it_is_given() {
+        let key = "ssh-ed25519 AAAA";
+        assert_eq!(trust_line("nas", None, key, "limen", 22), "limen trust nas <address> 'ssh-ed25519 AAAA'");
+        assert_eq!(
+            trust_line("router", Some("10.0.0.1"), key, "root", 2222),
+            "limen trust router 10.0.0.1 'ssh-ed25519 AAAA' --user root --port 2222"
+        );
+    }
 }

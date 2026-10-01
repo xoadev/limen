@@ -1,0 +1,49 @@
+#!/bin/sh
+#: description = "Changes the machine: installs the latest limen release when it is newer than the installed one, checked against the release's SHA256SUMS. Keeps the machine's keys and configuration, and needs no restart. The hub is updated where it runs, not from here"
+#: timeout = "3m"
+set -eu
+
+repo=xoadev/limen
+log=/var/log/limen-update.log
+
+command -v curl > /dev/null 2>&1 || { echo "curl is needed to reach GitHub"; exit 1; }
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+
+fetch() { curl -fsS --proto '=https' --tlsv1.2 --retry 3 -o "$2" "$1"; }
+version_of() { limen --version | sed -n 's/^limen \([0-9][0-9.]*\).*/\1/p'; }
+
+installed=$(version_of)
+fetch "https://api.github.com/repos/$repo/releases/latest" "$work/latest.json" || { echo "cannot ask GitHub for the latest release"; exit 1; }
+latest=$(sed -n 's/.*"tag_name": *"v\([0-9][0-9.]*\)".*/\1/p' "$work/latest.json" | head -n 1)
+[ -n "$latest" ] || { echo "no release found at github.com/$repo"; exit 1; }
+
+# Numeric, field by field: 0.1.10 is newer than 0.1.9. Never a downgrade.
+if ! awk -v new="$latest" -v old="$installed" 'BEGIN {
+  n = split(new, a, "."); m = split(old, b, ".")
+  for (i = 1; i <= (n > m ? n : m); i++) { if (a[i] + 0 > b[i] + 0) exit 0; if (a[i] + 0 < b[i] + 0) exit 1 }
+  exit 1
+}'; then
+  echo "limen $installed is the latest release or newer (latest: $latest): nothing to do"
+  exit 0
+fi
+
+# The installer of that very release, which downloads its binary and checks it; `limen install` is idempotent.
+fetch "https://raw.githubusercontent.com/$repo/v$latest/install.sh" "$work/install.sh" || { echo "cannot download the installer of v$latest"; exit 1; }
+
+# Not `{ ...; } || status=$?`: a command in that position runs with `set -e` off, and a failed download would go on.
+set +e
+(
+  set -e
+  LIMEN_VERSION=$latest LIMEN_YES=1 sh "$work/install.sh"
+) > "$log" 2>&1
+status=$?
+set -e
+
+if [ "$status" -ne 0 ]; then
+  tail -n 15 "$log"
+  echo
+  echo "the update failed with exit $status; the whole output is in $log"
+  exit "$status"
+fi
+echo "limen $installed -> $(version_of)"

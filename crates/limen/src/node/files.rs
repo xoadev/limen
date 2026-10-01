@@ -36,17 +36,18 @@ pub fn read_file(node: &Node, args: &Args) -> Result<Answer> {
     }
 }
 
-/// `from` and `lines`: a range of the file.
+/// `from` and `lines`: a range of the file, at most `limits.max_lines` and `files.max_bytes` of it.
 fn file_range(node: &Node, opened: &fs::Opened, args: &Args) -> Result<Answer> {
     let (path, size) = (&opened.info.path, opened.info.size);
     let from = args.small_integer("from")?.unwrap_or(1).max(1) as usize;
-    let count = args.small_integer("lines")?.map_or(DEFAULT_LINES, |lines| lines.max(1) as usize);
+    let asked = args.small_integer("lines")?.map_or(DEFAULT_LINES, |lines| lines.max(1) as usize);
+    let count = asked.min(node.config.max_lines);
     let slice = fs::read_lines(&opened.file, from, count, node.config.max_file_bytes, MAX_SKIP_BYTES)
         .map_err(|reason| bad_request(format!("{path}: {reason}")))?;
     if slice.binary {
         return Ok(Answer::of(json!({"path": path, "size_bytes": size, "binary": true})));
     }
-    let cut_by_bytes = !slice.eof && slice.lines.len() < count;
+    let cut = !slice.eof && slice.lines.len() < asked;
     Ok(Answer::cut(
         json!({
             "path": path,
@@ -56,7 +57,7 @@ fn file_range(node: &Node, opened: &fs::Opened, args: &Args) -> Result<Answer> {
             "eof": slice.eof,
             "content": node.clean(&slice.lines.join("\n")),
         }),
-        cut_by_bytes,
+        cut,
     ))
 }
 
@@ -409,6 +410,18 @@ mod tests {
         };
         assert_eq!(lines_of(json!({"tail": 3})), json!(["red", "password=[redacted]", "bellend"]));
         assert_eq!(lines_of(json!({"grep": "bellend"})), json!(["bellend"]), "a filter sees the clean text");
+    }
+
+    #[test]
+    fn lines_over_max_lines_are_cut_to_it() {
+        let tree = tree();
+        let node = Node::new(NodeConfig { max_lines: 3, ..tree.node.config.clone() });
+        let path = format!("{}/etc/numbers", tree.dir);
+        std::fs::write(&path, "1\n2\n3\n4\n5\n").unwrap();
+        let cut = read_file(&node, &args_of(json!({"path": &path, "lines": 5}))).unwrap();
+        assert_eq!((cut.data["content"].as_str(), cut.truncated), (Some("1\n2\n3"), true));
+        let to_the_end = read_file(&node, &args_of(json!({"path": &path, "from": 3}))).unwrap();
+        assert_eq!((to_the_end.data["content"].as_str(), to_the_end.truncated), (Some("3\n4\n5"), false));
     }
 
     #[test]
