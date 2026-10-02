@@ -1,0 +1,68 @@
+#!/bin/sh
+#: description = "Whether this machine reaches a host: with a port, whether a TCP connection to it opens; without one, ping. Tells a network problem from a service that is down"
+#: timeout = "30s"
+#: [args.host]
+#: type = "string"
+#: pattern = '^[A-Za-z0-9][A-Za-z0-9._:-]{0,252}$'
+#: description = "A host name or an IP address"
+#: [args.port]
+#: type = "int"
+#: required = false
+#: range = [1, 65535]
+#: description = "A TCP port to connect to; without it, the host is pinged"
+set -eu
+
+host=$LIMEN_ARG_HOST
+port=${LIMEN_ARG_PORT:-}
+
+# The address first: a name that doesn't resolve is a DNS problem, not a network one.
+case $host in
+  *:* | *[!0-9.]*) address= ;;
+  *) address=$host ;;
+esac
+case $host in *:*) address=$host ;; esac
+if [ -z "$address" ]; then
+  address=$(getent ahosts "$host" 2> /dev/null | awk 'NR == 1 { print $1 }') || true
+  # Without getent (busybox), /etc/hosts first: busybox's nslookup only asks DNS.
+  [ -n "$address" ] || address=$(awk -v name="$host" '$1 !~ /^#/ { for (i = 2; i <= NF; i++) if ($i == name) { print $1; exit } }' /etc/hosts 2> /dev/null) || true
+  [ -n "$address" ] || address=$(nslookup "$host" 2> /dev/null | awk '/^Name:/ { named = 1 } named && /^Address/ { sub(/#.*/, "", $NF); print $NF; exit }') || true
+  if [ -z "$address" ]; then
+    echo "$host does not resolve: a DNS problem (dns_lookup says more)"
+    exit 1
+  fi
+  echo "$host is $address"
+fi
+
+if [ -z "$port" ]; then
+  status=0
+  answer=$(ping -c 3 -W 2 "$address" 2>&1) || status=$?
+  printf '%s\n' "$answer" | tail -n 2
+  if [ "$status" -eq 0 ]; then
+    echo "$host answers ping"
+  else
+    echo "$host does not answer ping; some hosts never do, so try a port"
+  fi
+  exit "$status"
+fi
+
+# nc where it can connect and close (-z); else bash's /dev/tcp; else curl, which tells a refusal from a timeout.
+if command -v nc > /dev/null 2>&1 && nc -h 2>&1 | grep -q -- '[[:space:]]-z'; then
+  if nc -z -w 5 "$address" "$port" 2> /dev/null; then open=yes; else open=no; fi
+elif command -v bash > /dev/null 2>&1; then
+  # shellcheck disable=SC2016 # bash expands them, from its own arguments
+  if timeout 5 bash -c 'exec 3<> "/dev/tcp/$0/$1"' "$address" "$port" 2> /dev/null; then open=yes; else open=no; fi
+elif command -v curl > /dev/null 2>&1; then
+  status=0
+  curl -s --connect-timeout 5 --max-time 1 -o /dev/null "telnet://$address:$port" < /dev/null || status=$?
+  # 28 is a timeout after connecting: the port opened and waited for us.
+  case $status in 0 | 28) open=yes ;; *) open=no ;; esac
+else
+  echo "nothing here opens a TCP connection (nc with -z, bash or curl): without a port, reach pings"
+  exit 2
+fi
+if [ "$open" = yes ]; then
+  echo "$host port $port: open, a TCP connection was accepted"
+else
+  echo "$host port $port: closed, refused or filtered (no connection within 5s)"
+  exit 1
+fi

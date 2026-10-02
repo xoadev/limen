@@ -1,0 +1,38 @@
+#!/bin/sh
+#: description = "The kernel's log since boot (dmesg): disk and file system errors, out-of-memory kills, devices that failed or went away. Warnings and worse by default"
+#: [args.level]
+#: type = "enum"
+#: values = ["errors", "warnings", "all"]
+#: default = "warnings"
+#: description = "errors: err and worse; warnings: warning and worse; all: every message"
+set -eu
+
+case $LIMEN_ARG_LEVEL in
+  errors) worst=3 ;;
+  warnings) worst=4 ;;
+  *) worst=7 ;;
+esac
+
+# Raw (-r) is the one form util-linux's dmesg and busybox's share: `<priority>[seconds] message`, the facility in
+# the high bits of the priority.
+status=0
+raw=$(dmesg -r 2>&1) || status=$?
+if [ "$status" -ne 0 ]; then
+  echo "dmesg failed: $raw"
+  echo "reading it takes root (CAP_SYSLOG), and in a container it belongs to the host"
+  exit 1
+fi
+
+read -r uptime _ < /proc/uptime
+echo "times are seconds since boot; booted $(date -u -d "@$(($(date +%s) - ${uptime%.*}))" '+%Y-%m-%d %H:%M:%S UTC' 2> /dev/null || echo "${uptime%.*}s ago")"
+printf '%s\n' "$raw" | awk -v worst="$worst" '
+  BEGIN { split("emerg alert crit err warning notice info debug", names, " ") }
+  match($0, /^<[0-9]+>/) {
+    priority = substr($0, 2, RLENGTH - 2) % 8
+    if (priority > worst) next
+    shown++
+    if (priority <= 3) errors++
+    print names[priority + 1] ": " substr($0, RLENGTH + 1)
+  }
+  END { printf "%d message(s) shown, %d error(s) or worse\n", shown, errors }
+'

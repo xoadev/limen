@@ -1,0 +1,35 @@
+#!/bin/sh
+#: description = "The machine's clock: the time in UTC and its time zone, whether it is synchronised by NTP and by which service, and how far off it is. A clock that is off breaks TLS, logins and logs"
+#: timeout = "30s"
+set -eu
+
+# OpenWrt's /etc/localtime leads to /tmp, so its zone is uci's; elsewhere the link names it.
+zone=$(uci -q get system.@system[0].zonename 2> /dev/null) || true
+[ -n "$zone" ] || zone=$(readlink /etc/localtime 2> /dev/null | sed -n 's|.*/zoneinfo/||p') || true
+[ -n "$zone" ] || zone=$(cat /etc/timezone 2> /dev/null) || true
+echo "now: $(date -u '+%Y-%m-%d %H:%M:%S UTC'), time zone ${zone:-UTC (none set)}"
+
+client=
+if command -v timedatectl > /dev/null 2>&1 && timedatectl show > /dev/null 2>&1; then
+  client=systemd
+  echo "systemd: NTP synchronised $(timedatectl show --property=NTPSynchronized --value), NTP service $(timedatectl show --property=NTP --value)"
+  timedatectl timesync-status 2> /dev/null | grep -E 'Server|Poll|Offset|Jitter|Leap' || true
+fi
+if command -v chronyc > /dev/null 2>&1; then
+  client=chrony
+  echo "chrony:"
+  chronyc -n tracking 2> /dev/null | grep -E 'Reference|Stratum|System time|Last offset|Leap' || echo "chronyd does not answer"
+fi
+if command -v ntpq > /dev/null 2>&1; then
+  client=ntpd
+  echo "ntpd:"
+  ntpq -pn 2> /dev/null || echo "ntpd does not answer"
+fi
+# OpenWrt's busybox ntpd, started by sysntpd.
+if [ -x /etc/init.d/sysntpd ]; then
+  client=sysntpd
+  if pgrep -x ntpd > /dev/null 2>&1; then running=running; else running="not running"; fi
+  echo "sysntpd: $(if /etc/init.d/sysntpd enabled; then echo enabled; else echo disabled; fi)," \
+    "ntpd $running, servers $(uci -q get system.ntp.server 2> /dev/null || echo none)"
+fi
+[ -n "$client" ] || echo "no NTP client found: nothing keeps this clock right"
