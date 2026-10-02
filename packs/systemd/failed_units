@@ -1,0 +1,28 @@
+#!/bin/sh
+#: description = "systemd units that have failed, each with why (its result and exit status), since when, and its last journal lines. The first thing to look at on a machine that misbehaves"
+#: [args.lines]
+#: type = "int"
+#: default = 5
+#: range = [0, 50]
+#: description = "Journal lines to show for each failed unit"
+set -eu
+
+lines=${LIMEN_ARG_LINES:-5}
+failed=$(systemctl list-units --failed --all --no-legend --plain --full --no-pager | awk '{ print $1 }')
+if [ -z "$failed" ]; then
+  echo "no failed units"
+  exit 0
+fi
+echo "$(printf '%s\n' "$failed" | wc -l) failed unit(s): $(printf '%s\n' "$failed" | tr '\n' ' ')"
+for unit in $failed; do
+  echo
+  # Chosen properties, not `systemctl status`: that prints command lines, which can hold a secret.
+  systemctl show --no-pager --property=Id,Description,Result,ExecMainStatus,InactiveEnterTimestamp,NRestarts -- "$unit" |
+    awk -F '=' '{ value[$1] = substr($0, length($1) + 2) } END {
+      printf "%s (%s): result %s, exit status %s, failed at %s, %s restarts\n", value["Id"], value["Description"],
+        value["Result"], value["ExecMainStatus"], value["InactiveEnterTimestamp"], value["NRestarts"]
+    }'
+  if [ "$lines" -gt 0 ]; then
+    journalctl --no-pager --output=short-iso --lines="$lines" --unit="$unit" 2> /dev/null | sed 's/^/  /'
+  fi
+done
