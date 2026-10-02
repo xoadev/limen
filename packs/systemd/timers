@@ -1,0 +1,26 @@
+#!/bin/sh
+#: description = "systemd timers: when each last ran and runs next, the unit it starts, and whether that unit's last run failed. Backups and cleanups that quietly stopped show up here"
+set -eu
+
+property() { printf '%s\n' "$1" | sed -n "s/^$2=//p"; }
+
+timers=$(systemctl list-units --type=timer --all --no-legend --plain --full --no-pager | awk '{ print $1 }')
+if [ -z "$timers" ]; then
+  echo "no timers"
+  exit 0
+fi
+rows=
+failing=
+for timer in $timers; do
+  timer_state=$(systemctl show --no-pager --property=Unit,ActiveState,LastTriggerUSec,NextElapseUSecRealtime -- "$timer")
+  unit=$(property "$timer_state" Unit)
+  unit_state=$(systemctl show --no-pager --property=Result,ActiveState -- "$unit")
+  result=$(property "$unit_state" Result)
+  [ "$result" = success ] || failing="$failing $unit"
+  last=$(property "$timer_state" LastTriggerUSec)
+  next=$(property "$timer_state" NextElapseUSecRealtime)
+  rows="$rows$timer ($(property "$timer_state" ActiveState)) -> $unit: last ${last:-never}, next ${next:-none}, unit $(property "$unit_state" ActiveState), last result $result
+"
+done
+echo "$(printf '%s\n' "$timers" | wc -l) timer(s); units whose last run did not succeed:${failing:- none}"
+printf '%s' "$rows"

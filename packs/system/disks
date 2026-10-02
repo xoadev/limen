@@ -1,0 +1,41 @@
+#!/bin/sh
+#: description = "The disks: size, model and whether each spins; SMART health and the attributes that warn of a failing disk (reallocated and pending sectors, wear, errors, temperature); and the state of software RAID"
+#: timeout = "2m"
+set -eu
+
+echo "disks:"
+if command -v lsblk > /dev/null 2>&1; then
+  # Without RAM disks (major 1) and loop devices (7).
+  lsblk --nodeps --exclude 1,7 --output NAME,SIZE,ROTA,TRAN,MODEL
+else
+  for device in /sys/block/*; do
+    name=${device##*/}
+    case $name in loop* | ram* | zram*) continue ;; esac
+    sectors=$(cat "$device/size")
+    echo "$name $((sectors / 2097152))G rotational=$(cat "$device/queue/rotational" 2> /dev/null || echo ?) $(sed 's/ *$//' "$device/device/model" 2> /dev/null || true)"
+  done
+fi
+
+echo
+if command -v smartctl > /dev/null 2>&1; then
+  # Health and the failure attributes only: -i would add serial numbers, which say nothing about health.
+  smartctl --scan | while read -r device _ type _; do
+    health=$(smartctl -H -d "$type" "$device" 2>&1 | sed -n 's/.*self-assessment test result: //p; s/^SMART Health Status: //p') || true
+    echo "$device ($type): SMART ${health:-unknown (no SMART, or not readable through this controller)}"
+    smartctl -A -d "$type" "$device" 2>&1 | awk '
+      $1 ~ /^(5|9|187|188|194|196|197|198|199)$/ && NF >= 10 { printf "  %s %s\n", $2, $10 }
+      /^(Critical Warning|Temperature:|Available Spare:|Percentage Used|Media and Data Integrity Errors|Power On Hours|Unsafe Shutdowns|Error Information Log Entries)/ {
+        sub(/:[ ]+/, " "); print "  " $0
+      }
+    ' || true
+  done
+else
+  echo "SMART: smartctl is not installed (package smartmontools), so there is no disk health here"
+fi
+
+if grep -q '^md' /proc/mdstat 2> /dev/null; then
+  echo
+  degraded=$(awk '/^md/ { name = $1 } /\[[U_]*_[U_]*\]/ { print name }' /proc/mdstat | tr '\n' ' ')
+  if [ -n "$degraded" ]; then echo "software RAID: degraded: $degraded"; else echo "software RAID: every array complete"; fi
+  cat /proc/mdstat
+fi

@@ -1,0 +1,39 @@
+#!/bin/sh
+#: description = "The network as this machine sees it: the default route, each interface with its state and addresses, the routes, and the DNS servers it asks"
+set -eu
+
+if ! command -v ip > /dev/null 2>&1; then
+  echo "no ip command (iproute2, or busybox's): showing ifconfig and route"
+  ifconfig -a 2> /dev/null || true
+  route -n 2> /dev/null || true
+  exit 0
+fi
+
+gateways=$(ip route show default 2> /dev/null | awk '$1 == "default" { via = ""; dev = ""; for (i = 1; i < NF; i++) { if ($i == "via") via = $(i + 1); if ($i == "dev") dev = $(i + 1) } printf "%s%s, ", (via != "" ? "via " via " on " : ""), dev }')
+if [ -n "$gateways" ]; then
+  echo "default route: ${gateways%, }"
+else
+  echo "no default route: this machine reaches only its own networks"
+fi
+
+echo
+echo "interfaces:"
+# -brief is iproute2's; busybox's ip has only the long form, one address per line with -o.
+ip -brief address 2> /dev/null || ip -o address | awk '{ print $2, $3, $4 }'
+
+echo
+echo "routes:"
+ip route
+ip -6 route 2> /dev/null | grep -v '^fe80::/64\|^multicast\|^anycast' || true
+
+echo
+echo "DNS:"
+if command -v resolvectl > /dev/null 2>&1 && resolvectl dns > /dev/null 2>&1; then
+  resolvectl dns
+else
+  # OpenWrt's dnsmasq takes its servers from this file; /etc/resolv.conf points at dnsmasq itself.
+  for file in /etc/resolv.conf /tmp/resolv.conf.d/resolv.conf.auto; do
+    [ -r "$file" ] || continue
+    echo "$file: $(awk '$1 == "nameserver" { printf "%s ", $2 }' "$file")"
+  done
+fi

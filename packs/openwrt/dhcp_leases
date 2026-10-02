@@ -1,0 +1,40 @@
+#!/bin/sh
+#: description = "The devices the router gave an address to: host name, IPv4 address, MAC and when the lease ends, static ones marked, and the IPv6 leases of odhcpd"
+set -eu
+
+leases=$(uci -q get dhcp.@dnsmasq[0].leasefile 2> /dev/null) || leases=/tmp/dhcp.leases
+# Static leases by MAC, from /etc/config/dhcp: `dhcp.cfg01.mac='aa:bb:…'`, or `'aa:…' 'cc:…'` for a host with several.
+static=$(uci -q show dhcp 2> /dev/null | sed -n "s/^dhcp\.[^.]*\.mac=//p" | tr -d "'" | tr 'A-F ' 'a-f\n') || true
+now=$(date +%s)
+
+if [ -r "$leases" ]; then
+  # dnsmasq's lease file: expiry (seconds since 1970, 0 for never), MAC, address, host name (* when none), client id.
+  awk -v now="$now" -v static="$static" '
+    BEGIN { count = split(static, macs, "\n"); for (i = 1; i <= count; i++) fixed[macs[i]] = 1 }
+    {
+      mac = tolower($2)
+      if ($1 == 0) ends = "never"
+      else if ($1 <= now) ends = "expired"
+      else ends = sprintf("in %dh%02dm", ($1 - now) / 3600, ($1 - now) % 3600 / 60)
+      rows[++total] = sprintf("%-28s %-16s %-18s %-12s %s", ($4 == "*" ? "-" : $4), $3, mac, ends, (mac in fixed) ? "static" : "dynamic")
+    }
+    END {
+      printf "%d IPv4 lease(s)\n", total
+      printf "%-28s %-16s %-18s %-12s %s\n", "HOST", "ADDRESS", "MAC", "ENDS", "KIND"
+      for (i = 1; i <= total; i++) print rows[i]
+    }
+  ' "$leases"
+else
+  echo "no IPv4 leases: $leases is not there (dnsmasq not running, or no lease given yet)"
+fi
+
+# odhcpd's, where it hands out IPv6 addresses: {"device": {"br-lan": {"leases": [...]}}}.
+ipv6=$(ubus call dhcp ipv6leases 2> /dev/null) || exit 0
+leases6=$(jsonfilter -q -s "$ipv6" -e '@.device[*].leases[*]') || true
+[ -n "$leases6" ] || exit 0
+echo
+echo "IPv6 leases (odhcpd):"
+printf '%s\n' "$leases6" | while read -r lease; do
+  host=$(jsonfilter -q -s "$lease" -e '@.hostname') || true
+  echo "${host:--} $(jsonfilter -q -s "$lease" -e '@["ipv6-addr"][*].address' | tr '\n' ' ')"
+done

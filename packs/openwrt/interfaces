@@ -1,0 +1,44 @@
+#!/bin/sh
+#: description = "OpenWrt's network interfaces (wan, lan…): whether each is up and for how long, its protocol and device, addresses, gateway and DNS servers"
+set -eu
+
+interfaces=$(ubus list 'network.interface.*' 2> /dev/null | sed 's/^network\.interface\.//') || true
+if [ -z "$interfaces" ]; then
+  echo "netifd does not answer on ubus (ubus list network.interface.*)"
+  exit 1
+fi
+up=0 down=
+rows=
+for name in $interfaces; do
+  status=$(ubus call "network.interface.$name" status)
+  field() {
+    for expression; do jsonfilter -q -s "$status" -e "$expression" || true; done | tr '\n' ' ' | sed 's/ $//'
+  }
+  # Each address object as address/mask.
+  addresses() {
+    for expression; do jsonfilter -q -s "$status" -e "$expression" || true; done | while read -r entry; do
+      printf '%s/%s ' "$(jsonfilter -s "$entry" -e '@.address')" "$(jsonfilter -s "$entry" -e '@.mask')"
+    done | sed 's/ $//'
+  }
+  if [ "$(field '@.up')" = true ]; then
+    up=$((up + 1))
+    seconds=$(field '@.uptime')
+    state="up $((seconds / 86400))d $((seconds % 86400 / 3600))h $((seconds % 3600 / 60))m"
+  else
+    down="$down $name"
+    errors=$(field '@.errors[*].code')
+    state="down${errors:+, errors: $errors}"
+  fi
+  device=$(field '@.l3_device')
+  [ -n "$device" ] || device=$(field '@.device')
+  rows="$rows$name: $state, $(field '@.proto') on ${device:-no device}
+"
+  detail() { [ -z "$2" ] || rows="$rows  $1: $2
+"; }
+  detail IPv4 "$(addresses '@["ipv4-address"][*]')"
+  detail IPv6 "$(addresses '@["ipv6-address"][*]' '@["ipv6-prefix-assignment"][*]')"
+  detail gateway "$(field '@.route[@.target="0.0.0.0"].nexthop' '@.route[@.target="::"].nexthop')"
+  detail DNS "$(field '@["dns-server"][*]')"
+done
+echo "$(printf '%s\n' "$interfaces" | wc -l) interfaces, $up up; down:${down:- none}"
+printf '%s' "$rows"

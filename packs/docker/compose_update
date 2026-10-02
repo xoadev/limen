@@ -1,0 +1,60 @@
+#!/bin/sh
+#: description = "Changes the machine: pulls the newest images of one Docker Compose project and recreates the containers whose image or configuration changed, then shows the project's state. Only projects listed in /etc/limen/compose-projects"
+#: timeout = "30m"
+#: [args.project]
+#: type = "string"
+#: pattern = '^[a-z0-9][a-z0-9_-]{0,62}$'
+#: description = "The Compose project's name, as compose_projects lists it"
+set -eu
+
+project=$LIMEN_ARG_PROJECT
+allowed=/etc/limen/compose-projects
+label=com.docker.compose.project
+
+# The operator's list, not the agent's choice: an update can bring breaking changes, and text in a log can lead the
+# model to call this. Under /etc/limen, which read_file never reads and only root writes.
+if ! sed 's/#.*//' "$allowed" 2> /dev/null | tr -s ' \t' '\n' | grep -qx -- "$project"; then
+  echo "refused: $project is not in $allowed (one project name per line; root writes it)"
+  exit 1
+fi
+
+# Where the project lives and its files, as Compose recorded them on its containers.
+where=$(docker ps --all --filter "label=$label=$project" \
+  --format "{{.Label \"$label.working_dir\"}}	{{.Label \"$label.config_files\"}}" | head -n 1)
+if [ -z "$where" ]; then
+  echo "no containers of the project $project: start it once by hand, so its directory and files are known"
+  exit 1
+fi
+directory=${where%%	*}
+files=${where#*	}
+cd "$directory"
+set -- --project-name "$project"
+old_ifs=$IFS
+IFS=,
+for file in $files; do set -- "$@" --file "$file"; done
+IFS=$old_ifs
+
+containers() { docker ps --all --filter "label=$label=$project" --format '{{.Names}} {{.ID}}' | sort; }
+before=$(containers)
+# A dropped connection must not stop it half way, with containers gone and not yet back.
+trap '' HUP PIPE
+log=/var/log/limen-compose-update.log
+status=0
+{
+  docker compose "$@" pull --quiet --ignore-buildable
+  docker compose "$@" up --detach --quiet-pull
+} > "$log" 2>&1 || status=$?
+if [ "$status" -ne 0 ]; then
+  tail -n 20 "$log"
+  echo "compose failed with exit $status; the whole output is in $log"
+  exit "$status"
+fi
+
+recreated=$(containers | grep -vxF -- "$before" | awk '{ printf "%s ", $1 }') || true
+if [ -n "$recreated" ]; then
+  echo "updated $project in $directory: recreated $recreated"
+else
+  echo "updated $project in $directory: nothing changed, every container kept"
+fi
+echo
+docker compose "$@" ps --all --format 'table {{.Name}}\t{{.Image}}\t{{.State}}\t{{.Status}}'

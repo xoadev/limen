@@ -1,0 +1,13 @@
+#!/bin/sh
+#: description = "What Docker takes on disk: images, containers, volumes and build cache, how much of each purge could free, and each volume with its size and how many containers use it. purge never deletes volumes"
+#: timeout = "5m"
+set -eu
+
+docker system df
+echo
+# The verbose form walks every volume, which takes a while on a big one; only its volume table is kept.
+docker system df --verbose | awk '
+  /^Local Volumes space usage:/ { listing = 1; next }
+  listing && /^$/ && printed { exit }
+  listing && NF { print; printed = 1 }
+'

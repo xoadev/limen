@@ -1,0 +1,37 @@
+#!/bin/sh
+#: description = "Each real file system: size, space and inodes used, and whether it is mounted read-only. Out of inodes, or remounted read-only by the kernel after errors, a disk looks full to programs while df shows space"
+set -eu
+
+# Memory, pseudo and image file systems are noise here; squashfs and iso9660 are read-only by nature (OpenWrt's /rom).
+pseudo='^(tmpfs|devtmpfs|ramfs|overlay|proc|sysfs|cgroup2?|devpts|efivarfs|nsfs|autofs|mqueue|debugfs|tracefs|securityfs|pstore|bpf|configfs|fusectl|hugetlbfs|binfmt_misc|rpc_pipefs|nfsd|fuse\.snapfuse|fuse\.lxcfs|fuse\.portal|squashfs|iso9660)$'
+space=$(df -kP 2> /dev/null) || true
+# busybox's df may lack -i: then the inode columns say "?".
+inodes=$(df -iP 2> /dev/null) || inodes=
+
+{
+  echo "@space"
+  printf '%s\n' "$space"
+  echo "@inodes"
+  printf '%s\n' "$inodes"
+  echo "@mounts"
+  cat /proc/mounts
+} | awk -v pseudo="$pseudo" '
+  /^@/ { section = $0; next }
+  section == "@space" && FNR > 0 && $2 ~ /^[0-9]+$/ { size[$NF] = $2; used[$NF] = $5 }
+  section == "@inodes" && $2 ~ /^[0-9]+$/ { iused[$NF] = ($2 > 0 ? $5 : "-") }
+  section == "@mounts" && $3 !~ pseudo && ($2 in size) && !seen[$2]++ {
+    split($4, options, ",")
+    mode = options[1]
+    kib = size[$2]
+    human = kib >= 1073741824 ? sprintf("%.1fT", kib / 1073741824) : kib >= 1048576 ? sprintf("%.1fG", kib / 1048576) : sprintf("%.0fM", kib / 1024)
+    inode = ($2 in iused) ? iused[$2] : "?"
+    rows[++count] = sprintf("%-24s %-8s %-24s %7s %5s %7s %s", $2, $3, $1, human, used[$2], inode, mode)
+    if (used[$2] + 0 >= 90 || inode + 0 >= 90) full = full " " $2
+    if (mode == "ro") readonly = readonly " " $2
+  }
+  END {
+    printf "%d file systems; 90%% full or more:%s; read-only:%s\n", count, (full ? full : " none"), (readonly ? readonly : " none")
+    printf "%-24s %-8s %-24s %7s %5s %7s %s\n", "MOUNT", "TYPE", "DEVICE", "SIZE", "USED", "INODES", "MODE"
+    for (i = 1; i <= count; i++) print rows[i]
+  }
+'

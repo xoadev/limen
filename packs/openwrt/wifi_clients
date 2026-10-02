@@ -1,0 +1,41 @@
+#!/bin/sh
+#: description = "The devices on each Wi-Fi network of the router: MAC, host name from the DHCP leases, signal, when last heard and the rates. Never the networks' keys"
+set -eu
+
+if ! command -v iwinfo > /dev/null 2>&1; then
+  echo "no iwinfo: this router has no Wi-Fi, or its driver tools are not installed"
+  exit 0
+fi
+leases=$(uci -q get dhcp.@dnsmasq[0].leasefile 2> /dev/null) || leases=/tmp/dhcp.leases
+names=$(awk '$4 != "*" { print tolower($2), $4 }' "$leases" 2> /dev/null) || names=
+
+# `iwinfo` with no argument lists each wireless interface as `<name>  ESSID: "<ssid>"` on a line of its own.
+radios=$(iwinfo 2> /dev/null | awk '/ESSID:/ { print $1 }')
+if [ -z "$radios" ]; then
+  echo "no wireless interface is up"
+  exit 0
+fi
+total=0
+for radio in $radios; do
+  info=$(iwinfo "$radio" info)
+  ssid=$(printf '%s\n' "$info" | sed -n 's/.*ESSID: "\(.*\)".*/\1/p')
+  mode=$(printf '%s\n' "$info" | sed -n 's/.*Mode: \([^ ]*\).*Channel: \([0-9]*\).*/\1, channel \2/p')
+  # assoclist: `<MAC>  <signal> dBm / <noise> dBm (SNR n)  <n> ms ago`, then indented RX: and TX: lines.
+  clients=$(iwinfo "$radio" assoclist 2> /dev/null | awk -v names="$names" '
+    BEGIN { count = split(names, pairs, "\n"); for (i = 1; i <= count; i++) { split(pairs[i], pair, " "); host[pair[1]] = pair[2] } }
+    /^[0-9A-Fa-f][0-9A-Fa-f]:/ {
+      mac = tolower($1); signal = $2; heard = "?"; rx = "?"
+      if (match($0, /[0-9]+ ms ago/)) heard = substr($0, RSTART, RLENGTH)
+      next
+    }
+    $1 == "RX:" { rx = rate($2 " " $3) }
+    $1 == "TX:" { printf "  %-17s %-24s %s dBm, heard %s, rx %s, tx %s\n", mac, (mac in host) ? host[mac] : "-", signal, heard, rx, rate($2 " " $3) }
+    # `866.7 MBit/s,`: the rate, without the comma before the MCS.
+    function rate(text) { sub(/,$/, "", text); return text }
+  ')
+  count=$(printf '%s' "$clients" | grep -c . || true)
+  total=$((total + count))
+  echo "$radio \"$ssid\" ($mode): $count client(s)"
+  [ -z "$clients" ] || printf '%s\n' "$clients"
+done
+echo "$total client(s) in all"

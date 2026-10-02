@@ -1,0 +1,35 @@
+#!/bin/sh
+#: description = "Changes the machine: removes the packages nothing needs any more, old kernels among them (never the running one), and says what went and how much space it freed. Configuration files stay unless purge"
+#: timeout = "15m"
+#: [args.purge]
+#: type = "bool"
+#: default = false
+#: description = "Also delete the configuration files of what is removed"
+set -eu
+
+# What would go, before anything does: nothing to remove is an answer, not a run of apt.
+candidates=$(apt-get --simulate autoremove 2> /dev/null | awk '$1 == "Remv" { print $2 }')
+if [ -z "$candidates" ]; then
+  echo "nothing to remove: every installed package is needed"
+  exit 0
+fi
+
+set -- autoremove --yes --quiet=1
+[ "${LIMEN_ARG_PURGE:-false}" = false ] || set -- "$@" --purge
+
+# As in upgrade: a dropped connection must not stop dpkg half way.
+trap '' HUP PIPE
+export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l
+log=/var/log/limen-autoremove.log
+before=$(df -kP / | awk 'NR == 2 { print $4 }')
+status=0
+apt-get "$@" > "$log" 2>&1 || status=$?
+after=$(df -kP / | awk 'NR == 2 { print $4 }')
+
+if [ "$status" -ne 0 ]; then
+  tail -n 20 "$log"
+  echo "apt failed with exit $status; the whole output is in $log"
+  exit "$status"
+fi
+echo "removed $(printf '%s\n' "$candidates" | wc -l) package(s): $(printf '%s\n' "$candidates" | tr '\n' ' ')"
+echo "freed about $(((after - before) / 1024)) MiB on /"

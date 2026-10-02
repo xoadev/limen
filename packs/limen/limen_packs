@@ -1,0 +1,52 @@
+#!/bin/sh
+#: description = "The packs this machine offers, as limen.toml lists them: how many scripts each has, the released version of each one unpacked from a release (a folder named <pack>@X.Y.Z), and whether a newer release of it is published. Changes nothing"
+#: timeout = "1m"
+set -eu
+
+repo=xoadev/limen
+
+# limen lint names every pack of scripts.packs on a line of its own: `<path>: <n> file(s)`.
+packs=$(limen lint 2>&1 | sed -n 's/^\(\/.*\): \([0-9]*\) file(s)$/\1 \2/p') || true
+if [ -z "$packs" ]; then
+  echo "no packs in scripts.packs of /etc/limen/limen.toml: this machine offers no scripts"
+  exit 0
+fi
+
+# Published pack releases only: a draft is not visible without a token, and a pack's release is never the latest.
+tags=
+if command -v curl > /dev/null 2>&1; then
+  tags=$(curl -fsS --proto '=https' --tlsv1.2 --retry 3 "https://api.github.com/repos/$repo/releases?per_page=100" |
+    grep -o '"tag_name": *"pack-[a-z0-9_-]*-v[0-9]*\.[0-9]*\.[0-9]*"' | sed 's/.*"pack-\(.*\)-v\(.*\)"/\1 \2/') ||
+    echo "cannot ask GitHub for the packs' releases; showing what is installed only"
+fi
+
+echo "$(printf '%s\n' "$packs" | wc -l) pack(s)"
+printf '%s\n' "$packs" | while read -r path files; do
+  folder=${path##*/}
+  case $folder in
+    *@[0-9]*.[0-9]*.[0-9]*) ;;
+    *)
+      echo "$path: $files file(s), not from a release (no @version in its name)"
+      continue
+      ;;
+  esac
+  pack=${folder%@*}
+  version=${folder##*@}
+  # The newest, numerically field by field: 0.1.10 is newer than 0.1.9.
+  latest=$(printf '%s\n' "$tags" | awk -v pack="$pack" '
+    $1 == pack {
+      split($2, field, ".")
+      key = sprintf("%09d%09d%09d", field[1], field[2], field[3])
+      if (key > best) { best = key; latest = $2 }
+    }
+    END { print latest }
+  ')
+  if [ -z "$latest" ]; then
+    news="no published release of $pack found"
+  elif [ "$(printf '%s\n%s\n' "$version" "$latest" | sort -t . -k 1,1n -k 2,2n -k 3,3n | tail -n 1)" = "$version" ]; then
+    news="up to date"
+  else
+    news="$latest is published: unpack it beside this one and point limen.toml at it"
+  fi
+  echo "$path: $pack $version, $files file(s), $news"
+done

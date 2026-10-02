@@ -1,0 +1,26 @@
+#!/bin/sh
+#: description = "Docker Compose projects: each one's directory and compose files, its containers and their state, and whether compose_update may update it"
+set -eu
+
+allowed=/etc/limen/compose-projects
+label=com.docker.compose.project
+# From the containers' labels, not `docker compose ls`: the labels are there even without the compose plugin.
+containers=$(docker ps --all --filter "label=$label" \
+  --format "{{.Label \"$label\"}}	{{.Label \"$label.working_dir\"}}	{{.Names}}	{{.State}}	{{.Status}}" | sort)
+if [ -z "$containers" ]; then
+  echo "no containers started by Docker Compose"
+  exit 0
+fi
+permitted=$(sed 's/#.*//' "$allowed" 2> /dev/null | tr -s ' \t' '\n' | grep -v '^$' || true)
+
+printf '%s\n' "$containers" | awk -F '\t' -v permitted="$permitted" '
+  BEGIN { count = split(permitted, names, "\n"); for (i = 1; i <= count; i++) update[names[i]] = 1 }
+  $1 != project {
+    if (project != "") print ""
+    project = $1
+    projects++
+    printf "%s in %s (compose_update: %s)\n", $1, $2, ($1 in update) ? "allowed" : "not allowed"
+  }
+  { printf "  %-40s %-10s %s\n", $3, $4, $5; if ($4 != "running") stopped++ }
+  END { printf "\n%d project(s), %d container(s) not running\n", projects, stopped }
+'

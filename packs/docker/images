@@ -1,0 +1,20 @@
+#!/bin/sh
+#: description = "Docker images with their size and age, and whether a container (running or not) uses each: the unused ones are what purge with images deletes, the dangling ones what purge always deletes"
+set -eu
+
+# Every container's image by ID: names can point elsewhere once an image is pulled again.
+used=$(docker ps --all --quiet | xargs -r docker inspect --format '{{.Image}}' | sort -u)
+docker image ls --no-trunc --format '{{.ID}}\t{{.Repository}}:{{.Tag}}\t{{.CreatedSince}}\t{{.Size}}' |
+  awk -F '\t' -v used="$used" '
+    BEGIN { count = split(used, ids, "\n"); for (i = 1; i <= count; i++) inuse[ids[i]] = 1 }
+    {
+      name = ($2 == "<none>:<none>") ? "<dangling>" : $2
+      if ($1 in inuse) { state = "in use"; inuses++ } else if (name == "<dangling>") { state = "dangling"; dangling++ } else { state = "unused"; unused++ }
+      rows[++total] = sprintf("%-60s %-12s %-16s %-10s %s", name, substr($1, 8, 12), $3, $4, state)
+    }
+    END {
+      printf "%d image(s): %d in use, %d unused, %d dangling\n", total, inuses, unused, dangling
+      printf "%-60s %-12s %-16s %-10s %s\n", "IMAGE", "ID", "CREATED", "SIZE", "STATE"
+      for (i = 1; i <= total; i++) print rows[i]
+    }
+  '

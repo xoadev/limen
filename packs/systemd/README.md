@@ -8,6 +8,8 @@ Units and their journals, on a machine with systemd.
 | `unit` | One unit: state, restarts, main process, memory, unit file, last journal lines | no |
 | `unit_logs` | One unit's journal over a period, by priority | no |
 | `journal` | The whole journal over a period, by priority, or all of an earlier boot | no |
+| `failed_units` | Every failed unit with its result, exit status, when it failed and its last journal lines | no |
+| `timers` | Every timer: when it last ran and runs next, the unit it starts and whether that unit's last run succeeded | no |
 | `restart_unit` | Restarts one unit | **yes** |
 
 Needs `systemctl` and `journalctl`.

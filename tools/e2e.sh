@@ -259,6 +259,12 @@ EOF
   expect "limen run on the node exits with the script's code" "exit 1" \
     docker exec "$node" sh -c 'limen run disk --arg threshold=1 >/dev/null; echo "exit $?"'
   expect "an example pack runs: system's processes" 'sshd' limen call debian processes
+  expect "system's network: the default route" 'default route: via' limen call debian network
+  expect "system's filesystems: space and inodes" 'MOUNT' limen call debian filesystems
+  expect "system's time: the clock and its zone" 'time zone' limen call debian time
+  expect "system's reach: a port that listens" 'port 22: open' limen call debian reach --arg host=127.0.0.1 --arg port=22
+  expect "and one that doesn't" 'port 9: closed' limen call debian reach --arg host=127.0.0.1 --arg port=9
+  expect "a host can't be an option" 'host does not match' limen call debian reach --arg host=-c
   expect "history records the client" '"client": "' limen call debian history --arg lines=3
   expect "and a script's exit code" '"exit": 1' limen call debian history --arg lines=40
   docker exec "$node" sh -c 'cp /etc/limen/kept.toml /tmp/kept.toml && printf "max_response = 300\n" >> /etc/limen/kept.toml'
@@ -327,6 +333,9 @@ suite_openwrt() {
   port=$(docker port "$node" 22/tcp | head -1 | sed 's/.*://')
   docker cp "$binary" "$node:/tmp/limen"
   docker cp "$ROOT/install.sh" "$node:/tmp/install.sh"
+  docker exec "$node" mkdir -p /opt/state
+  docker cp "$ROOT/packs" "$node:/opt/state/"
+  docker exec "$node" sh -c 'chown -R root:root /opt/state && chmod -R go-w /opt/state'
   # Someone already administers this router with their own key: limen must leave it alone.
   docker exec "$node" sh -c 'mkdir -p /etc/dropbear && echo "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAdminAdminAdminAdminAdminAdminAdminAdmin1 admin" > /etc/dropbear/authorized_keys'
 
@@ -349,7 +358,7 @@ suite_openwrt() {
 allow = ["/etc/config/**", "/etc/openwrt_release"]
 
 [scripts]
-packs = ["$pack"]
+packs = ["$pack", "/opt/state/packs/system", "/opt/state/packs/openwrt"]
 EOF
   e2e_pack "$node" "$pack"
   host_key=$(docker exec "$node" dropbearkey -y -f /etc/dropbear/dropbear_ed25519_host_key | grep '^ssh-ed25519' | cut -d' ' -f1,2)
@@ -364,6 +373,12 @@ EOF
   expect "a script runs under busybox" 'user root cwd /' limen call openwrt where
   expect "and one changes the machine" 'marked router' limen call openwrt mark --arg word=router
   expect "it did" "present" docker exec "$node" sh -c 'test -f /tmp/limen-marked && echo present'
+  # The system pack under busybox: its ip, df, awk and ping, and no getent.
+  expect "system's network under busybox" 'default route: via' limen call openwrt network
+  expect "system's filesystems under busybox" 'MOUNT' limen call openwrt filesystems
+  expect "system's time: sysntpd" 'sysntpd: ' limen call openwrt time
+  expect "system's reach: ping, a name from /etc/hosts" 'localhost answers ping' limen call openwrt reach --arg host=localhost
+  expect "openwrt's dhcp_leases without dnsmasq running" 'no IPv4 leases' limen call openwrt dhcp_leases
 
   echo "e2e/openwrt: the gate is the only way in"
   read -ra hub_ssh <<< "$(ssh_as hub root "$port")"
