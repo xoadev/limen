@@ -6,7 +6,7 @@ SHELL := /bin/bash
 # What `cli` and `docker` compile. `debug` links in seconds; a published binary is `release`.
 VARIANT ?= debug
 
-.PHONY: check lint build test cli local-install docker e2e pack hooks clean help
+.PHONY: check lint build test cli local-install docker e2e pack pack-drafts pack-release release hooks clean help
 
 check: lint build test ## Everything CI runs (`make -k check` to see every failure at once)
 	@echo "check: OK"
@@ -34,6 +34,15 @@ e2e: cli ## End to end in containers, Debian and OpenWrt (SUITE=debian|openwrt|j
 
 pack: ## One pack as it is released, in dist/: PACK=<pack> (VERSION=X.Y.Z, else dev)
 	@PACK=$(PACK) VERSION=$(VERSION) tools/pack.sh
+
+pack-drafts: ## Run packs.yml on main to rewrite every pack's draft release. Needs gh
+	@tools/workflow.sh drafts
+
+pack-release: ## Run packs.yml on main for PACK=<pack>: its draft built, published and attested only with PUBLISH=1. Needs gh
+	@tools/workflow.sh pack "$(PACK)" "$(PUBLISH)"
+
+release: ## Run release.yml on main: limen built, tested and started, published only with PUBLISH=1. Needs gh
+	@tools/workflow.sh release "$(PUBLISH)"
 
 hooks: ## Install the git hooks of tools/ (pre-push: nothing is pushed to main)
 	@tools/hooks-install.sh
