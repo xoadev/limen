@@ -1,5 +1,6 @@
 #!/bin/sh
 #: description = "The system log (logread) of every process, or of one"
+#: read_only = true
 #: [args.name]
 #: type = "string"
 #: required = false

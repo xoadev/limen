@@ -1,5 +1,6 @@
 #!/bin/sh
 #: description = "The log of one Docker container over the last while, with timestamps, its stdout and stderr together"
+#: read_only = true
 #: [args.name]
 #: type = "string"
 #: pattern = '^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$'

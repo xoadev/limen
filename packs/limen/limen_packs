@@ -1,5 +1,6 @@
 #!/bin/sh
 #: description = "The packs this machine offers, as limen.toml lists them: how many scripts each has, the released version of each one unpacked from a release (a folder named <pack>@X.Y.Z), and whether a newer release of it is published. Changes nothing"
+#: read_only = true
 #: timeout = "1m"
 set -eu
 

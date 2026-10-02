@@ -1,5 +1,6 @@
 #!/bin/sh
 #: description = "One systemd unit: state and since when, restarts, main process, memory, unit file, and its last journal lines"
+#: read_only = true
 #: [args.name]
 #: type = "string"
 #: pattern = '^[A-Za-z0-9@_:\\][A-Za-z0-9@._:\\-]{0,254}$'

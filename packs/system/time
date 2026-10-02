@@ -1,5 +1,6 @@
 #!/bin/sh
 #: description = "The machine's clock: the time in UTC and its time zone, whether it is synchronised by NTP and by which service, and how far off it is. A clock that is off breaks TLS, logins and logs"
+#: read_only = true
 #: timeout = "30s"
 set -eu
 

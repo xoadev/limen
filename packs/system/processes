@@ -1,5 +1,6 @@
 #!/bin/sh
 #: description = "The processes using the most CPU or memory: pid, user, CPU and memory share, running time, name"
+#: read_only = true
 #: [args.sort]
 #: type = "enum"
 #: values = ["cpu", "memory"]

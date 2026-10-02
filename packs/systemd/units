@@ -1,5 +1,6 @@
 #!/bin/sh
 #: description = "systemd units of one type and their state: load, active, sub-state, description"
+#: read_only = true
 #: [args.type]
 #: type = "enum"
 #: values = ["service", "timer", "socket", "mount", "path", "target", "all"]

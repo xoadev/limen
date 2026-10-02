@@ -1,5 +1,6 @@
 #!/bin/sh
 #: description = "The network as this machine sees it: the default route, each interface with its state and addresses, the routes, and the DNS servers it asks"
+#: read_only = true
 set -eu
 
 if ! command -v ip > /dev/null 2>&1; then

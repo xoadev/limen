@@ -1,5 +1,6 @@
 #!/bin/sh
 #: description = "Docker Compose projects: each one's directory and compose files, its containers and their state, and whether compose_update may update it"
+#: read_only = true
 set -eu
 
 allowed=/etc/limen/compose-projects

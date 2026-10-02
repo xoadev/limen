@@ -1,5 +1,6 @@
 #!/bin/sh
 #: description = "systemd timers: when each last ran and runs next, the unit it starts, and whether that unit's last run failed. Backups and cleanups that quietly stopped show up here"
+#: read_only = true
 set -eu
 
 property() { printf '%s\n' "$1" | sed -n "s/^$2=//p"; }

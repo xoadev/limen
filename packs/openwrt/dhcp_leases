@@ -1,5 +1,6 @@
 #!/bin/sh
 #: description = "The devices the router gave an address to: host name, IPv4 address, MAC and when the lease ends, static ones marked, and the IPv6 leases of odhcpd"
+#: read_only = true
 set -eu
 
 leases=$(uci -q get dhcp.@dnsmasq[0].leasefile 2> /dev/null) || leases=/tmp/dhcp.leases

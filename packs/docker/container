@@ -1,5 +1,6 @@
 #!/bin/sh
 #: description = "One Docker container: image, state, health, restarts and policy, mounts, ports, networks, labels. Never its environment"
+#: read_only = true
 #: [args.name]
 #: type = "string"
 #: pattern = '^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$'

@@ -1,5 +1,6 @@
 #!/bin/sh
 #: description = "systemd units that have failed, each with why (its result and exit status), since when, and its last journal lines. The first thing to look at on a machine that misbehaves"
+#: read_only = true
 #: [args.lines]
 #: type = "int"
 #: default = 5

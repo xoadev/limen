@@ -1,5 +1,6 @@
 #!/bin/sh
 #: description = "OpenWrt services: whether each starts at boot and how many of its procd instances are running"
+#: read_only = true
 set -eu
 
 # Only the running flags of procd's list: its instances also carry command lines and environments.

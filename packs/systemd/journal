@@ -1,5 +1,6 @@
 #!/bin/sh
 #: description = "The whole system journal, every unit and the kernel, over the last while, or all of an earlier boot's (`boot`), which is how to see what happened before a crash or reboot"
+#: read_only = true
 #: [args.since]
 #: type = "string"
 #: default = "1h"

@@ -1,5 +1,6 @@
 #!/bin/sh
 #: description = "Packages with a newer version in OpenWrt's feeds, after refreshing the lists (opkg, or apk from OpenWrt 25). Upgrading packages one by one can break a router: a new release goes through sysupgrade"
+#: read_only = true
 #: timeout = "5m"
 #: [args.refresh]
 #: type = "bool"

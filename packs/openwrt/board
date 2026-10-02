@@ -1,5 +1,6 @@
 #!/bin/sh
 #: description = "The router: model, board name, hostname, kernel, and the OpenWrt release and target"
+#: read_only = true
 set -eu
 
 exec ubus call system board
