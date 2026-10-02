@@ -378,9 +378,9 @@ impl McpServer {
         self.questions.lock().expect("nothing panics holding the questions").remove(&id);
         let verdict = match answer {
             Ok(answer) => verdict(&answer),
-            Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => {
-                Err(format!("no answer within {}s", timeout.as_secs()))
-            }
+            Err(RecvTimeoutError::Timeout) => Err(format!("no answer within {}s", timeout.as_secs())),
+            // [no_more_answers] dropped the question: the client went away while it waited.
+            Err(RecvTimeoutError::Disconnected) => Err("the client is gone, and nobody can answer".into()),
         };
         (self.log)(&format!("tool={script} node={node} approval={}", verdict.as_ref().map_or("no", |()| "yes")));
         verdict
@@ -1090,7 +1090,7 @@ mod tests {
         }
         server.no_more_answers();
         let result = call.join().unwrap();
-        assert!(text_of(&result).starts_with("not approved"), "{result}");
+        assert!(text_of(&result).starts_with("not approved: the client is gone"), "{result}");
         assert!(text_of(&call_tool(&server, "purge", &json!({"node": "nas"}))).contains("the client is gone"));
         assert_eq!(runs(&client), 0);
     }
