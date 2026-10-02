@@ -3,7 +3,7 @@
 
 use super::{NodeClient, internal};
 use crate::os::{fs, proc, sys};
-use limen_core::config::hub::{HubConfig, NodeEntry};
+use limen_core::config::hub::{Approval, HubConfig, NodeEntry};
 use limen_core::join;
 use limen_core::protocol::{ErrorCode, LimenError, NodeRequest, NodeResponse, Result, error};
 use serde_json::{Map, Value};
@@ -127,6 +127,10 @@ impl NodeClient for SshClient {
             Ok(result) => node_response(node, &result, timeout),
             Err(cause) => NodeResponse::failure(&internal(cause)),
         }
+    }
+
+    fn approval(&self) -> Result<Approval> {
+        Ok(self.config.approval.clone())
     }
 }
 

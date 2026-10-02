@@ -1,7 +1,7 @@
 //! How the MCP server is reached (spec §9): newline-delimited JSON-RPC on stdio, or HTTP.
 
 use super::dir::{Hub, LiveHub};
-use super::mcp::McpServer;
+use super::mcp::{self, McpServer};
 use super::server::{self, Handler, Head, Limits, Response};
 use super::{NodeClient, constant_time_eq};
 use crate::os::sys;
@@ -18,16 +18,35 @@ const MAX_ARRIVAL_BODY: usize = 16 * 1024;
 const JOIN_PREFIX: &str = "/join/";
 
 /// `limen mcp`: newline-delimited JSON-RPC on stdin and stdout. Logs go to stderr: stdout is the protocol.
+///
+/// Each `tools/call` runs in a thread of its own: one that waits for a person's approval holds up no other, and the
+/// client's answer to that question arrives on this same stdin. When stdin ends, the calls under way finish first.
 pub fn stdio(client: Arc<dyn NodeClient>) {
-    let server = McpServer::new(client, Some(Box::new(sys::say)), Box::new(sys::log));
+    let server = Arc::new(McpServer::new(client, Some(Box::new(sys::say)), Box::new(sys::log)));
+    let mut calls = Vec::new();
     for line in std::io::stdin().lock().lines() {
-        let Ok(line) = line else { return };
+        let Ok(line) = line else { break };
         if line.trim().is_empty() {
             continue;
         }
-        if let Some(answer) = server.handle(&line) {
-            sys::say(&answer);
+        if mcp::is_tool_call(&line) {
+            let server = server.clone();
+            calls.push(std::thread::spawn(move || answer(&server, &line)));
+            calls.retain(|call| !call.is_finished());
+        } else {
+            answer(&server, &line);
         }
+    }
+    // Nobody is left to answer a question: the calls waiting for one end now, not running.
+    server.no_more_answers();
+    for call in calls {
+        call.join().ok();
+    }
+}
+
+fn answer(server: &McpServer, line: &str) {
+    if let Some(answer) = server.handle(line) {
+        sys::say(&answer);
     }
 }
 

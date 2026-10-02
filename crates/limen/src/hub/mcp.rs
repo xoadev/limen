@@ -10,7 +10,9 @@ use limen_core::requests::{self, RequestDef};
 use limen_core::scripts::{self, Catalog, ScriptSpec};
 use limen_core::version::VERSION;
 use serde_json::{Map, Value, json};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
@@ -38,8 +40,9 @@ const NODES_DESCRIPTION: &str = "The machines this server reaches: whether each 
 pub const INSTRUCTIONS: &str = "Access to Linux machines through limen. Every tool takes a `node`; call `nodes` first to \
      see them and the scripts each offers. Besides reading the files a node allows, you can only run the scripts it \
      offers, with the arguments they declare; some change the machine, so run those when the task calls for it, and \
-     say what you ran. A `denied` answer is the node's decision, not an error to work around. Every script's output \
-     can be narrowed with `grep` and `tail`.";
+     say what you ran. A `denied` answer is the node's decision, not an error to work around. Some scripts wait for a \
+     person to approve each run: `not approved` is their decision, so don't ask again unless they say so. Every \
+     script's output can be narrowed with `grep` and `tail`.";
 
 /// Each node's last answer to `hello`.
 type Hellos = BTreeMap<String, NodeResponse>;
@@ -82,6 +85,13 @@ pub struct McpServer {
     known: Mutex<Option<Known>>,
     /// Held while the nodes are asked: requests that find the catalogs stale wait for one refresh, not start theirs.
     refreshing: Mutex<()>,
+    /// Whether the client said, in `initialize`, that it can put a question to a person (MCP elicitation).
+    client_asks: AtomicBool,
+    /// The hub's questions waiting for the client's answer, by their id.
+    questions: Mutex<HashMap<String, mpsc::Sender<Value>>>,
+    /// Set when the client is gone: a question asked now would wait for nobody.
+    unanswerable: AtomicBool,
+    asked: AtomicU64,
     refresh_every: Duration,
 }
 
@@ -149,6 +159,10 @@ impl McpServer {
             log,
             known: Mutex::new(None),
             refreshing: Mutex::new(()),
+            client_asks: AtomicBool::new(false),
+            questions: Mutex::new(HashMap::new()),
+            unanswerable: AtomicBool::new(false),
+            asked: AtomicU64::new(0),
             refresh_every: REFRESH_EVERY,
         }
     }
@@ -167,6 +181,10 @@ impl McpServer {
             Err(_) => return Some(rpc_error(&Value::Null, PARSE_ERROR, "invalid JSON")),
         };
         let id = message.get("id").cloned();
+        if message.get("method").is_none() && (message.contains_key("result") || message.contains_key("error")) {
+            self.answered(id.as_ref(), Value::Object(message));
+            return None;
+        }
         let Some(method) = message.get("method").and_then(Value::as_str) else {
             return id.map(|id| rpc_error(&id, INVALID_REQUEST, "no method"));
         };
@@ -194,6 +212,11 @@ impl McpServer {
         if let Some(known) = self.known().as_mut() {
             known.stale = true;
         }
+        // Form questions: an empty `elicitation` (2025-06-18) or one that lists `form` (2025-11-25).
+        let elicitation = params.get("capabilities").and_then(|capabilities| capabilities.get("elicitation"));
+        let asks =
+            elicitation.and_then(Value::as_object).is_some_and(|modes| modes.is_empty() || modes.contains_key("form"));
+        self.client_asks.store(asks, Ordering::SeqCst);
         let asked = params.get("protocolVersion").and_then(Value::as_str);
         let version = asked.filter(|version| PROTOCOL_VERSIONS.contains(version)).unwrap_or(PROTOCOL_VERSIONS[0]);
         json!({
@@ -309,6 +332,8 @@ impl McpServer {
             return self.nodes();
         }
         let tool = self.find_tool(name)?;
+        let approval = self.client.approval()?;
+        let needs_approval = matches!(&tool, Tool::Script { spec, .. } if approval.needed(name, spec.read_only));
         let Some(node) = args.get("node").and_then(Value::as_str).map(String::from) else {
             return Ok(tool_error("missing argument 'node'"));
         };
@@ -317,9 +342,63 @@ impl McpServer {
             return Ok(tool_error(&format!("no node named '{node}'; the nodes are {}", nodes.join(", "))));
         }
         args.shift_remove("node");
-        match tool.node_call(&node, args) {
-            Ok(call) => Ok(self.send(name, &node, &call)),
-            Err(refusal) => Ok(tool_error(&refusal)),
+        let call = match tool.node_call(&node, args) {
+            Ok(call) => call,
+            Err(refusal) => return Ok(tool_error(&refusal)),
+        };
+        if needs_approval && let Err(why) = self.approved(name, &node, &call, approval.timeout) {
+            (self.log)(&format!("tool={name} node={node} not approved: {why}"));
+            return Ok(tool_error(&format!("not approved: {why}; nothing ran on {node}")));
+        }
+        Ok(self.send(name, &node, &call))
+    }
+
+    /// Asks the person at the client whether [call] of [script] may run on [node], and waits up to [timeout]: Ok only
+    /// for an explicit yes. The question goes to the client's interface, never to the model.
+    fn approved(&self, script: &str, node: &str, call: &NodeCall, timeout: Duration) -> Result<(), String> {
+        let Some(send) = &self.notify else {
+            return Err(format!(
+                "{script} needs a person's approval, and over HTTP the hub can't ask one yet; use `limen mcp`, or \
+                 take {script} out of [approval] in the hub's limen.toml"
+            ));
+        };
+        if self.unanswerable.load(Ordering::SeqCst) {
+            return Err("the client is gone, and nobody can answer".into());
+        }
+        if !self.client_asks.load(Ordering::SeqCst) {
+            return Err(format!(
+                "{script} needs a person's approval, and this MCP client declares no elicitation to ask one with"
+            ));
+        }
+        let id = format!("limen-approval-{}", self.asked.fetch_add(1, Ordering::SeqCst));
+        let (answer_to, answers) = mpsc::channel();
+        self.questions.lock().expect("nothing panics holding the questions").insert(id.clone(), answer_to);
+        send(&question(&id, script, node, call).to_string());
+        let answer = answers.recv_timeout(timeout);
+        self.questions.lock().expect("nothing panics holding the questions").remove(&id);
+        let verdict = match answer {
+            Ok(answer) => verdict(&answer),
+            Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => {
+                Err(format!("no answer within {}s", timeout.as_secs()))
+            }
+        };
+        (self.log)(&format!("tool={script} node={node} approval={}", verdict.as_ref().map_or("no", |()| "yes")));
+        verdict
+    }
+
+    /// The client is gone: the questions waiting end unanswered, and no new one is asked.
+    pub fn no_more_answers(&self) {
+        self.unanswerable.store(true, Ordering::SeqCst);
+        self.questions.lock().expect("nothing panics holding the questions").clear();
+    }
+
+    /// Hands the client's answer to the question with [id] that waits for it; an answer nothing waits for —too late,
+    /// or to no question of ours— goes nowhere.
+    fn answered(&self, id: Option<&Value>, answer: Value) {
+        let Some(id) = id.and_then(Value::as_str) else { return };
+        if let Some(waiting) = self.questions.lock().expect("nothing panics holding the questions").remove(id) {
+            // The asker may have stopped waiting just now: then nobody needs this answer.
+            let _ = waiting.send(answer);
         }
     }
 
@@ -479,6 +558,57 @@ fn read_only_tool(name: &str, description: &str, input_schema: &Value) -> Value 
     })
 }
 
+/// Whether [line] is a `tools/call`: what may run long, or wait for a person, and so gets a thread of its own.
+pub fn is_tool_call(line: &str) -> bool {
+    serde_json::from_str::<Value>(line).is_ok_and(|message| message["method"] == "tools/call")
+}
+
+/// The `elicitation/create` request that asks whether [call] of [script] may run on [node]: what would run, exactly,
+/// and a yes or a no.
+fn question(id: &str, script: &str, node: &str, call: &NodeCall) -> Value {
+    let arguments = match call.args.get("args") {
+        Some(Value::Object(args)) if !args.is_empty() => Value::Object(args.clone()).to_string(),
+        _ => "none".into(),
+    };
+    json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "method": "elicitation/create",
+        "params": {
+            "message": format!(
+                "The agent wants to run the script {script} on {node}, with arguments: {arguments}. \
+                 limen asks a person before running it ([approval] in the hub's limen.toml)."
+            ),
+            "requestedSchema": {
+                "type": "object",
+                "properties": {
+                    "approve": {
+                        "type": "boolean",
+                        "title": format!("Run {script} on {node}"),
+                        "description": "Yes runs it once, exactly as shown",
+                    },
+                },
+                "required": ["approve"],
+            },
+        },
+    })
+}
+
+/// What the client's [answer] to an approval question means: Ok only for `accept` with `approve` true.
+fn verdict(answer: &Value) -> Result<(), String> {
+    if let Some(failure) = answer.get("error") {
+        let message = failure.get("message").and_then(Value::as_str).unwrap_or("no reason given");
+        return Err(format!("the client could not ask: {message}"));
+    }
+    let result = &answer["result"];
+    match result["action"].as_str() {
+        Some("accept") if result["content"]["approve"] == json!(true) => Ok(()),
+        Some("accept" | "decline") => Err("the person said no".into()),
+        Some("cancel") => Err("the person dismissed the question".into()),
+        _ => Err("the client's answer was not one of accept, decline or cancel".into()),
+    }
+}
+
 fn render(response: &NodeResponse) -> Value {
     if !response.ok {
         return tool_error(&failure_message(response.error.as_ref()));
@@ -523,6 +653,7 @@ fn rpc_error(id: &Value, code: i64, message: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use limen_core::config::hub::{Approval, ApprovalScripts};
     use limen_core::protocol::{ErrorCode, LimenError, Result};
 
     /// Node, request and arguments.
@@ -534,6 +665,7 @@ mod tests {
         catalogs: Mutex<BTreeMap<String, Catalog>>,
         calls: Mutex<Vec<Asked>>,
         broken: bool,
+        approval: Approval,
     }
 
     impl NodeClient for Fake {
@@ -556,6 +688,10 @@ mod tests {
                 }
                 other => NodeResponse::success(json!({"asked": other}), other == "run"),
             }
+        }
+
+        fn approval(&self) -> Result<Approval> {
+            Ok(self.approval.clone())
         }
     }
 
@@ -825,5 +961,144 @@ mod tests {
         assert_eq!(rpc(&server, "tools/call", &json!({"name": "rm"}))["error"]["code"], INVALID_PARAMS);
         let not_an_object: Value = serde_json::from_str(&server.handle("[1]").unwrap()).unwrap();
         assert_eq!(not_an_object["error"]["code"], PARSE_ERROR);
+    }
+
+    /// `nas` and `router`, where every script that changes things waits for a person's approval.
+    fn asking() -> Arc<Fake> {
+        let fake = Arc::try_unwrap(nas_and_router()).ok().unwrap();
+        Arc::new(Fake {
+            approval: Approval { scripts: ApprovalScripts::Changes, timeout: Duration::from_secs(5) },
+            ..fake
+        })
+    }
+
+    /// A server over stdio, whose lines to the client are kept; initialized by a client that can ask a person or not.
+    fn over_stdio(client: &Arc<Fake>, elicits: bool) -> (Arc<McpServer>, Arc<Mutex<Vec<String>>>) {
+        let sent = Arc::new(Mutex::new(Vec::new()));
+        let outbox = sent.clone();
+        let server = McpServer::new(
+            client.clone(),
+            Some(Box::new(move |line: &str| outbox.lock().unwrap().push(line.to_string()))),
+            Box::new(|_| {}),
+        )
+        .refreshing_every(Duration::ZERO);
+        let capabilities = if elicits { json!({"elicitation": {}}) } else { json!({}) };
+        rpc(&server, "initialize", &json!({"protocolVersion": "2025-06-18", "capabilities": capabilities}));
+        (Arc::new(server), sent)
+    }
+
+    /// Calls `purge` on `nas` in a thread, answers the question the hub asks with [answer], and returns the call's
+    /// result and the question.
+    fn purge_answered(server: &Arc<McpServer>, sent: &Arc<Mutex<Vec<String>>>, answer: &Value) -> (Value, Value) {
+        let caller = server.clone();
+        let call = std::thread::spawn(move || call_tool(&caller, "purge", &json!({"node": "nas", "tail": 5})));
+        let question = loop {
+            let found = sent.lock().unwrap().iter().find(|line| line.contains("elicitation/create")).cloned();
+            if let Some(line) = found {
+                break serde_json::from_str::<Value>(&line).unwrap();
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        let reply = json!({"jsonrpc": "2.0", "id": question["id"], "result": answer}).to_string();
+        assert_eq!(server.handle(&reply), None, "an answer to the hub's question gets no answer back");
+        (call.join().unwrap(), question)
+    }
+
+    fn runs(client: &Fake) -> usize {
+        client.calls.lock().unwrap().iter().filter(|(_, request, _)| request == "run").count()
+    }
+
+    #[test]
+    fn a_change_runs_once_a_person_says_yes() {
+        let client = asking();
+        let (server, sent) = over_stdio(&client, true);
+        let (result, question) =
+            purge_answered(&server, &sent, &json!({"action": "accept", "content": {"approve": true}}));
+        assert_eq!(result["isError"], false, "{result}");
+        assert_eq!(runs(&client), 1);
+        let message = question["params"]["message"].as_str().unwrap();
+        assert!(message.contains("purge") && message.contains("nas"), "{message}");
+        assert_eq!(question["params"]["requestedSchema"]["properties"]["approve"]["type"], "boolean");
+    }
+
+    #[test]
+    fn a_no_or_a_dismissed_question_runs_nothing() {
+        for answer in [
+            json!({"action": "accept", "content": {"approve": false}}),
+            json!({"action": "decline"}),
+            json!({"action": "cancel"}),
+        ] {
+            let client = asking();
+            let (server, sent) = over_stdio(&client, true);
+            let (result, _) = purge_answered(&server, &sent, &answer);
+            assert_eq!(result["isError"], true, "{answer}");
+            assert!(text_of(&result).starts_with("not approved"), "{result}");
+            assert_eq!(runs(&client), 0, "{answer}");
+        }
+    }
+
+    #[test]
+    fn no_answer_in_time_runs_nothing() {
+        let fake = Arc::try_unwrap(asking()).ok().unwrap();
+        let client = Arc::new(Fake {
+            approval: Approval { timeout: Duration::from_millis(50), ..fake.approval.clone() },
+            ..fake
+        });
+        let (server, _) = over_stdio(&client, true);
+        let result = call_tool(&server, "purge", &json!({"node": "nas"}));
+        assert!(text_of(&result).contains("no answer within"), "{result}");
+        assert_eq!(runs(&client), 0);
+    }
+
+    #[test]
+    fn without_a_way_to_ask_a_change_is_not_run() {
+        let client = asking();
+        let (server, _) = over_stdio(&client, false);
+        let result = call_tool(&server, "purge", &json!({"node": "nas"}));
+        assert!(text_of(&result).contains("declares no elicitation"), "{result}");
+        let http = mcp_server(&client);
+        let result = call_tool(&http, "purge", &json!({"node": "nas"}));
+        assert!(text_of(&result).contains("over HTTP"), "{result}");
+        assert_eq!(runs(&client), 0);
+    }
+
+    #[test]
+    fn what_reads_needs_no_approval() {
+        let client = asking();
+        client
+            .catalogs
+            .lock()
+            .unwrap()
+            .get_mut("nas")
+            .unwrap()
+            .scripts
+            .push(ScriptSpec { read_only: true, ..script("uptime", vec![]) });
+        let (server, sent) = over_stdio(&client, false);
+        assert_eq!(call_tool(&server, "uptime", &json!({"node": "nas"}))["isError"], false);
+        assert_eq!(call_tool(&server, "list_dir", &json!({"node": "nas", "path": "/etc"}))["isError"], false);
+        assert!(!sent.lock().unwrap().iter().any(|line| line.contains("elicitation")));
+    }
+
+    #[test]
+    fn a_question_nobody_can_answer_any_more_ends_the_wait() {
+        let client = asking();
+        let (server, sent) = over_stdio(&client, true);
+        let caller = server.clone();
+        let call = std::thread::spawn(move || call_tool(&caller, "purge", &json!({"node": "nas"})));
+        while !sent.lock().unwrap().iter().any(|line| line.contains("elicitation/create")) {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        server.no_more_answers();
+        let result = call.join().unwrap();
+        assert!(text_of(&result).starts_with("not approved"), "{result}");
+        assert!(text_of(&call_tool(&server, "purge", &json!({"node": "nas"}))).contains("the client is gone"));
+        assert_eq!(runs(&client), 0);
+    }
+
+    #[test]
+    fn only_tool_calls_get_a_thread() {
+        assert!(is_tool_call(r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{}}"#));
+        assert!(!is_tool_call(r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#));
+        assert!(!is_tool_call("not json"));
     }
 }

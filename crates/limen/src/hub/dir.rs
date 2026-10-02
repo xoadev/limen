@@ -4,7 +4,7 @@
 use super::ssh::SshClient;
 use super::{NodeClient, constant_time_eq, internal};
 use crate::os::{fs, proc, sys};
-use limen_core::config::hub::{self, HubConfig, is};
+use limen_core::config::hub::{self, Approval, HubConfig, is};
 use limen_core::join::{self, Arrival, Invitation, PendingInvite, Welcome};
 use limen_core::protocol::{ErrorCode, NodeError, NodeResponse, Result, error};
 use limen_core::time;
@@ -322,6 +322,10 @@ impl NodeClient for LiveHub {
             Err(failure) => NodeResponse::failure(&failure),
         }
     }
+
+    fn approval(&self) -> Result<Approval> {
+        self.ssh()?.approval()
+    }
 }
 
 #[cfg(test)]
@@ -371,6 +375,10 @@ mod tests {
 
         fn call(&self, _: &str, _: &str, _: &Map<String, Value>, _: Option<Duration>) -> NodeResponse {
             NodeResponse::success(json!({"os": "Debian GNU/Linux 13", "version": "0.1.0"}), false)
+        }
+
+        fn approval(&self) -> Result<Approval> {
+            Ok(Approval::default())
         }
     }
 
