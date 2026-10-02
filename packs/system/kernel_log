@@ -1,5 +1,6 @@
 #!/bin/sh
 #: description = "The kernel's log since boot (dmesg): disk and file system errors, out-of-memory kills, devices that failed or went away. Warnings and worse by default"
+#: read_only = true
 #: [args.level]
 #: type = "enum"
 #: values = ["errors", "warnings", "all"]

@@ -1,5 +1,6 @@
 #!/bin/sh
 #: description = "Packages apt can upgrade, security ones marked, those apt keeps back, whether a reboot is pending, and how old the package lists are"
+#: read_only = true
 #: timeout = "5m"
 #: [args.refresh]
 #: type = "bool"

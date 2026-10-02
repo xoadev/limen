@@ -1,5 +1,6 @@
 #!/bin/sh
 #: description = "What Docker takes on disk: images, containers, volumes and build cache, how much of each purge could free, and each volume with its size and how many containers use it. purge never deletes volumes"
+#: read_only = true
 #: timeout = "5m"
 set -eu
 

@@ -1,5 +1,6 @@
 #!/bin/sh
 #: description = "Every Docker container, running or not: name, image, state, and status with health"
+#: read_only = true
 set -eu
 
 list=$(docker ps --all --format '{{.Names}}\t{{.Image}}\t{{.State}}\t{{.Status}}')

@@ -1,5 +1,6 @@
 #!/bin/sh
 #: description = "Whether this machine reaches a host: with a port, whether a TCP connection to it opens; without one, ping. Tells a network problem from a service that is down"
+#: read_only = true
 #: timeout = "30s"
 #: [args.host]
 #: type = "string"

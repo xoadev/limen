@@ -1,5 +1,6 @@
 #!/bin/sh
 #: description = "Each real file system: size, space and inodes used, and whether it is mounted read-only. Out of inodes, or remounted read-only by the kernel after errors, a disk looks full to programs while df shows space"
+#: read_only = true
 set -eu
 
 # Memory, pseudo and image file systems are noise here; squashfs and iso9660 are read-only by nature (OpenWrt's /rom).

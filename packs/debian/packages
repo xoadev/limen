@@ -1,5 +1,6 @@
 #!/bin/sh
 #: description = "The installed packages with their version and state (ii: installed; hi: held back; rc: removed, configuration left), or those matching a name pattern such as docker*"
+#: read_only = true
 #: [args.name]
 #: type = "string"
 #: default = "*"

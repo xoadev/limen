@@ -1,5 +1,6 @@
 #!/bin/sh
 #: description = "What each running container uses right now: CPU, memory against its limit, and processes, the hungriest for memory first"
+#: read_only = true
 #: timeout = "30s"
 set -eu
 

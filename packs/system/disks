@@ -1,5 +1,6 @@
 #!/bin/sh
 #: description = "The disks: size, model and whether each spins; SMART health and the attributes that warn of a failing disk (reallocated and pending sectors, wear, errors, temperature); and the state of software RAID"
+#: read_only = true
 #: timeout = "2m"
 set -eu
 

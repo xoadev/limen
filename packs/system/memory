@@ -1,5 +1,6 @@
 #!/bin/sh
 #: description = "Where the memory goes and whether it is short: /proc/meminfo in MiB, swap use, memory pressure (PSI), and the processes the kernel has killed for lack of memory since boot"
+#: read_only = true
 set -eu
 
 awk '

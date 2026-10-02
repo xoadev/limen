@@ -1,5 +1,6 @@
 #!/bin/sh
 #: description = "OpenWrt's network interfaces (wan, lan…): whether each is up and for how long, its protocol and device, addresses, gateway and DNS servers"
+#: read_only = true
 set -eu
 
 interfaces=$(ubus list 'network.interface.*' 2> /dev/null | sed 's/^network\.interface\.//') || true

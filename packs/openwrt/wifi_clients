@@ -1,5 +1,6 @@
 #!/bin/sh
 #: description = "The devices on each Wi-Fi network of the router: MAC, host name from the DHCP leases, signal, when last heard and the rates. Never the networks' keys"
+#: read_only = true
 set -eu
 
 if ! command -v iwinfo > /dev/null 2>&1; then

@@ -1,5 +1,6 @@
 #!/bin/sh
 #: description = "Docker images with their size and age, and whether a container (running or not) uses each: the unused ones are what purge with images deletes, the dangling ones what purge always deletes"
+#: read_only = true
 set -eu
 
 # Every container's image by ID: names can point elsewhere once an image is pulled again.

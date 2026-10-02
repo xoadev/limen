@@ -1,5 +1,6 @@
 #!/bin/sh
 #: description = "Listening TCP and UDP sockets, with the process behind each"
+#: read_only = true
 set -eu
 
 if command -v ss >/dev/null 2>&1; then
