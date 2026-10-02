@@ -1,0 +1,30 @@
+#!/bin/sh
+#: description = "One package: whether it is installed and held, the installed and candidate versions, which repository each comes from, and what the package is"
+#: [args.name]
+#: type = "string"
+#: pattern = '^[a-z0-9][a-z0-9+.-]{0,63}$'
+#: description = "The package's exact name, e.g. openssh-server"
+set -eu
+
+name=$LIMEN_ARG_NAME
+policy=$(apt-cache policy -- "$name" 2> /dev/null)
+if [ -z "$policy" ]; then
+  echo "no package $name in the package lists (debian's packages lists what is installed, with wildcards)"
+  exit 1
+fi
+status=$(dpkg-query --show --showformat='${db:Status-Abbrev}' -- "$name" 2> /dev/null) || status=
+case $status in
+  ii*) state=installed ;;
+  hi*) state="installed, held" ;;
+  rc*) state="removed, configuration left" ;;
+  '' | un*) state="not installed" ;;
+  *) state="dpkg state $status" ;;
+esac
+if apt-mark showhold -- "$name" 2> /dev/null | grep -qx -- "$name"; then
+  case $state in *held*) ;; *) state="$state, held" ;; esac
+fi
+echo "$name: $state"
+printf '%s\n' "$policy" | sed 1d
+echo
+apt-cache show --no-all-versions -- "$name" 2> /dev/null |
+  grep -E '^(Section|Priority|Installed-Size|Depends|Description(-en)?):' || true
