@@ -100,6 +100,10 @@ mcp_session() {
     "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"$2\",\"arguments\":$arguments}}" \
     | "$binary" mcp --home "$work/$1" 2>/dev/null
 }
+# annotations <node> <tool>: `<tool> <its annotations as JSON>`, from the tools/list of an MCP session with <node>.
+annotations() {
+  mcp_session "$1" disk | jq -c --arg tool "$2" 'select(.id == 2) | .result.tools[] | select(.name == $tool) | "\(.name) \(.annotations)"'
+}
 
 # script <container> <path> <mode>: the script on stdin, written in the container as root with that mode.
 script() {
@@ -293,7 +297,9 @@ EOF
   expect "mcp lists every script as a tool" '"name":"mark"' mcp_session debian disk
   expect "mcp calls one" 'threshold 100%' mcp_session debian disk
   expect "with its arguments and filters" 'marked mcp' mcp_session debian mark '"word":"mcp","tail":1'
-  refuse "files are read-only tools, scripts are not" '"name":"read_file"' '"name":"mark"[^}]*readOnlyHint' mcp_session debian disk
+  expect "files are read-only tools" 'read_file {\"readOnlyHint\":true' annotations debian read_file
+  expect "so is a script whose header says read_only" 'status {\"readOnlyHint\":true' annotations debian status
+  expect "one without it may change the machine" 'mark {\"readOnlyHint\":false,\"destructiveHint\":true}' annotations debian mark
   # Someone else's host key: a real one, so ssh refuses it for not matching and for nothing else.
   sed -i "s|^host_key = .*|host_key = \"$(cut -d' ' -f1,2 "$work/stranger.pub")\"|" "$work/debian/limen.toml"
   # A fresh control socket: a multiplexed connection would skip the host key check (AGENTS.md).

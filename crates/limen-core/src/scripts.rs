@@ -31,6 +31,10 @@ pub struct ScriptSpec {
     pub timeout_seconds: u64,
     #[serde(default)]
     pub params: Vec<Param>,
+    /// The header's word that the script changes nothing: MCP clients may run it without asking. A node that predates
+    /// it sends none, and its scripts read as ones that may change things.
+    #[serde(default)]
+    pub read_only: bool,
 }
 
 /// The scripts of a node, and what is wrong with the ones that could not be read. Part of `hello`.
@@ -139,6 +143,8 @@ struct Header {
     description: Option<String>,
     timeout: Option<String>,
     #[serde(default)]
+    read_only: bool,
+    #[serde(default)]
     args: IndexMap<String, Arg>,
 }
 
@@ -175,7 +181,13 @@ fn spec(name: &str, header_text: &str) -> Result<ScriptSpec, String> {
     }
     let params =
         header.args.into_iter().map(|(arg_name, arg)| param(name, &arg_name, arg)).collect::<Result<_, _>>()?;
-    Ok(ScriptSpec { name: name.into(), description, timeout_seconds: timeout.as_secs().max(1), params })
+    Ok(ScriptSpec {
+        name: name.into(),
+        description,
+        timeout_seconds: timeout.as_secs().max(1),
+        params,
+        read_only: header.read_only,
+    })
 }
 
 fn param(script: &str, name: &str, arg: Arg) -> Result<Param, String> {
@@ -301,6 +313,24 @@ set -euo pipefail
         assert!(!threshold.required);
         let mount = spec.params.iter().find(|param| param.name == "mount").unwrap();
         assert!(mount.required);
+        assert!(!spec.read_only, "a script may change the machine unless its header says otherwise");
+    }
+
+    #[test]
+    fn read_only_is_what_the_header_says() {
+        let read_only = parse("a", "#: description = \"x\"\n#: read_only = true\n").unwrap().unwrap();
+        assert!(read_only.read_only);
+        let changes = parse("a", "#: description = \"x\"\n#: read_only = false\n").unwrap().unwrap();
+        assert!(!changes.read_only);
+        let word = parse("a", "#: description = \"x\"\n#: read_only = \"yes\"\n").unwrap().unwrap_err();
+        assert!(word.contains("line 2") && word.contains("expected a boolean"), "{word}");
+    }
+
+    #[test]
+    fn a_catalog_from_a_node_without_read_only_reads_as_changing() {
+        let spec: ScriptSpec =
+            serde_json::from_value(json!({"name": "a", "description": "x", "timeout_seconds": 60})).unwrap();
+        assert!(!spec.read_only);
     }
 
     #[test]
@@ -325,8 +355,13 @@ set -euo pipefail
 
     #[test]
     fn the_hub_leaves_out_a_script_that_would_take_one_of_its_names() {
-        let named =
-            |name: &str| ScriptSpec { name: name.into(), description: "x".into(), timeout_seconds: 60, params: vec![] };
+        let named = |name: &str| ScriptSpec {
+            name: name.into(),
+            description: "x".into(),
+            timeout_seconds: 60,
+            params: vec![],
+            read_only: false,
+        };
         assert_eq!(hub_refusal(&named("disk")), None);
         for reserved in ["nodes", "hello", "read_file", "list_dir", "history", "run"] {
             assert_eq!(
@@ -343,6 +378,7 @@ set -euo pipefail
             description: "x".into(),
             timeout_seconds: 60,
             params: vec![Param::new("word", ParamType::String, "").pattern(pattern)],
+            read_only: false,
         };
         assert_eq!(hub_refusal(&with_pattern(&format!("^{}$", "a".repeat(MAX_PATTERN_BYTES - 2)))), None);
         assert_eq!(

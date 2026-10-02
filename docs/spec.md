@@ -135,8 +135,10 @@ Every tool takes a `node` argument.
 | `history` | The node's audit log |
 | `<script>` | One per script in the nodes' catalogs, with its declared arguments plus `grep` and `tail` |
 
-- `nodes`, `read_file`, `list_dir` and `history` are annotated `readOnlyHint: true`. Scripts carry no
-  annotation: MCP clients treat them as tools that may change things.
+- `nodes`, `read_file`, `list_dir` and `history` are annotated `readOnlyHint: true`, and so is a script whose
+  header says `read_only = true` on every node that offers it: an MCP client may run those without asking. Every
+  other script is annotated `readOnlyHint: false` and `destructiveHint: true`. `read_only` is the operator's word,
+  as a description is: limen doesn't check what a script does.
 - `grep` is a fixed string, case-insensitive, matched against the redacted text —never the raw one, or a
   guess at a secret would be told apart by whether a line comes back— and filters before `tail` applies:
   the answer is the last N matching lines. A script never sees `grep` or `tail`, and can't declare
@@ -509,7 +511,7 @@ hub:   [nodes.nas] with the request's source address, then `hello`  →  {"reach
 | Hub, token or MCP client compromised | Reads what the nodes allow and runs the scripts they offer, with arguments their headers accept. No shell, no code of its own |
 | Prompt injection through logs or files | The same: text in a log can lead the model to run any script on offer, the ones that change things included. **Offer only changes you would let whoever writes to your logs trigger** |
 | Whoever can change a pack, or where a script fetches packs from | Runs code as root on the node. The agent must not be able to write there (§6) |
-| A compromised node | Answers what it likes about itself. Its catalog can't name tools or arguments beyond plain, bounded text, nor reach other nodes |
+| A compromised node | Answers what it likes about itself. Its catalog can't name tools or arguments beyond plain, bounded text, nor reach other nodes. Calling its own scripts `read_only` makes no other node's script look read-only: a tool is read-only only when every node that offers it says so |
 | Someone who reaches the HTTP port without the token | Gets `401` before any body is read. Connections, heads and bodies are bounded; a flood denies service, it doesn't stop the hub |
 | Argument injection | Arguments are typed, validated on the node, reach the script as environment variables and never a shell |
 | Symlink from an allowed path to a secret | Resolved before matching (§7.1) |

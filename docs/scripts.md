@@ -29,6 +29,7 @@ The leading comment lines starting with `#:` form a TOML document. It is parsed,
 ```sh
 #!/bin/sh
 #: description = "Last lines of a unit's journal"
+#: read_only = true
 #: timeout = "30s"
 #: [args.unit]
 #: type = "string"
@@ -44,6 +45,7 @@ exec journalctl --no-pager -o short-iso --since "-$LIMEN_ARG_SINCE" -u "$LIMEN_A
 | Key | | |
 |---|---|---|
 | `description` | required | What the model reads to choose the tool. One line, what it does and what it answers |
+| `read_only` | default `false` | `true` when the script changes nothing on the machine: the hub tells MCP clients they may run it without asking. Refreshing a cache it can rebuild, such as the package lists, counts as changing nothing. When in doubt, leave it out |
 | `timeout` | default `60s`, at most `1h` | `30s`, `5m`, `1h`, in whole seconds: a fraction is dropped, and under `1s` is `1s`. `SIGTERM` to the script's process group when it runs out, `SIGKILL` after a grace period |
 | `[args.<name>]` | one per argument | `name` is `^[a-z][a-z0-9_]{0,31}$`; `node`, `grep` and `tail` are taken |
 

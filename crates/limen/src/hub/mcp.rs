@@ -219,7 +219,12 @@ impl McpServer {
             let mut script_params = spec.params.clone();
             script_params.extend(requests::filters());
             let schema = params::input_schema(&script_params, &[(node_param(&nodes), true)]);
-            tools.push(json!({"name": name, "description": description, "inputSchema": schema}));
+            tools.push(json!({
+                "name": name,
+                "description": description,
+                "inputSchema": schema,
+                "annotations": {"readOnlyHint": spec.read_only, "destructiveHint": !spec.read_only},
+            }));
         }
         Ok(tools)
     }
@@ -426,14 +431,19 @@ fn declared_alike(declarations: &[(&str, &ScriptSpec)]) -> bool {
     declarations.iter().all(|(_, spec)| spec.params == declarations[0].1.params)
 }
 
-/// The scripts that become tools, nodes in order. A name declared with different arguments is left out.
+/// The scripts that become tools, nodes in order. A name declared with different arguments is left out. A tool is
+/// read-only only when every node that offers it says so: one node can't make another's script look harmless.
 fn consistent_scripts(hellos: &Hellos) -> ScriptTools {
     scripts_by_name(&catalogs(hellos))
         .into_iter()
         .filter(|(_, declarations)| declared_alike(declarations))
         .map(|(name, declarations)| {
             let nodes = declarations.iter().map(|(node, _)| node.to_string()).collect();
-            (name.to_string(), (declarations[0].1.clone(), nodes))
+            let spec = ScriptSpec {
+                read_only: declarations.iter().all(|(_, spec)| spec.read_only),
+                ..declarations[0].1.clone()
+            };
+            (name.to_string(), (spec, nodes))
         })
         .collect()
 }
@@ -554,7 +564,13 @@ mod tests {
     }
 
     fn script(name: &str, params: Vec<Param>) -> ScriptSpec {
-        ScriptSpec { name: name.into(), description: format!("About {name}."), timeout_seconds: 60, params }
+        ScriptSpec {
+            name: name.into(),
+            description: format!("About {name}."),
+            timeout_seconds: 60,
+            params,
+            read_only: false,
+        }
     }
 
     fn offering(scripts: Vec<ScriptSpec>) -> Catalog {
@@ -626,7 +642,7 @@ mod tests {
         // `backups` has different arguments on each node: no tool until that is fixed.
         let read_only = |name: &str| tools.iter().find(|tool| tool["name"] == name).unwrap()["annotations"].clone();
         assert_eq!(read_only("read_file")["readOnlyHint"], true);
-        assert_eq!(read_only("purge"), Value::Null, "a script may change the machine");
+        assert_eq!(read_only("purge"), json!({"readOnlyHint": false, "destructiveHint": true}));
         let disk = tools.iter().find(|tool| tool["name"] == "disk").unwrap();
         assert_eq!(disk["inputSchema"]["properties"]["node"]["enum"], json!(["nas", "router"]));
         assert!(disk["inputSchema"]["properties"]["grep"].is_object());
@@ -745,6 +761,20 @@ mod tests {
     }
 
     #[test]
+    fn a_script_is_read_only_only_when_every_node_offering_it_says_so() {
+        let client = nas_and_router();
+        let reading = |name: &str| ScriptSpec { read_only: true, ..script(name, vec![threshold()]) };
+        client.catalogs.lock().unwrap().get_mut("nas").unwrap().scripts = vec![reading("disk"), reading("uptime")];
+        client.catalogs.lock().unwrap().get_mut("router").unwrap().scripts = vec![script("disk", vec![threshold()])];
+        let server = mcp_server(&client);
+        let tools = rpc(&server, "tools/list", &json!({}))["result"]["tools"].as_array().unwrap().clone();
+        let annotations = |name: &str| tools.iter().find(|tool| tool["name"] == name).unwrap()["annotations"].clone();
+        assert_eq!(annotations("uptime"), json!({"readOnlyHint": true, "destructiveHint": false}));
+        // The router doesn't say its `disk` only reads: the one tool for both may change the router.
+        assert_eq!(annotations("disk"), json!({"readOnlyHint": false, "destructiveHint": true}));
+    }
+
+    #[test]
     fn a_hostile_node_can_not_write_the_tools() {
         let client = nas_and_router();
         let evil = |name: &str, params: Vec<Param>, timeout: u64| ScriptSpec {
@@ -752,6 +782,7 @@ mod tests {
             description: "fine".into(),
             timeout_seconds: timeout,
             params,
+            read_only: false,
         };
         client.catalogs.lock().unwrap().insert(
             "aaa".into(),
