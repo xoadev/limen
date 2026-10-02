@@ -100,6 +100,18 @@ mcp_session() {
     "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"$2\",\"arguments\":$arguments}}" \
     | "$binary" mcp --home "$work/$1" 2>/dev/null
 }
+# approval_session <node> <client capabilities as JSON> [<answer as JSON>]: calls `mark` over stdio and, a few seconds
+# later, answers the hub's first question with <answer>, as a person at the client would.
+approval_session() {
+  {
+    printf '%s\n' \
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-06-18\",\"capabilities\":$2}}" \
+      '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
+      "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"mark\",\"arguments\":{\"node\":\"$1\",\"word\":\"approved\"}}}"
+    sleep 4
+    [ -z "${3:-}" ] || printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":\"limen-approval-0\",\"result\":$3}"
+  } | "$binary" mcp --home "$work/$1" 2>/dev/null
+}
 # annotations <node> <tool>: `<tool> <its annotations as JSON>`, from the tools/list of an MCP session with <node>.
 annotations() {
   mcp_session "$1" disk | jq -c --arg tool "$2" 'select(.id == 2) | .result.tools[] | select(.name == $tool) | "\(.name) \(.annotations)"'
@@ -299,6 +311,19 @@ EOF
   expect "with its arguments and filters" 'marked mcp' mcp_session debian mark '"word":"mcp","tail":1'
   expect "files are read-only tools" 'read_file {\"readOnlyHint\":true' annotations debian read_file
   expect "so is a script whose header says read_only" 'status {\"readOnlyHint\":true' annotations debian status
+  printf '\n[approval]\nscripts = ["mark"]\ntimeout = "20s"\n' >> "$work/debian/limen.toml"
+  expect "a change waits for a person's yes" 'marked approved' \
+    approval_session debian '{"elicitation":{}}' '{"action":"accept","content":{"approve":true}}'
+  expect "the question shows what would run" 'run the script mark on debian, with arguments: {\"word\":\"approved\"}' \
+    approval_session debian '{"elicitation":{}}' '{"action":"decline"}'
+  refuse "a no runs nothing" 'not approved: the person said no' 'marked approved' \
+    approval_session debian '{"elicitation":{}}' '{"action":"decline"}'
+  refuse "a client that can't ask runs nothing" 'declares no elicitation' 'marked approved' \
+    approval_session debian '{}'
+  sed -i '/^\[approval\]/,$d' "$work/debian/limen.toml"
+  printf '[approval]\nscripts = "changes"\nexcept = ["mark"]\n' >> "$work/debian/limen.toml"
+  expect "a change excepted runs without asking" 'marked approved' approval_session debian '{}'
+  sed -i '/^\[approval\]/,$d' "$work/debian/limen.toml"
   expect "one without it may change the machine" 'mark {\"readOnlyHint\":false,\"destructiveHint\":true}' annotations debian mark
   # Someone else's host key: a real one, so ssh refuses it for not matching and for nothing else.
   sed -i "s|^host_key = .*|host_key = \"$(cut -d' ' -f1,2 "$work/stranger.pub")\"|" "$work/debian/limen.toml"

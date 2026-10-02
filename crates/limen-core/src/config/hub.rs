@@ -3,6 +3,7 @@
 use super::{ConfigResult, fail};
 use crate::durations;
 use crate::own_regex;
+use crate::scripts;
 use indexmap::IndexMap;
 use regex::Regex;
 use serde::Deserialize;
@@ -46,6 +47,54 @@ pub struct HubConfig {
     /// Where nodes reach this hub to join (spec §10.1): an address, not a name.
     pub public_url: Option<String>,
     pub nodes: Vec<NodeEntry>,
+    pub approval: Approval,
+}
+
+/// Which scripts a person approves before each run, and how long a call waits for the answer (spec §5).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Approval {
+    pub scripts: ApprovalScripts,
+    /// With [ApprovalScripts::Changes], the scripts that change things and still run without asking.
+    pub except: Vec<String>,
+    pub timeout: Duration,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum ApprovalScripts {
+    #[default]
+    None,
+    /// Every script whose tool isn't read-only.
+    Changes,
+    Named(Vec<String>),
+}
+
+const APPROVAL_TIMEOUT: Duration = Duration::from_secs(300);
+const APPROVAL_TIMEOUTS: std::ops::RangeInclusive<Duration> = Duration::from_secs(10)..=Duration::from_secs(3600);
+
+impl Default for Approval {
+    fn default() -> Self {
+        Self { scripts: ApprovalScripts::None, except: vec![], timeout: APPROVAL_TIMEOUT }
+    }
+}
+
+impl Approval {
+    /// Whether a run of [script], whose tool is [read_only] or not, waits for a person's yes.
+    pub fn needed(&self, script: &str, read_only: bool) -> bool {
+        match &self.scripts {
+            ApprovalScripts::None => false,
+            ApprovalScripts::Changes => !read_only && !self.except.iter().any(|name| name == script),
+            ApprovalScripts::Named(names) => names.iter().any(|name| name == script),
+        }
+    }
+
+    /// Every script this names, to ask for or to except: a name no node offers is likely a misspelt one.
+    pub fn named(&self) -> Vec<&str> {
+        let listed = match &self.scripts {
+            ApprovalScripts::Named(names) => names.as_slice(),
+            _ => &[],
+        };
+        listed.iter().chain(&self.except).map(String::as_str).collect()
+    }
 }
 
 impl Default for HubConfig {
@@ -59,6 +108,7 @@ impl Default for HubConfig {
             origins: vec![],
             public_url: None,
             nodes: vec![],
+            approval: Approval::default(),
         }
     }
 }
@@ -68,7 +118,24 @@ impl Default for HubConfig {
 struct File {
     ssh: Ssh,
     http: Http,
+    approval: ApprovalFile,
     nodes: IndexMap<String, Node>,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields, default)]
+struct ApprovalFile {
+    scripts: Option<ScriptsFile>,
+    except: Option<Vec<String>>,
+    timeout: Option<String>,
+}
+
+/// `approval.scripts` as written: a word or a list of names.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum ScriptsFile {
+    Word(String),
+    Names(Vec<String>),
 }
 
 #[derive(Deserialize, Default)]
@@ -151,7 +218,40 @@ impl HubConfig {
             origins: file.http.origins,
             public_url,
             nodes,
+            approval: approval(file.approval)?,
         })
+    }
+}
+
+/// `[approval]` checked: a known word or script names, and a timeout a person can answer within.
+fn approval(file: ApprovalFile) -> ConfigResult<Approval> {
+    let scripts = match file.scripts {
+        None => ApprovalScripts::None,
+        Some(ScriptsFile::Word(word)) if word == "none" => ApprovalScripts::None,
+        Some(ScriptsFile::Word(word)) if word == "changes" => ApprovalScripts::Changes,
+        Some(ScriptsFile::Word(_)) => {
+            return fail("approval.scripts", "\"none\", \"changes\" or a list of script names");
+        }
+        Some(ScriptsFile::Names(names)) => ApprovalScripts::Named(script_names("approval.scripts", names)?),
+    };
+    let except = match file.except {
+        None => vec![],
+        Some(_) if scripts != ApprovalScripts::Changes => {
+            return fail("approval.except", "only with scripts = \"changes\"");
+        }
+        Some(names) => script_names("approval.except", names)?,
+    };
+    let timeout = duration("approval.timeout", file.timeout)?.unwrap_or(APPROVAL_TIMEOUT);
+    if !APPROVAL_TIMEOUTS.contains(&timeout) {
+        return fail("approval.timeout", "10s to 1h");
+    }
+    Ok(Approval { scripts, except, timeout })
+}
+
+fn script_names(key: &str, names: Vec<String>) -> ConfigResult<Vec<String>> {
+    match names.iter().find(|name| !scripts::is_script_name(name)) {
+        Some(bad) => fail(key, format!("'{bad}' is not a script's name")),
+        None => Ok(names),
     }
 }
 
@@ -288,5 +388,53 @@ host_key = "ecdsa-sha2-nistp256 AAAAE2VjZHNh="
         assert!(HubConfig::parse("[nodes.nas]\nhost = \"h\"\nhost_key = \"h ssh-ed25519 AAAA\"").is_err());
         assert!(HubConfig::parse("[nodes.Nas]\nhost = \"h\"\nhost_key = \"ssh-ed25519 AAAA\"").is_err());
         assert!(HubConfig::parse("[nodes.nas]\nhost = \"h\"\nhost_key = \"ssh-ed25519 AAAA\"\ncolour = 1").is_err());
+    }
+
+    #[test]
+    fn nothing_needs_approval_unless_the_file_says_so() {
+        let approval = HubConfig::parse("").unwrap().approval;
+        assert!(!approval.needed("upgrade", false));
+        assert_eq!(approval.timeout, Duration::from_secs(300));
+    }
+
+    #[test]
+    fn approval_of_every_change_or_of_named_scripts() {
+        let changes = HubConfig::parse("[approval]\nscripts = \"changes\"\ntimeout = \"2m\"").unwrap().approval;
+        assert!(changes.needed("upgrade", false));
+        assert!(!changes.needed("status", true), "a read-only script runs without asking");
+        assert_eq!(changes.timeout, Duration::from_secs(120));
+        let named = HubConfig::parse("[approval]\nscripts = [\"reboot\", \"status\"]").unwrap().approval;
+        assert!(named.needed("reboot", false));
+        assert!(named.needed("status", true), "a script named is asked for, read-only or not");
+        assert!(!named.needed("upgrade", false));
+    }
+
+    #[test]
+    fn approval_settings_are_checked() {
+        let refused = |text: &str| HubConfig::parse(&format!("[approval]\n{text}")).unwrap_err().0;
+        assert_eq!(refused("scripts = \"all\""), "approval.scripts: \"none\", \"changes\" or a list of script names");
+        assert_eq!(refused("scripts = [\"Bad name\"]"), "approval.scripts: 'Bad name' is not a script's name");
+        assert_eq!(refused("timeout = \"5s\""), "approval.timeout: 10s to 1h");
+        assert_eq!(refused("timeout = \"2h\""), "approval.timeout: 10s to 1h");
+        assert!(refused("colour = 1").contains("unknown field"));
+    }
+
+    #[test]
+    fn every_change_but_the_ones_excepted() {
+        let approval =
+            HubConfig::parse("[approval]\nscripts = \"changes\"\nexcept = [\"restart_container\"]").unwrap().approval;
+        assert!(approval.needed("upgrade", false));
+        assert!(!approval.needed("restart_container", false));
+        assert_eq!(approval.named(), ["restart_container"]);
+        let refused = |text: &str| HubConfig::parse(&format!("[approval]\n{text}")).unwrap_err().0;
+        assert_eq!(
+            refused("scripts = [\"reboot\"]\nexcept = [\"reboot\"]"),
+            "approval.except: only with scripts = \"changes\""
+        );
+        assert_eq!(refused("except = [\"reboot\"]"), "approval.except: only with scripts = \"changes\"");
+        assert_eq!(
+            refused("scripts = \"changes\"\nexcept = [\"-rf\"]"),
+            "approval.except: '-rf' is not a script's name"
+        );
     }
 }

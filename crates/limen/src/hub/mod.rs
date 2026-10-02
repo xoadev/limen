@@ -6,6 +6,7 @@ pub mod server;
 pub mod ssh;
 pub mod transports;
 
+use limen_core::config::hub::Approval;
 use limen_core::protocol::{NodeResponse, Result};
 use serde_json::{Map, Value};
 use std::time::Duration;
@@ -17,6 +18,9 @@ pub trait NodeClient: Send + Sync {
 
     /// One request to [node]. [timeout] overrides `[ssh].request_timeout`, for a check that declares a longer one.
     fn call(&self, node: &str, request: &str, args: &Map<String, Value>, timeout: Option<Duration>) -> NodeResponse;
+
+    /// Which scripts a person approves before they run (`[approval]`), as the hub's configuration says now.
+    fn approval(&self) -> Result<Approval>;
 }
 
 pub use limen_core::join::constant_time_eq;

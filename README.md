@@ -253,12 +253,28 @@ Ask the agent as you would ask a colleague with access to the machines' scripts:
 
 Without the agent, `docker compose exec limen limen call nas status` asks a machine the same by hand.
 
+### A person approves the changes
+
+With `limen mcp` (stdio), the hub can ask you before each run of a script that changes things. Add this to the hub's
+`limen.toml`:
+
+```toml
+[approval]
+scripts = "changes"   # every script that isn't read-only; or a list: ["upgrade", "reboot"]
+except = ["restart_container"]   # with "changes": these run without asking
+timeout = "5m"
+```
+
+The question appears in the MCP client's own window (MCP elicitation), with the machine, the script and its
+arguments: the model can't see it or answer it. Only a yes runs the script, once. A no, no answer, or a client that
+can't ask means nothing runs. Over HTTP (`limen serve`) the hub can't ask yet, so those scripts are refused there.
+
 ## Security, in short
 
 | If this happens | Then |
 |---|---|
 | The hub, its token or the MCP client are compromised | Reads what the machines allow and runs the scripts they offer, with the arguments they declare. No shell |
-| An instruction is injected through a log or a file | The same: the model can be led to run any script on offer. Offer only changes you'd let anyone writing your logs trigger |
+| An instruction is injected through a log or a file | The same: the model can be led to run any script on offer. Offer only changes you'd let anyone writing your logs trigger, or [have a person approve them](#a-person-approves-the-changes) |
 | Arguments are crafted to escape | They are typed, validated on the machine, and reach the script as variables, never a shell |
 | A symlink points from an allowed path to a secret | Paths are walked as the kernel does before they are checked |
 | Someone can change a pack, or push where a script fetches packs from | **They are root on the machine.** Keep the agent out of it, and protect the branch |

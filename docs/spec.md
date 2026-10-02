@@ -139,6 +139,15 @@ Every tool takes a `node` argument.
   header says `read_only = true` on every node that offers it: an MCP client may run those without asking. Every
   other script is annotated `readOnlyHint: false` and `destructiveHint: true`. `read_only` is the operator's word,
   as a description is: limen doesn't check what a script does.
+- **Approval.** `[approval]` in the hub's `limen.toml` (§7.2) names the scripts a person approves before each
+  run. The hub validates the call, then asks the person in the MCP client's own window, through MCP elicitation
+  (`elicitation/create`): the node, the script and its arguments as they would run, and a yes or a no. Only a yes
+  runs it, once, as asked. A no, a dismissed question, no answer within `approval.timeout`, a client that doesn't
+  declare elicitation, or a transport that can't ask (HTTP, until it has SSE) answers `not approved`, and nothing
+  reaches the node. The question goes to the client's interface, not to the model, which can neither see nor
+  answer it. The hub logs each question and its answer. The description of a script's tool says when a person
+  approves each run, so the model can say so before calling it. `nodes` names every script `[approval]` lists that
+  no node offers: a misspelt name would otherwise let the script it meant run without asking.
 - `grep` is a fixed string, case-insensitive, matched against the redacted text —never the raw one, or a
   guess at a secret would be told apart by whether a line comes back— and filters before `tail` applies:
   the answer is the last N matching lines. A script never sees `grep` or `tail`, and can't declare
@@ -288,6 +297,11 @@ per_node_concurrency = 4
 listen = "127.0.0.1:7341"
 origins = []
 
+[approval]
+scripts = "changes"
+except = ["restart_container"]
+timeout = "5m"
+
 [nodes.nas]
 host = "100.64.0.2"
 host_key = "ssh-ed25519 AAAA…"
@@ -325,6 +339,10 @@ host_key = "ssh-ed25519 AAAA…"
 - `ssh.per_node_concurrency`, 1 to 64, is how many requests the hub sends one node at once; the rest wait on the
   hub for their turn. The node's own `limits.concurrency` (§7.1) counts the requests of every hub together and
   answers `unavailable` past it instead of waiting: keep the hub's at or below it.
+- `approval.scripts` is what a person approves before it runs (§5): `"none"`, the default; `"changes"`, every
+  script whose tool isn't read-only; or a list of script names. `approval.except`, only with `"changes"`, lists
+  scripts that change things and still run without asking. `approval.timeout`, `10s` to `1h` and `5m` unless
+  given, is how long a call waits for the answer. Read again with the rest of the file.
 - `http.listen` is where `serve` listens, as `host:port`. `--listen` wins over `LIMEN_LISTEN`, and that over the
   file; each is checked the same way. The image's command is `serve --listen 0.0.0.0:7341`, so in the image the
   address changes by overriding the command: `LIMEN_LISTEN` and the file don't reach it.
@@ -355,9 +373,11 @@ host_key = "ssh-ed25519 AAAA…"
 ## 9. Transports
 
 - **stdio** — `limen mcp`: newline-delimited JSON-RPC 2.0, one client. For a hub that is the
-  operator's own machine.
+  operator's own machine. Each `tools/call` runs in a thread of its own, so a call waiting for a person's approval
+  holds up no other; the client's answers to the hub's questions come back on stdin, matched by their id.
 - **HTTP** — `limen serve`: MCP Streamable HTTP on `POST /mcp`, JSON responses, no SSE (every call
-  is a request and a response).
+  is a request and a response). The hub can't ask the client anything there, so a script that needs approval
+  (§5) is not run.
   - Requires a bearer token, compared in constant time. `serve` creates one on its first start, or takes
     `LIMEN_TOKEN`, which must have 16 characters or more.
   - Its own small HTTP/1.1 server, one request per connection: at most 64 connections, 16 KiB of head
@@ -509,7 +529,8 @@ hub:   [nodes.nas] with the request's source address, then `hello`  →  {"reach
 | Threat | Outcome |
 |---|---|
 | Hub, token or MCP client compromised | Reads what the nodes allow and runs the scripts they offer, with arguments their headers accept. No shell, no code of its own |
-| Prompt injection through logs or files | The same: text in a log can lead the model to run any script on offer, the ones that change things included. **Offer only changes you would let whoever writes to your logs trigger** |
+| Prompt injection through logs or files | The same: text in a log can lead the model to run any script on offer, the ones that change things included. **Offer only changes you would let whoever writes to your logs trigger**, or have a person approve them (`[approval]`, §5): the question reaches the client's window, where the model can't answer it |
+| A compromised MCP client | Answers yes to its own approval questions. Approval guards against the model, not against the client, nor the hub that asks |
 | Whoever can change a pack, or where a script fetches packs from | Runs code as root on the node. The agent must not be able to write there (§6) |
 | A compromised node | Answers what it likes about itself. Its catalog can't name tools or arguments beyond plain, bounded text, nor reach other nodes. Calling its own scripts `read_only` makes no other node's script look read-only: a tool is read-only only when every node that offers it says so |
 | Someone who reaches the HTTP port without the token | Gets `401` before any body is read. Connections, heads and bodies are bounded; a flood denies service, it doesn't stop the hub |
@@ -548,6 +569,7 @@ hub:   [nodes.nas] with the request's source address, then `hello`  →  {"reach
 | Rust | Kotlin/Native (the first implementation), Go | Static musl binaries of about 3 MB built by the toolchain itself, arm64 without a cross compiler, and memory safety without a garbage collector in what runs as root. Kotlin/Native had no musl target: a static glibc needed its own linker script, no NSS, and an own HTTP client where glibc's iconv was missing |
 | A static binary | A package per distribution | One file runs on any Linux, and OpenWrt has no package for it |
 | Configuration as `serde` types, edited with `toml_edit` | Reading and editing TOML by hand | `deny_unknown_fields` turns a typo into an error with its line; an edited document can't gain a table from a value, and keeps the operator's comments |
+| A person's approval through MCP elicitation, asked by the hub | A push to a phone, a webhook, a chat bot | No service, no TLS, no open port: the question reaches the person where the agent already is, and never the model. The price: an agent nobody watches can't be approved, and over HTTP it needs SSE first |
 | Joining with a one-time invitation | Copying keys by hand, or the hub logging into nodes with an administrator's SSH | Nothing to carry but one line; the hub never holds more than its own key |
 
 ## 15. Open questions
