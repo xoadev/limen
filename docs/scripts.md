@@ -144,8 +144,9 @@ packs = ["/opt/limen-packs/system@0.1.0", "/opt/state/nodes/nas"]
 - **Pin the hash, not only the tag**: a tag names a version, the hash is what makes it the same bytes.
 - **As root, with `umask 022`**: limen runs a script only if root owns it and nobody else can write it or any
   directory above it. The tarball is made that way; extracting as root keeps it.
-- **A folder per version**: moving a machine to a new one is changing `limen.toml`, and going back is changing it
-  back. `limen lint` after each.
+- **A folder per version**, named `<pack>@X.Y.Z`: moving a machine to a new one is changing `limen.toml`, and going
+  back is changing it back. `limen lint` after each. The `limen` pack's `limen_packs` reads the version from that
+  name and says when a newer release is published.
 - The agent must not be able to change the pinned version or hash: that is choosing what runs as root.
 
 ## A machine from a Git repository
