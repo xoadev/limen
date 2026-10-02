@@ -462,7 +462,7 @@ hub:   [nodes.nas] with the request's source address, then `hello`  →  {"reach
   `X.Y.Z · build <run> · <date>`, or `dev` for a local build.
 - **Each pack under `packs/` is released on its own**, apart from limen and from the other packs: its tag is
   `pack-<pack>-vX.Y.Z`, its version comes from the conventional commits that touched `packs/<pack>/`, and the
-  same workflow by hand publishes it with `limen-pack-<pack>-<version>.tar.gz` —reproducible from the commit, owned
+  same workflow by hand publishes it —run with no pack, it rewrites every pack's draft as a push would— with `limen-pack-<pack>-<version>.tar.gz` —reproducible from the commit, owned
   by root, writable only by its owner— and `SHA256SUMS`. It is never the latest release: that one is limen's, which
   `install.sh` and the `limen` pack ask GitHub for. limen does not fetch it (§14): the operator unpacks it where
   `scripts.packs` lists it, pinning the tarball's hash, not only its tag ([docs/scripts.md](scripts.md#released-packs)).
