@@ -6,7 +6,7 @@ SHELL := /bin/bash
 # What `cli` and `docker` compile. `debug` links in seconds; a published binary is `release`.
 VARIANT ?= debug
 
-.PHONY: check lint build test cli local-install docker e2e hooks clean help
+.PHONY: check lint build test cli local-install docker e2e pack hooks clean help
 
 check: lint build test ## Everything CI runs (`make -k check` to see every failure at once)
 	@echo "check: OK"
@@ -31,6 +31,9 @@ docker: cli ## Build the hub image (limen:local, or IMAGE=…) from the binary o
 
 e2e: cli ## End to end in containers, Debian and OpenWrt (SUITE=debian|openwrt|join for one). Not part of `make check`
 	@VARIANT=$(VARIANT) tools/e2e.sh
+
+pack: ## One pack as it is released, in dist/: PACK=<pack> (VERSION=X.Y.Z, else dev)
+	@PACK=$(PACK) VERSION=$(VERSION) tools/pack.sh
 
 hooks: ## Install the git hooks of tools/ (pre-push: nothing is pushed to main)
 	@tools/hooks-install.sh

@@ -84,7 +84,7 @@ The hub talks to each machine (each *node*) with the system's `ssh`; nothing lis
 | `history` | The machine's audit log |
 | *each script* | One tool per script in the machines' packs, with its own typed arguments, plus `grep` and `tail` to narrow its output |
 
-The packs in [`packs/`](packs/) are examples to copy: `system` (status, memory, processes, ports, DNS lookups),
+The packs in [`packs/`](packs/), each released on its own with its own version ([how](docs/scripts.md#released-packs)): `system` (status, memory, processes, ports, DNS lookups),
 `systemd` (units, their logs, restarting one), `debian` (upgradable packages, `apt-get upgrade`, rebooting), `docker`
 (containers, their stats and logs, restarting, purging), `limen` (updating limen itself) and `openwrt`.
 

@@ -118,6 +118,36 @@ passes; one made with a looser umask, or by another user, doesn't.
 - **A script that can update itself** —a `sync` that pulls the repository it lives in— puts its body in a
   function called on the last line, `main "$@"`, so the shell has read it whole before the file changes.
 
+## Released packs
+
+Each pack in limen's `packs/` is released on its own as `pack-<pack>-vX.Y.Z`: a tarball of its folder and
+`SHA256SUMS`, with a build provenance attestation. limen fetches nothing, so the machine's own setup —its `sync`, a
+configuration manager— brings it, and the machine's `limen.toml` lists where it went:
+
+```sh
+pack=system version=0.1.0 sha256=<from the release's SHA256SUMS, kept in your repository>
+name=limen-pack-$pack-$version.tar.gz
+dir=/opt/limen-packs/$pack@$version
+if [ ! -d "$dir" ]; then
+  curl -fsSL --proto '=https' -o "/tmp/$name" "https://github.com/xoadev/limen/releases/download/pack-$pack-v$version/$name"
+  echo "$sha256  /tmp/$name" | sha256sum -c -
+  umask 022 && mkdir -p "$dir.tmp" && tar -xzf "/tmp/$name" -C "$dir.tmp" --strip-components=1 --no-same-permissions
+  mv "$dir.tmp" "$dir"
+fi
+```
+
+```toml
+[scripts]
+packs = ["/opt/limen-packs/system@0.1.0", "/opt/state/nodes/nas"]
+```
+
+- **Pin the hash, not only the tag**: a tag names a version, the hash is what makes it the same bytes.
+- **As root, with `umask 022`**: limen runs a script only if root owns it and nobody else can write it or any
+  directory above it. The tarball is made that way; extracting as root keeps it.
+- **A folder per version**: moving a machine to a new one is changing `limen.toml`, and going back is changing it
+  back. `limen lint` after each.
+- The agent must not be able to change the pinned version or hash: that is choosing what runs as root.
+
 ## A machine from a Git repository
 
 One way to keep a machine's packs and configuration in a private repository. limen takes no part in it beyond
