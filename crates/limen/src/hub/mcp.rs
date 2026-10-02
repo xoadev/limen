@@ -4,6 +4,7 @@
 //! Every tool is a request to one node: a file, its audit log, or one of the scripts its packs offer (spec §5).
 
 use super::NodeClient;
+use limen_core::config::hub::Approval;
 use limen_core::params::{self, Param, ParamType};
 use limen_core::protocol::{LimenError, NodeError, NodeResponse, pretty};
 use limen_core::requests::{self, RequestDef};
@@ -229,14 +230,20 @@ impl McpServer {
 
     fn tools(&self) -> Result<Vec<Value>, Fault> {
         let node = node_param(&self.client.nodes()?);
+        let approval = self.client.approval()?;
         let mut tools = vec![read_only_tool("nodes", NODES_DESCRIPTION, &params::input_schema(&[], &[]))];
         for request in requests::all().iter().filter(|request| request.tool) {
             let schema = params::input_schema(&request.params, &[(node.clone(), true)]);
             tools.push(read_only_tool(request.name, request.description, &schema));
         }
         for (name, (spec, nodes)) in self.script_tools()? {
+            let approved = if approval.needed(&name, spec.read_only) {
+                " A person approves each run before it starts."
+            } else {
+                ""
+            };
             let description = format!(
-                "{} Answers its exit code, stdout and stderr; `grep` and `tail` narrow stdout.",
+                "{}{approved} Answers its exit code, stdout and stderr; `grep` and `tail` narrow stdout.",
                 spec.description
             );
             let mut script_params = spec.params.clone();
@@ -431,8 +438,23 @@ impl McpServer {
         if !conflicts.is_empty() {
             body.insert("script_conflicts".into(), json!(conflicts));
         }
+        let unknown = unoffered(&self.client.approval()?, &catalogs);
+        if !unknown.is_empty() {
+            body.insert("approval_problems".into(), json!(unknown));
+        }
         Ok(tool_text(&pretty(&body)))
     }
+}
+
+/// What `nodes` says of each script [approval] names and no node offers: misspelt, it asks for nothing.
+fn unoffered(approval: &Approval, catalogs: &BTreeMap<String, Catalog>) -> Vec<String> {
+    let offered = scripts_by_name(catalogs);
+    approval
+        .named()
+        .into_iter()
+        .filter(|name| !offered.contains_key(name))
+        .map(|name| format!("[approval] names '{name}', which no node offers: check its spelling"))
+        .collect()
 }
 
 /// One node as `nodes` shows it: whether it answered, what it is, and its scripts.
@@ -653,7 +675,7 @@ fn rpc_error(id: &Value, code: i64, message: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use limen_core::config::hub::{Approval, ApprovalScripts};
+    use limen_core::config::hub::ApprovalScripts;
     use limen_core::protocol::{ErrorCode, LimenError, Result};
 
     /// Node, request and arguments.
@@ -967,7 +989,7 @@ mod tests {
     fn asking() -> Arc<Fake> {
         let fake = Arc::try_unwrap(nas_and_router()).ok().unwrap();
         Arc::new(Fake {
-            approval: Approval { scripts: ApprovalScripts::Changes, timeout: Duration::from_secs(5) },
+            approval: Approval { scripts: ApprovalScripts::Changes, except: vec![], timeout: Duration::from_secs(5) },
             ..fake
         })
     }
@@ -1100,5 +1122,31 @@ mod tests {
         assert!(is_tool_call(r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{}}"#));
         assert!(!is_tool_call(r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#));
         assert!(!is_tool_call("not json"));
+    }
+
+    #[test]
+    fn a_tool_says_when_a_person_approves_it() {
+        let client = asking();
+        let tools = rpc(&mcp_server(&client), "tools/list", &json!({}))["result"]["tools"].as_array().unwrap().clone();
+        let description = |name: &str| {
+            tools.iter().find(|tool| tool["name"] == name).unwrap()["description"].as_str().unwrap().to_string()
+        };
+        assert!(description("purge").contains("A person approves each run"), "{}", description("purge"));
+        assert!(!description("read_file").contains("approves"));
+    }
+
+    #[test]
+    fn nodes_names_what_approval_lists_and_no_node_offers() {
+        let fake = Arc::try_unwrap(asking()).ok().unwrap();
+        let client = Arc::new(Fake {
+            approval: Approval {
+                scripts: ApprovalScripts::Named(vec!["purge".into(), "upgarde".into()]),
+                ..fake.approval.clone()
+            },
+            ..fake
+        });
+        let nodes = text_of(&call_tool(&mcp_server(&client), "nodes", &json!({}))).to_string();
+        assert!(nodes.contains("upgarde"), "{nodes}");
+        assert!(!nodes.contains("'purge'"), "{nodes}");
     }
 }

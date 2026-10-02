@@ -145,7 +145,9 @@ Every tool takes a `node` argument.
   runs it, once, as asked. A no, a dismissed question, no answer within `approval.timeout`, a client that doesn't
   declare elicitation, or a transport that can't ask (HTTP, until it has SSE) answers `not approved`, and nothing
   reaches the node. The question goes to the client's interface, not to the model, which can neither see nor
-  answer it. The hub logs each question and its answer.
+  answer it. The hub logs each question and its answer. The description of a script's tool says when a person
+  approves each run, so the model can say so before calling it. `nodes` names every script `[approval]` lists that
+  no node offers: a misspelt name would otherwise let the script it meant run without asking.
 - `grep` is a fixed string, case-insensitive, matched against the redacted text —never the raw one, or a
   guess at a secret would be told apart by whether a line comes back— and filters before `tail` applies:
   the answer is the last N matching lines. A script never sees `grep` or `tail`, and can't declare
@@ -297,6 +299,7 @@ origins = []
 
 [approval]
 scripts = "changes"
+except = ["restart_container"]
 timeout = "5m"
 
 [nodes.nas]
@@ -337,7 +340,8 @@ host_key = "ssh-ed25519 AAAA…"
   hub for their turn. The node's own `limits.concurrency` (§7.1) counts the requests of every hub together and
   answers `unavailable` past it instead of waiting: keep the hub's at or below it.
 - `approval.scripts` is what a person approves before it runs (§5): `"none"`, the default; `"changes"`, every
-  script whose tool isn't read-only; or a list of script names. `approval.timeout`, `10s` to `1h` and `5m` unless
+  script whose tool isn't read-only; or a list of script names. `approval.except`, only with `"changes"`, lists
+  scripts that change things and still run without asking. `approval.timeout`, `10s` to `1h` and `5m` unless
   given, is how long a call waits for the answer. Read again with the rest of the file.
 - `http.listen` is where `serve` listens, as `host:port`. `--listen` wins over `LIMEN_LISTEN`, and that over the
   file; each is checked the same way. The image's command is `serve --listen 0.0.0.0:7341`, so in the image the

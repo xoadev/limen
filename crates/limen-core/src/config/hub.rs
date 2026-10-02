@@ -54,6 +54,8 @@ pub struct HubConfig {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Approval {
     pub scripts: ApprovalScripts,
+    /// With [ApprovalScripts::Changes], the scripts that change things and still run without asking.
+    pub except: Vec<String>,
     pub timeout: Duration,
 }
 
@@ -71,7 +73,7 @@ const APPROVAL_TIMEOUTS: std::ops::RangeInclusive<Duration> = Duration::from_sec
 
 impl Default for Approval {
     fn default() -> Self {
-        Self { scripts: ApprovalScripts::None, timeout: APPROVAL_TIMEOUT }
+        Self { scripts: ApprovalScripts::None, except: vec![], timeout: APPROVAL_TIMEOUT }
     }
 }
 
@@ -80,9 +82,18 @@ impl Approval {
     pub fn needed(&self, script: &str, read_only: bool) -> bool {
         match &self.scripts {
             ApprovalScripts::None => false,
-            ApprovalScripts::Changes => !read_only,
+            ApprovalScripts::Changes => !read_only && !self.except.iter().any(|name| name == script),
             ApprovalScripts::Named(names) => names.iter().any(|name| name == script),
         }
+    }
+
+    /// Every script this names, to ask for or to except: a name no node offers is likely a misspelt one.
+    pub fn named(&self) -> Vec<&str> {
+        let listed = match &self.scripts {
+            ApprovalScripts::Named(names) => names.as_slice(),
+            _ => &[],
+        };
+        listed.iter().chain(&self.except).map(String::as_str).collect()
     }
 }
 
@@ -115,6 +126,7 @@ struct File {
 #[serde(deny_unknown_fields, default)]
 struct ApprovalFile {
     scripts: Option<ScriptsFile>,
+    except: Option<Vec<String>>,
     timeout: Option<String>,
 }
 
@@ -220,18 +232,27 @@ fn approval(file: ApprovalFile) -> ConfigResult<Approval> {
         Some(ScriptsFile::Word(_)) => {
             return fail("approval.scripts", "\"none\", \"changes\" or a list of script names");
         }
-        Some(ScriptsFile::Names(names)) => {
-            if let Some(bad) = names.iter().find(|name| !scripts::is_script_name(name)) {
-                return fail("approval.scripts", format!("'{bad}' is not a script's name"));
-            }
-            ApprovalScripts::Named(names)
+        Some(ScriptsFile::Names(names)) => ApprovalScripts::Named(script_names("approval.scripts", names)?),
+    };
+    let except = match file.except {
+        None => vec![],
+        Some(_) if scripts != ApprovalScripts::Changes => {
+            return fail("approval.except", "only with scripts = \"changes\"");
         }
+        Some(names) => script_names("approval.except", names)?,
     };
     let timeout = duration("approval.timeout", file.timeout)?.unwrap_or(APPROVAL_TIMEOUT);
     if !APPROVAL_TIMEOUTS.contains(&timeout) {
         return fail("approval.timeout", "10s to 1h");
     }
-    Ok(Approval { scripts, timeout })
+    Ok(Approval { scripts, except, timeout })
+}
+
+fn script_names(key: &str, names: Vec<String>) -> ConfigResult<Vec<String>> {
+    match names.iter().find(|name| !scripts::is_script_name(name)) {
+        Some(bad) => fail(key, format!("'{bad}' is not a script's name")),
+        None => Ok(names),
+    }
 }
 
 /// `[nodes.<name>]` checked: a host, a port, a user and the pinned host key.
@@ -396,5 +417,24 @@ host_key = "ecdsa-sha2-nistp256 AAAAE2VjZHNh="
         assert_eq!(refused("timeout = \"5s\""), "approval.timeout: 10s to 1h");
         assert_eq!(refused("timeout = \"2h\""), "approval.timeout: 10s to 1h");
         assert!(refused("colour = 1").contains("unknown field"));
+    }
+
+    #[test]
+    fn every_change_but_the_ones_excepted() {
+        let approval =
+            HubConfig::parse("[approval]\nscripts = \"changes\"\nexcept = [\"restart_container\"]").unwrap().approval;
+        assert!(approval.needed("upgrade", false));
+        assert!(!approval.needed("restart_container", false));
+        assert_eq!(approval.named(), ["restart_container"]);
+        let refused = |text: &str| HubConfig::parse(&format!("[approval]\n{text}")).unwrap_err().0;
+        assert_eq!(
+            refused("scripts = [\"reboot\"]\nexcept = [\"reboot\"]"),
+            "approval.except: only with scripts = \"changes\""
+        );
+        assert_eq!(refused("except = [\"reboot\"]"), "approval.except: only with scripts = \"changes\"");
+        assert_eq!(
+            refused("scripts = \"changes\"\nexcept = [\"-rf\"]"),
+            "approval.except: '-rf' is not a script's name"
+        );
     }
 }

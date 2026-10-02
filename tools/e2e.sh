@@ -321,6 +321,9 @@ EOF
   refuse "a client that can't ask runs nothing" 'declares no elicitation' 'marked approved' \
     approval_session debian '{}'
   sed -i '/^\[approval\]/,$d' "$work/debian/limen.toml"
+  printf '[approval]\nscripts = "changes"\nexcept = ["mark"]\n' >> "$work/debian/limen.toml"
+  expect "a change excepted runs without asking" 'marked approved' approval_session debian '{}'
+  sed -i '/^\[approval\]/,$d' "$work/debian/limen.toml"
   expect "one without it may change the machine" 'mark {\"readOnlyHint\":false,\"destructiveHint\":true}' annotations debian mark
   # Someone else's host key: a real one, so ssh refuses it for not matching and for nothing else.
   sed -i "s|^host_key = .*|host_key = \"$(cut -d' ' -f1,2 "$work/stranger.pub")\"|" "$work/debian/limen.toml"

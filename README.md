@@ -261,6 +261,7 @@ With `limen mcp` (stdio), the hub can ask you before each run of a script that c
 ```toml
 [approval]
 scripts = "changes"   # every script that isn't read-only; or a list: ["upgrade", "reboot"]
+except = ["restart_container"]   # with "changes": these run without asking
 timeout = "5m"
 ```
 
