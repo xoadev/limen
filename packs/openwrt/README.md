@@ -2,6 +2,8 @@
 
 A router running OpenWrt: its board, services, log, network, Wi-Fi clients, DHCP leases and packages. POSIX `sh`, as busybox's `ash` runs it.
 
+Needs limen 0.1.3 or later: its headers use `read_only`, which older versions refuse.
+
 | Script | Answers | Changes the machine |
 |---|---|---|
 | `board` | Model, hostname, kernel, OpenWrt release and target | no |

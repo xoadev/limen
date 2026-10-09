@@ -2,6 +2,8 @@
 
 limen itself, on the machine that runs it.
 
+Needs limen 0.1.3 or later: its headers use `read_only`, which older versions refuse.
+
 | Script | Answers | Changes the machine |
 |---|---|---|
 | `limen_version` | The installed version, the latest release, and whether there is something to update | — |

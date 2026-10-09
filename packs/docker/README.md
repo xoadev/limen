@@ -2,6 +2,8 @@
 
 Containers, their logs, images and Compose projects, and cleaning up after them.
 
+Needs limen 0.1.3 or later: its headers use `read_only`, which older versions refuse.
+
 | Script | Answers | Changes the machine |
 |---|---|---|
 | `containers` | Every container with its image, state and health | no |

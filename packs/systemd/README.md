@@ -2,6 +2,8 @@
 
 Units and their journals, on a machine with systemd.
 
+Needs limen 0.1.3 or later: its headers use `read_only`, which older versions refuse.
+
 | Script | Answers | Changes the machine |
 |---|---|---|
 | `units` | Units of one type, by state or name glob, with a count of the failed ones | no |
