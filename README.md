@@ -86,14 +86,14 @@ The hub talks to each machine (each *node*) with the system's `ssh`; nothing lis
 
 The packs in [`packs/`](packs/), each released on its own with its own version ([how](#packs)):
 
-| Pack | Its scripts answer, or do |
-|---|---|
-| `system` | Status, memory, processes, ports, network, whether a host is reachable, DNS, the kernel's log, the clock, file systems, disks and SMART |
-| `systemd` | Units, failed units, timers, a unit's journal, the whole journal; restarting a unit |
-| `debian` | Upgradable packages, one package's versions; `apt-get upgrade`, autoremove, rebooting |
-| `docker` | Containers, their stats and logs, images, disk use, Compose projects; restarting, purging, updating a Compose project you listed |
-| `openwrt` | The board, services, log, interfaces, DHCP leases, Wi-Fi clients, upgradable packages; restarting a service |
-| `limen` | limen's version, its packs' versions, lint; updating limen itself |
+| Pack | Latest | Its scripts answer, or do |
+|---|---|---|
+| `system` | [![system](https://img.shields.io/github/v/release/xoadev/limen?filter=pack-system-v*&display_name=tag&label=)](https://github.com/xoadev/limen/releases?q=pack-system&expanded=true) | Status, memory, processes, ports, network, whether a host is reachable, DNS, the kernel's log, the clock, file systems, disks and SMART |
+| `systemd` | [![systemd](https://img.shields.io/github/v/release/xoadev/limen?filter=pack-systemd-v*&display_name=tag&label=)](https://github.com/xoadev/limen/releases?q=pack-systemd&expanded=true) | Units, failed units, timers, a unit's journal, the whole journal; restarting a unit |
+| `debian` | [![debian](https://img.shields.io/github/v/release/xoadev/limen?filter=pack-debian-v*&display_name=tag&label=)](https://github.com/xoadev/limen/releases?q=pack-debian&expanded=true) | Upgradable packages, one package's versions; `apt-get upgrade`, autoremove, rebooting |
+| `docker` | [![docker](https://img.shields.io/github/v/release/xoadev/limen?filter=pack-docker-v*&display_name=tag&label=)](https://github.com/xoadev/limen/releases?q=pack-docker&expanded=true) | Containers, their stats and logs, images, disk use, Compose projects; restarting, purging, updating a Compose project you listed |
+| `openwrt` | [![openwrt](https://img.shields.io/github/v/release/xoadev/limen?filter=pack-openwrt-v*&display_name=tag&label=)](https://github.com/xoadev/limen/releases?q=pack-openwrt&expanded=true) | The board, services, log, interfaces, DHCP leases, Wi-Fi clients, upgradable packages; restarting a service |
+| `limen` | [![limen](https://img.shields.io/github/v/release/xoadev/limen?filter=pack-limen-v*&display_name=tag&label=)](https://github.com/xoadev/limen/releases?q=pack-limen&expanded=true) | limen's version, its packs' versions, lint; updating limen itself |
 
 Each pack's README says what each script needs and what it never prints.
 
@@ -158,7 +158,7 @@ Paste the line for the machine's system on it. It downloads limen and checks it,
 it against the fingerprint in the line, sets the machine up and reports to the hub, which adds it and tries it:
 
 ```
-nas is on the hub, at 100.64.0.5: Debian GNU/Linux 13, limen 0.1.0
+nas is on the hub, at 100.64.0.5: Debian GNU/Linux 13, limen X.Y.Z
 ```
 
 - **Debian, Ubuntu**: a `limen` user whose key only runs `limen gate`, and a sudo rule for exactly that.
@@ -190,7 +190,7 @@ allow = ["/etc/nginx/**", "/opt/stacks/*/compose.yaml", "/var/log/nginx/*.log"]
 deny = ["**/*.env"]
 
 [scripts]
-packs = ["/opt/limen-packs/system@0.1.1", "/opt/limen-packs/docker@0.1.1", "/opt/state/nodes/nas"]
+packs = ["/opt/limen-packs/system@X.Y.Z", "/opt/limen-packs/docker@X.Y.Z", "/opt/state/nodes/nas"]
 
 [redact]
 names = ["DB_PASSWORD", "MQTT_PASS"]
@@ -237,8 +237,8 @@ in [`docs/scripts.md`](docs/scripts.md).
 The packs of this repository are released on their own, as `pack-<pack>-vX.Y.Z`: a tarball and its `SHA256SUMS`,
 with a build attestation. limen downloads none of them: the machine's own setup unpacks each one into a folder of its
 version, `/opt/limen-packs/<pack>@X.Y.Z`, pinning its hash, as [`docs/scripts.md`](docs/scripts.md#released-packs)
-shows; the `limen` pack's `limen_packs` then says when a newer one is out. **Packs 0.1.1 need limen 0.1.3 or later**:
-older versions refuse a header with `read_only`.
+shows; the `limen` pack's `limen_packs` then says when a newer one is out. **Update limen before the packs**: a
+pack can use a header key an older limen refuses, and each pack's README says which limen it needs.
 
 ### Other ways
 

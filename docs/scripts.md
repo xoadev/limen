@@ -127,7 +127,7 @@ Each pack in limen's `packs/` is released on its own as `pack-<pack>-vX.Y.Z`: a 
 configuration manager— brings it, and the machine's `limen.toml` lists where it went:
 
 ```sh
-pack=system version=0.1.1 sha256=<from the release's SHA256SUMS, kept in your repository>
+pack=system version=X.Y.Z sha256=<from the release's SHA256SUMS, kept in your repository>
 name=limen-pack-$pack-$version.tar.gz
 dir=/opt/limen-packs/$pack@$version
 if [ ! -d "$dir" ]; then
@@ -140,7 +140,7 @@ fi
 
 ```toml
 [scripts]
-packs = ["/opt/limen-packs/system@0.1.1", "/opt/state/nodes/nas"]
+packs = ["/opt/limen-packs/system@X.Y.Z", "/opt/state/nodes/nas"]
 ```
 
 - **Pin the hash, not only the tag**: a tag names a version, the hash is what makes it the same bytes.
@@ -151,8 +151,7 @@ packs = ["/opt/limen-packs/system@0.1.1", "/opt/state/nodes/nas"]
   name and says when a newer release is published.
 - The agent must not be able to change the pinned version or hash: that is choosing what runs as root.
 - **limen before the packs**: a pack can use a header key an older limen doesn't know, and that limen refuses
-  the script. Packs 0.1.1 use `read_only` and need limen 0.1.3 or later; each pack's README says which limen it
-  needs, and its release notes say when that changes.
+  the script. Each pack's README says which limen it needs, and its release notes say when that changes.
 
 ## A machine from a Git repository
 
