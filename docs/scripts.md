@@ -221,3 +221,6 @@ main "$@"
   the agent must not be able to push there. Protect the branch, and change it only through reviewed pull
   requests.
 - The first clone can't be a script: until it runs there are no packs. That is why the bootstrap does it.
+
+[Our machines, through pull requests](https://xoa.dev/notes/machines-through-pull-requests/) tells how we use this setup, with the
+agent's changes going through reviewed pull requests.

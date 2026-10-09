@@ -246,6 +246,7 @@ pack can use a header key an older limen refuses, and each pack's README says wh
   `curl -fsSL …/install.sh | sudo env LIMEN_YES=1 sh` installs limen with nothing open to SSH, and a hub joins it
   later with its line. [`docs/scripts.md`](docs/scripts.md#a-machine-from-a-git-repository) shows a bootstrap that
   clones the machine's repository first.
+  [Our machines, through pull requests](https://xoa.dev/notes/machines-through-pull-requests/) is that setup in use.
 - **The hub on your laptop**, for Claude Code there (stdio, nothing listening):
   `curl -fsSL …/install.sh | sh -s -- --hub` installs `limen` in `~/.local/bin`, creates `~/.limen` and prints the
   `claude mcp add` line. Without an HTTP hub to call back, `limen invite nas` prints a line with the hub's key in it
@@ -314,6 +315,8 @@ What is readable or printed reaches the model provider, by design. The full thre
 | [`docs/spec.md`](docs/spec.md) | The design and the reference: access, protocol, tools, packs, configuration, CLI, joining, threat model, decisions |
 | [`docs/scripts.md`](docs/scripts.md) | Writing scripts and packs, and a machine set up from a Git repository |
 | [`docs/openwrt.md`](docs/openwrt.md) | OpenWrt as a node, and one binary for every Linux |
+| [Our machines, through pull requests](https://xoa.dev/notes/machines-through-pull-requests/) | How we run our own machines: the agent proposes scripts and permissions as pull requests |
+| [Immutable releases with convco-version](https://xoa.dev/notes/immutable-releases-with-convco-version/) | How limen is released, and why its releases can't change |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | How to build, test and send a change |
 | [`AGENTS.md`](AGENTS.md) | The full working contract, for people and coding agents |
 | [`SECURITY.md`](SECURITY.md) | How to report a vulnerability, and what counts as one |
