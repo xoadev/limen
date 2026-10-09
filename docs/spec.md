@@ -92,7 +92,7 @@ One request per SSH session: a JSON object on stdin, a JSON object on stdout. `S
 is ignored.
 
 ```json
-{"v": 1, "request": "run", "args": {"script": "unit_logs", "args": {"unit": "nginx.service"}, "grep": "error", "tail": 200}}
+{"v": 1, "request": "run", "args": {"script": "journal", "args": {"since": "1h"}, "grep": "error", "tail": 200}}
 ```
 
 ```json
@@ -125,7 +125,7 @@ is ignored.
 
 ## 5. MCP tools
 
-Every tool takes a `node` argument.
+Every tool but `nodes` takes a `node` argument.
 
 | Tool | Returns |
 |---|---|
@@ -168,7 +168,7 @@ A **pack** is a directory of scripts. A node offers the scripts of the packs lis
 (§7.1), and nothing else.
 
 ```
-/opt/state/packs/systemd/   units  unit  unit_logs  restart_unit
+/opt/state/packs/systemd/   failed_units  journal  restart_unit
 /opt/state/packs/docker/    containers  container_logs  purge
 /opt/state/nodes/nas/       sync  backup_status
 ```
@@ -224,14 +224,14 @@ max_bytes = 5242880
   request answer `internal` with the reason.
 - `limen.toml` may be a link to a file kept elsewhere; the file it leads to must pass the same ownership
   rule as a script (§6).
-- Sizes are bytes: `files.max_bytes`, `limits.max_response`, and `audit.max_bytes`, 1024 at least. `max_lines` and
-  `scan_lines` count lines, `concurrency` requests. No limit may be zero. `audit.path` and every entry of
+- Sizes are bytes: `files.max_bytes`, `limits.max_response` and `audit.max_bytes`, the last 1024 at least. `max_lines`
+  and `scan_lines` count lines, `concurrency` requests. No limit may be zero. `audit.path` and every entry of
   `scripts.packs` are absolute paths.
 - An answer bigger than `limits.max_response` is replaced by a `bad_request` asking to narrow it.
-- The node bounds its requests itself, whatever hub sends them: at most `limits.concurrency` at once (a lock
-  on one of `/run/limen/slot-<n>`; one more gets `unavailable`), ten seconds to send the request, and two minutes
-  in all —a script, its own timeout and a margin—. A request out of time has what it started killed, answers
-  `timeout` and is audited as such. `read_file` goes at most 64 MiB into a file to reach its first line.
+- The node bounds its requests itself, whatever hub sends them: at most `limits.concurrency` at once (a lock on one of
+  `/run/limen/slot-<n>`; one more gets `unavailable`), ten seconds to send the request, and two minutes in all; a script
+  gets its own timeout (an hour at most) and 30 seconds more instead. A request out of time has what it started killed,
+  answers `timeout` and is audited as such. `read_file` goes at most 64 MiB into a file to reach its first line.
 
 - **Nothing is readable by default.** `files.allow` starts empty. Everything readable ends up in a model
   provider's context, so the operator decides it path by path.
@@ -245,12 +245,12 @@ max_bytes = 5242880
   newlines included. The range stops before the line that would pass it and says it was truncated. `grep` and `tail`
   don't go by it: they read the file's end, at most `limits.scan_lines` lines and 1 KiB for each of them up to
   16 MiB, and answer at most `limits.max_lines` lines (§5). Every answer is bounded by `limits.max_response`.
-- A built-in deny list applies on top and can't be overridden: `/etc/shadow`, `/etc/gshadow` and their
-  backups in `/var/backups/`, `/etc/sudoers*`, SSH and dropbear private keys, `/etc/ssl/private/`,
-  `/etc/wireguard/`, NetworkManager connections, OpenWrt's `/etc/config/wireless`, systemd's
-  `/run/credentials/`, `/etc/limen/`, `/var/log/limen/`, `/root/`, and the pseudo-filesystems `/proc/`,
-  `/sys/` and `/dev/`, where a "file" can be a process's environment or a whole disk. So is the audit log,
-  wherever `[audit]` puts it. Secrets the packs use —a repository's token— belong under `/etc/limen/`.
+- A built-in deny list applies on top and can't be overridden: `/etc/shadow`, `/etc/gshadow` and their backups
+  (`/etc/shadow-`, `/etc/gshadow-`, `/var/backups/`), `/etc/sudoers*`, SSH and dropbear private keys,
+  `/etc/ssl/private/`, `/etc/wireguard/`, NetworkManager connections, OpenWrt's `/etc/config/wireless`, systemd's
+  `/run/credentials/`, `/etc/limen/`, `/var/log/limen/`, `/root/`, and the pseudo-filesystems `/proc/`, `/sys/` and
+  `/dev/`, where a "file" can be a process's environment or a whole disk. So is the audit log, wherever `[audit]` puts
+  it. Secrets the packs use —a repository's token— belong under `/etc/limen/`.
 - Only regular files with a single hard link are read: another name for the same file could be anywhere,
   and a hard link into an allowed directory would carry a denied file with it. A binary file (a NUL in its
   first 8 KiB) answers its size and no content.
@@ -264,12 +264,12 @@ max_bytes = 5242880
 - A file of up to 1 MiB that holds a PEM private key is not read at all: a range of lines can fall
   between the key's markers, where redaction can't recognise it. In larger files a window is redacted as
   a whole, so a key it holds entire is masked.
-- **Redaction** replaces a secret's value with `[redacted]` and keeps what names it: `DB_PASSWORD=[redacted]`.
-  It applies to files, scripts' output and `history`. The built-in patterns catch `key=value` for the usual
-  names of secrets (a quoted value up to its closing quote), UCI's `option key '…'`, `Authorization` headers,
-  credentials in URLs, `curl -u`, `sshpass -p`, `mysql -p`, the tokens whose provider gives them a shape of
-  their own wherever they appear (GitHub's `ghp_…` and `github_pat_…`, JWTs, Slack's `xox?-…`, AWS access key
-  ids `AKIA…`/`ASIA…`, Stripe's `sk_live_…`/`rk_live_…`, Google API keys `AIza…`), PEM private keys and lines of
+- **Redaction** replaces a secret's value with `[redacted]` and keeps what names it: `DB_PASSWORD=[redacted]`. It
+  applies to files, scripts' output and `history`. The built-in patterns catch `key=value` for the usual names of
+  secrets (a quoted value up to its closing quote), UCI's `option key '…'`, `Authorization` headers, credentials in
+  URLs, `curl -u`, `sshpass -p`, `mysql -p`, the tokens whose provider gives them a shape of their own wherever they
+  appear (GitHub's `ghp_…`, `gho_…`, `ghu_…`, `ghs_…`, `ghr_…` and `github_pat_…`, JWTs, Slack's `xox?-…`, AWS access
+  key ids `AKIA…`/`ASIA…`, Stripe's `sk_live_…`/`rk_live_…`, Google API keys `AIza…`), PEM private keys and lines of
   base64 alone, as a key's body is written, unless they are all hexadecimal: those are hashes and IDs, such as a
   container's.
   - `redact.names` adds names, case-insensitive: the value after `NAME=`, `NAME: ` or `"NAME": ` is replaced.
@@ -313,8 +313,8 @@ user = "root"
 host_key = "ssh-ed25519 AAAA…"
 ```
 
-- The directory holds `limen.toml`, the hub's SSH key, `token` (for HTTP clients, unless `LIMEN_TOKEN` is set) and
-  `invites/`.
+- The directory holds `limen.toml`, the hub's SSH key, `token` (for HTTP clients, unless `LIMEN_TOKEN` is set),
+  `known_hosts`, which limen writes from the nodes' host keys, and `invites/`.
 - `ssh.identity` is the hub's SSH key: a path relative to the hub's directory (`--home`, else `LIMEN_HOME`), or
   absolute. `init` makes it with `ssh-keygen` when it is missing. Its public key is the same path with `.pub`: the
   one `invite` hands out, whose fingerprint `init`, `serve` and the join line show.
@@ -400,14 +400,14 @@ host_key = "ssh-ed25519 AAAA…"
 | `limen serve [--listen <host:port>] [--home <dir>]` | hub | MCP over HTTP and the join endpoints; `init --serve` first if needed |
 | `limen connect [--url <url>] [--home <dir>]` | hub | The `claude mcp add` line: HTTP when there is a public URL and a token, stdio otherwise |
 | `limen invite <name> [--ttl 1h] [--home <dir>]` | hub | The line that joins a machine (§10.1) |
-| `limen trust <name> <address> <host-key> [--user] [--port] [--home <dir>]` | hub | A node added by hand |
+| `limen trust <name> <address> <host-key> [--user <user>] [--port <port>] [--home <dir>]` | hub | A node added by hand |
 | `limen forget <name> [--home <dir>]` | hub | A node taken off the hub |
-| `limen call <node> <request \| script> [--arg k=v]… [--grep] [--tail] [--home <dir>]` | hub | One request over SSH; prints the JSON. A script's arguments are typed by its header, from the node's catalog |
+| `limen call <node> <request \| script> [--arg k=v]… [--grep <text>] [--tail <n>] [--home <dir>]` | hub | One request over SSH; prints the JSON. A script's arguments are typed by its header, from the node's catalog |
 | `limen join <line> \| --hub-key <key> --name <name> [--from …] [--address …] [--ssh-port …]` | node, root | Joins the hub (§10.1): install with the hub's key, then report |
 | `limen install [--hub-key <key>] [--from <addresses>] [--dry-run]` | node, root | Debian: binary in `/usr/local/bin`, the `limen` user, `authorized_keys`, `sudoers` (validated with `visudo -c` first) and, where systemd runs, the user's `user@<uid>.service` masked. OpenWrt: binary in `/usr/bin`, root's dropbear keys, sysupgrade keep list. Both: `/etc/limen/` and a `limen.toml` if there is none. Without `--hub-key` nothing opens to SSH yet. Idempotent |
 | `limen uninstall [--purge] [--dry-run]` | node, root | Undoes `install`; keeps `/etc/limen/` and the logs unless `--purge` |
 | `limen gate [--config <file>]` | node | The forced command. Not for people |
-| `limen run <script> [--arg k=v]… [--grep] [--tail] [--config <file>]` | node, root | One script, as the hub would run it; prints its output and exits with its exit code |
+| `limen run <script> [--arg k=v]… [--grep <text>] [--tail <n>] [--config <file>]` | node, root | One script, as the hub would run it; prints its output and exits with its exit code |
 | `limen lint [--config <file>]` | node | Packs, script names, headers and permissions, without running anything |
 | `limen version` | both | The version |
 
@@ -471,7 +471,7 @@ hub:   [nodes.nas] with the request's source address, then `hello`  →  {"reach
 ## 11. Distribution and platforms
 
 - **One static binary per architecture**, `amd64` and `arm64`, for any Linux: linked against musl, it
-  needs nothing of the machine but the kernel, and runs the same on Debian, Alpine or OpenWrt. About 3 MB.
+  needs nothing of the machine but the kernel, and runs the same on Debian, Alpine or OpenWrt. About 2 MB.
 - Hub image `ghcr.io/xoadev/limen`, one tag for `amd64` and `arm64`: distroless —no shell, no package manager—
   with the binary and OpenSSH's `ssh` and `ssh-keygen`, taken from Alpine with the libraries they load. It runs as
   distroless's `nonroot` (uid 65532). Volume `/data` holds `limen.toml` and the SSH key.
@@ -514,7 +514,7 @@ hub:   [nodes.nas] with the request's source address, then `hello`  →  {"reach
   - `limen-core`: protocol types, request schemas, configuration, script headers, path policy,
     redaction and the join's formats. Pure, tested without a machine.
   - `limen`: the binary — processes, files, SSH, MCP and HTTP.
-- MCP: own JSON-RPC 2.0 implementation, no SDK. HTTP: an own bounded HTTP/1.1 server for the hub (§9);
+- MCP: its own JSON-RPC 2.0 implementation, no SDK. HTTP: its own bounded HTTP/1.1 server for the hub (§9);
   `join`'s two requests over `std::net`. Neither has TLS. JSON: `serde_json`. CLI: `clap`. System calls: `rustix`; no `unsafe` code.
 - Users and groups come from `/etc/passwd` and `/etc/group`, read by limen itself; nodes resolve no host
   names.
@@ -560,7 +560,7 @@ hub:   [nodes.nas] with the request's source address, then `hello`  →  {"reach
 | Limits on the node | Policy in the MCP server | Existing SSH MCP servers filter commands on the client side: a compromised or deceived client then has a shell |
 | SSH with a forced command | An agent daemon per node | `sshd` already authenticates and encrypts; a daemon adds a port, its own auth and its own updates |
 | Request on stdin | Arguments in `SSH_ORIGINAL_COMMAND` | No word splitting, and `sudo` keeps stdin but drops that variable |
-| The system `ssh` | An SSH library | The system client brings agent support, multiplexing and the operator's configuration, and is already on every hub |
+| The system `ssh` | An SSH library | The system client brings multiplexing, host key checking and every key type, and is already on every hub. limen runs it with `-F none` and no agent, so nothing of the operator's own SSH setup reaches a node |
 | The agent changes things only through the node's scripts | A read-only agent, and changes by CI with another key | An agent that can't act on what it finds is half useful. The scripts bound what it can change as tightly as the allowlist bounds what it can read; the price is that an injected instruction can run any of them (§13) |
 | One user and one key, the hub's | A read role for the hub and a deploy role for CI | With every change a script the node offers, a second role would guard nothing the scripts don't |
 | Everything but files lives in scripts | Built-in readers for systemd, procd and Docker | limen stays one mechanism with no init system, runtime or tool to follow; supporting one more is a pack, not a release |
@@ -570,7 +570,7 @@ hub:   [nodes.nas] with the request's source address, then `hello`  →  {"reach
 | A pack's tag `pack-<pack>-vX.Y.Z`, and limen's `vX.Y.Z` | One version for everything; or `packs/<pack>/vX.Y.Z` | Each has its own history and its own changelog, and the nodes already deployed keep finding limen's releases as `vX.Y.Z`. No slash: a tag's name is also a path in its download URLs |
 | Filters after redaction, in limen | Scripts taking `grep` | A filter on the raw text tells a secret apart letter by letter by whether a line comes back |
 | Empty allowlist by default | A broad default such as `/etc/**` | `/etc` holds Wi-Fi passwords, VPN keys and TLS keys |
-| Rust | Kotlin/Native (the first implementation), Go | Static musl binaries of about 3 MB built by the toolchain itself, arm64 without a cross compiler, and memory safety without a garbage collector in what runs as root. Kotlin/Native had no musl target: a static glibc needed its own linker script, no NSS, and an own HTTP client where glibc's iconv was missing |
+| Rust | Kotlin/Native (the first implementation), Go | Static musl binaries of about 2 MB built by the toolchain itself, arm64 without a cross compiler, and memory safety without a garbage collector in what runs as root. Kotlin/Native had no musl target: a static glibc needed its own linker script, no NSS, and a hand-written HTTP client where glibc's iconv was missing |
 | A static binary | A package per distribution | One file runs on any Linux, and OpenWrt has no package for it |
 | Configuration as `serde` types, edited with `toml_edit` | Reading and editing TOML by hand | `deny_unknown_fields` turns a typo into an error with its line; an edited document can't gain a table from a value, and keeps the operator's comments |
 | A person's approval through MCP elicitation, asked by the hub | A push to a phone, a webhook, a chat bot | No service, no TLS, no open port: the question reaches the person where the agent already is, and never the model. The price: an agent nobody watches can't be approved, and over HTTP it needs SSE first |

@@ -9,7 +9,8 @@ takes a machine's packs from a Git repository. The design around it is in the [s
 A directory listed in `scripts.packs` of `/etc/limen/limen.toml`. Its scripts are the executable files at its
 top whose name is `^[a-z0-9][a-z0-9_-]{0,47}`, plus an optional extension, and that carry a header. Everything
 else —a README, helpers without a header, subdirectories— is the pack's own, for its scripts to use: the
-agent never sees it.
+agent never sees it. A file with a header that isn't executable, or that [Who owns it](#who-owns-it) refuses, is
+no helper: `limen lint` and `nodes` report it.
 
 ```
 packs/docker/
@@ -45,8 +46,8 @@ exec journalctl --no-pager -o short-iso --since "-$LIMEN_ARG_SINCE" -u "$LIMEN_A
 | Key | | |
 |---|---|---|
 | `description` | required | What the model reads to choose the tool. One line, what it does and what it answers |
-| `read_only` | default `false` | `true` when the script changes nothing on the machine: the hub tells MCP clients they may run it without asking. Refreshing a cache it can rebuild, such as the package lists, counts as changing nothing. When in doubt, leave it out |
-| `timeout` | default `60s`, at most `1h` | `30s`, `5m`, `1h`, in whole seconds: a fraction is dropped, and under `1s` is `1s`. `SIGTERM` to the script's process group when it runs out, `SIGKILL` after a grace period |
+| `read_only` | default `false` | `true` when the script changes nothing on the machine: the hub tells MCP clients they may run it without asking. Refreshing a cache it can rebuild, such as the package lists, counts as changing nothing. A tool is read-only only when every node that offers it says so. When in doubt, leave it out |
+| `timeout` | default `60s`, at most `1h` | `30s`, `5m`, `1h` (or `ms`, `d`): a whole number and a unit, so `1.5s` is refused. It counts in whole seconds: `1500ms` is `1s`, and under `1s` is `1s`. `SIGTERM` to the script's process group when it runs out, `SIGKILL` after a grace period |
 | `[args.<name>]` | one per argument | `name` is `^[a-z][a-z0-9_]{0,31}$`; `node`, `grep` and `tail` are taken |
 
 Each argument:
@@ -69,6 +70,7 @@ The catalog reaches every MCP session as text, and the hub doesn't take it on tr
 
 - named as one of its own tools or the node's requests: `nodes`, `hello`, `read_file`, `list_dir`, `history`, `run`;
 - whose description, or an argument's, runs past 300 characters or holds a control character;
+- declared with different arguments on another node, until they agree;
 - with a `pattern` over 512 bytes, or that compiles to more than 1 MiB. A bounded repetition unrolls: `\w{1,300}`
   —Unicode's `\w`, hundreds of ranges, 300 times— is too big; `[A-Za-z0-9_]{1,300}` is not.
 
@@ -113,8 +115,8 @@ passes; one made with a looser umask, or by another user, doesn't.
   it, and narrow `pattern` to what the argument can be.
 - **A script that changes something is safe to run twice**, and says what it did. The agent may run it again
   after a timeout.
-- **One at a time, where it matters**: `flock -n /run/lock/limen-<name>.lock` refuses a second run while the
-  first goes on.
+- **One at a time, where it matters**: `exec 9> /run/lock/limen-<name>.lock; flock -n 9 || exit 1` refuses a
+  second run while the first goes on.
 - **Offer only changes you would let whoever writes to your logs trigger.** Text in a log or a file can lead the
   model to call any script on offer.
 - **A script that can update itself** —a `sync` that pulls the repository it lives in— puts its body in a

@@ -16,7 +16,7 @@ Needs limen 0.1.3 or later: its headers use `read_only`, which older versions re
 
 - `upgrade` does not reboot: it says whether one is needed. **A package may restart its own services**: upgrading
   Docker restarts its containers. It ignores `HUP` and `PIPE` and writes to `/var/log/limen-upgrade.log`, so a dropped
-  connection doesn't kill `dpkg` half way.
+  connection doesn't kill `dpkg` halfway.
 - `upgrade full` takes the packages `updates` lists as kept back, which need others installed or removed. **It
   removes none unless `remove` is given too**: a full upgrade that would remove one does nothing and lists them, so
   removing is a second, deliberate call.
