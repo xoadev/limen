@@ -1,8 +1,5 @@
-# Releases are prepared as they go and published when somebody decides to (spec §11).
-#
-# Every push to `main` rewrites the draft release: convco reads the conventional commits that touched what goes into
-# the binary and the image, and says the next `X.Y.Z` and what went in since the last published one. A draft makes no
-# tag and builds nothing.
+# Publishes limen's draft release, and runs only when somebody decides to (spec §11). The draft itself is prepared on
+# every push to `main` by release-draft.yml.
 #
 # Publishing is running this workflow by hand (Actions → release → Run workflow). It takes the draft's version and
 # commit, waits for check.yml to be green on it, builds the static binaries for x86-64 and arm64 and the hub image for
@@ -13,16 +10,14 @@
 # What is published is built **release**, not the debug variant the repository is worked on with: smaller and
 # optimised, which is what goes on a router.
 #
-# No job that runs someone else's code holds a token that writes: convco, the compiler, the build scripts of the
-# crates, QEMU and BuildKit run with `contents: read` and no credentials left on disk. What writes —the draft, the
-# release's files, the image— runs only `gh`, `skopeo` and GitHub's own `attest`, on what the read-only jobs handed
-# over. Every binary and the image get a build provenance attestation: `gh attestation verify` tells anyone that
-# they came from this workflow, at this tag.
+# No job that runs someone else's code holds a token that writes: the compiler, the build scripts of the crates, QEMU
+# and BuildKit run with `contents: read` and no credentials left on disk (convco too, in release-draft.yml). What
+# writes —the release's files, the image, publishing the draft— runs only `gh`, `skopeo` and GitHub's own `attest`,
+# on what the read-only jobs handed over. Every binary and the image get a build provenance attestation:
+# `gh attestation verify` tells anyone that they came from this workflow, at this tag.
 name: release
 
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
     inputs:
       publish:
@@ -33,87 +28,16 @@ on:
 permissions:
   contents: read
 
-# One at a time, pushes and publishing alike: a push while a release is being built would move the draft under it.
+# The same group as release-draft.yml, one at a time and never cancelled: a push while a release is being built would
+# move the draft under it.
 concurrency:
   group: release
   cancel-in-progress: false
 
 jobs:
-  # What the next version is and what went in: convco, a binary the action downloads, reads the history here with a
-  # token that can't write anything.
-  version:
-    if: github.event_name == 'push'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    outputs:
-      tag: ${{ steps.version.outputs.next-version-tag }}
-      version: ${{ steps.version.outputs.next-version }}
-      has-changes: ${{ steps.version.outputs.has-changes }}
-      changelog: ${{ steps.version.outputs.changelog }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          # convco reads every commit since the last tag.
-          fetch-depth: 0
-          persist-credentials: false
-
-      - name: Next version and changes
-        id: version
-        uses: xoadev/convco-version@97bbabfd76db29aaa7046eebcfb419a4e892449a # v1.0.1
-        with:
-          # What ends up in the binary or the image: the code, the toolchain and dependencies, the image.
-          paths: crates,Cargo.toml,Cargo.lock,rust-toolchain.toml,.cargo,etc/Dockerfile
-          tag-prefix: v
-
-  # One draft, always the one of the next version: a `feat` after a `fix` turns 0.1.1 into 0.2.0, and the draft of
-  # 0.1.1 would otherwise stay there, announcing a version that is never going to exist. Only `gh`, no checkout.
-  draft:
-    needs: version
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions:
-      contents: write # rewrite the draft release
-    steps:
-      - name: Rewrite the draft
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          TAG: ${{ needs.version.outputs.tag }}
-          VERSION: ${{ needs.version.outputs.version }}
-          HAS_CHANGES: ${{ needs.version.outputs.has-changes }}
-          CHANGELOG: ${{ needs.version.outputs.changelog }}
-        run: |
-          if [[ "$HAS_CHANGES" == true && ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "::error title=Version::convco said '$TAG', not vX.Y.Z" >&2
-            exit 1
-          fi
-          # Only limen's own drafts, vX.Y.Z: the packs' are packs.yml's.
-          gh release list --limit 100 --json tagName,isDraft --jq '.[] | select(.isDraft and (.tagName | test("^v[0-9]"))) | .tagName' |
-            while read -r stale; do
-              if [[ "$stale" != "$TAG" || "$HAS_CHANGES" != true ]]; then
-                gh release delete "$stale" --yes
-              fi
-            done
-          if [[ "$HAS_CHANGES" != true ]]; then
-            echo "draft: nothing to release"
-            exit 0
-          fi
-          # A published release is never turned back into a draft.
-          case "$(gh release view "$TAG" --json isDraft --jq .isDraft 2> /dev/null || echo none)" in
-            true) gh release edit "$TAG" --draft --target "$GITHUB_SHA" --notes "$CHANGELOG" ;;
-            none) gh release create "$TAG" --draft --target "$GITHUB_SHA" --title "limen $VERSION" --notes "$CHANGELOG" ;;
-            *)
-              echo "::error title=Published::$TAG is already published; the next change must bump the version" >&2
-              exit 1
-              ;;
-          esac
-          echo "draft: $TAG"
-
   # What a run by hand builds: the draft —its version and the commit it points at—, or, only building with no draft,
   # this commit as `dev`. Only `gh`; a token that writes, because drafts are not visible to one that only reads.
   what:
-    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -362,7 +286,7 @@ jobs:
             echo "- \`limen-$VERSION-linux-x86_64\` and \`limen-$VERSION-linux-aarch64\`: one static binary per architecture, for any Linux (Debian, Ubuntu, OpenWrt…). \`install.sh\` picks the one \`uname -m\` names."
             echo "- \`SHA256SUMS\`: to check what you downloaded."
             echo
-            echo "Each binary and the image carry a build provenance attestation: \`gh attestation verify limen-$VERSION-linux-x86_64 --repo $GITHUB_REPOSITORY\`, or \`gh attestation verify oci://$IMAGE:$VERSION --repo $GITHUB_REPOSITORY\`, says they were built by this repository's release workflow."
+            echo "Each binary and the image carry a build provenance attestation: \`gh attestation verify limen-$VERSION-linux-x86_64 --repo $GITHUB_REPOSITORY\`, or \`gh attestation verify oci://$IMAGE:$VERSION --repo $GITHUB_REPOSITORY\`, says they were built by this repository's release workflow, \`.github/workflows/release.yml\`."
           } > "$notes"
           gh release upload "$TAG" release/* --clobber
           gh release edit "$TAG" --notes-file "$notes"

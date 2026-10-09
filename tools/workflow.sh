@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Runs a release workflow on main with `gh` and follows it to the end: what Actions → Run workflow does, from here.
+# Runs a draft or release workflow on main with `gh` and follows it to the end: what Actions → Run workflow does,
+# from here.
 #
-#   tools/workflow.sh drafts                  packs.yml with no pack: every pack's draft rewritten
+#   tools/workflow.sh drafts                  packs-draft.yml: every pack's draft rewritten
 #   tools/workflow.sh pack <pack> <publish>   packs.yml for one pack: built, and published if <publish> is 1
 #   tools/workflow.sh release <publish>       release.yml: limen built, and published if <publish> is 1
 #
@@ -23,7 +24,7 @@ flag() {
 what=${1:-}
 case "$what" in
   drafts)
-    workflow=packs.yml
+    workflow=packs-draft.yml
     fields=()
     ;;
   pack)

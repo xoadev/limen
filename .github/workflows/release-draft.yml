@@ -1,0 +1,93 @@
+# Every push to `main` rewrites limen's draft release (spec §11). It publishes nothing and builds nothing:
+# publishing is release.yml, run by hand.
+#
+# convco reads the conventional commits that touched what goes into the binary and the image, and says the next
+# `X.Y.Z` and what went in since the last published one. A draft makes no tag.
+#
+# convco runs with a token that only reads and no credentials left on disk; the job that writes the draft runs only
+# `gh` on what convco said.
+name: release-draft
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# The same group as release.yml, one at a time and never cancelled: a push while a release is being built would move
+# the draft under it.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  # What the next version is and what went in: convco, a binary the action downloads, reads the history here with a
+  # token that can't write anything.
+  version:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      tag: ${{ steps.version.outputs.next-version-tag }}
+      version: ${{ steps.version.outputs.next-version }}
+      has-changes: ${{ steps.version.outputs.has-changes }}
+      changelog: ${{ steps.version.outputs.changelog }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # convco reads every commit since the last tag.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Next version and changes
+        id: version
+        uses: xoadev/convco-version@97bbabfd76db29aaa7046eebcfb419a4e892449a # v1.0.1
+        with:
+          # What ends up in the binary or the image: the code, the toolchain and dependencies, the image.
+          paths: crates,Cargo.toml,Cargo.lock,rust-toolchain.toml,.cargo,etc/Dockerfile
+          tag-prefix: v
+
+  # One draft, always the one of the next version: a `feat` after a `fix` turns 0.1.1 into 0.2.0, and the draft of
+  # 0.1.1 would otherwise stay there, announcing a version that is never going to exist. Only `gh`, no checkout.
+  draft:
+    needs: version
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write # rewrite the draft release
+    steps:
+      - name: Rewrite the draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.version.outputs.tag }}
+          VERSION: ${{ needs.version.outputs.version }}
+          HAS_CHANGES: ${{ needs.version.outputs.has-changes }}
+          CHANGELOG: ${{ needs.version.outputs.changelog }}
+        run: |
+          if [[ "$HAS_CHANGES" == true && ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error title=Version::convco said '$TAG', not vX.Y.Z" >&2
+            exit 1
+          fi
+          # Only limen's own drafts, vX.Y.Z: the packs' are packs-draft.yml's.
+          gh release list --limit 100 --json tagName,isDraft --jq '.[] | select(.isDraft and (.tagName | test("^v[0-9]"))) | .tagName' |
+            while read -r stale; do
+              if [[ "$stale" != "$TAG" || "$HAS_CHANGES" != true ]]; then
+                gh release delete "$stale" --yes
+              fi
+            done
+          if [[ "$HAS_CHANGES" != true ]]; then
+            echo "draft: nothing to release"
+            exit 0
+          fi
+          # A published release is never turned back into a draft.
+          case "$(gh release view "$TAG" --json isDraft --jq .isDraft 2> /dev/null || echo none)" in
+            true) gh release edit "$TAG" --draft --target "$GITHUB_SHA" --notes "$CHANGELOG" ;;
+            none) gh release create "$TAG" --draft --target "$GITHUB_SHA" --title "limen $VERSION" --notes "$CHANGELOG" ;;
+            *)
+              echo "::error title=Published::$TAG is already published; the next change must bump the version" >&2
+              exit 1
+              ;;
+          esac
+          echo "draft: $TAG"

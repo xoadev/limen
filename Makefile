@@ -35,7 +35,7 @@ e2e: cli ## End to end in containers, Debian and OpenWrt (SUITE=debian|openwrt|j
 pack: ## One pack as it is released, in dist/: PACK=<pack> (VERSION=X.Y.Z, else dev)
 	@PACK=$(PACK) VERSION=$(VERSION) tools/pack.sh
 
-pack-drafts: ## Run packs.yml on main to rewrite every pack's draft release. Needs gh
+pack-drafts: ## Run packs-draft.yml on main to rewrite every pack's draft release. Needs gh
 	@tools/workflow.sh drafts
 
 pack-release: ## Run packs.yml on main for PACK=<pack>: its draft built, published and attested only with PUBLISH=1. Needs gh
