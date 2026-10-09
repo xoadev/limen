@@ -1,4 +1,4 @@
-# limen — specification v0.1 (draft)
+# limen — specification
 
 An MCP server that gives an agent a bounded way into Linux machines. It can read the files a machine allows,
 and run the scripts the machine offers — to look, and to change what its operator decided may be changed.
@@ -404,7 +404,7 @@ host_key = "ssh-ed25519 AAAA…"
 | `limen forget <name> [--home <dir>]` | hub | A node taken off the hub |
 | `limen call <node> <request \| script> [--arg k=v]… [--grep <text>] [--tail <n>] [--home <dir>]` | hub | One request over SSH; prints the JSON. A script's arguments are typed by its header, from the node's catalog |
 | `limen join <line> \| --hub-key <key> --name <name> [--from …] [--address …] [--ssh-port …]` | node, root | Joins the hub (§10.1): install with the hub's key, then report |
-| `limen install [--hub-key <key>] [--from <addresses>] [--dry-run]` | node, root | Debian: binary in `/usr/local/bin`, the `limen` user, `authorized_keys`, `sudoers` (validated with `visudo -c` first) and, where systemd runs, the user's `user@<uid>.service` masked. OpenWrt: binary in `/usr/bin`, root's dropbear keys, sysupgrade keep list. Both: `/etc/limen/` and a `limen.toml` if there is none. Without `--hub-key` nothing opens to SSH yet. Idempotent |
+| `limen install [--hub-key <key>] [--from <addresses>] [--dry-run]` | node, root | Debian, Ubuntu and the like: binary in `/usr/local/bin`, the `limen` user, `authorized_keys`, `sudoers` (validated with `visudo -c` first) and, where systemd runs, the user's `user@<uid>.service` masked. OpenWrt: binary in `/usr/bin`, root's dropbear keys, sysupgrade keep list. Both: `/etc/limen/` and a `limen.toml` if there is none. Without `--hub-key` nothing opens to SSH yet. Idempotent |
 | `limen uninstall [--purge] [--dry-run]` | node, root | Undoes `install`; keeps `/etc/limen/` and the logs unless `--purge` |
 | `limen gate [--config <file>]` | node | The forced command. Not for people |
 | `limen run <script> [--arg k=v]… [--grep <text>] [--tail <n>] [--config <file>]` | node, root | One script, as the hub would run it; prints its output and exits with its exit code |
@@ -471,7 +471,7 @@ hub:   [nodes.nas] with the request's source address, then `hello`  →  {"reach
 ## 11. Distribution and platforms
 
 - **One static binary per architecture**, `amd64` and `arm64`, for any Linux: linked against musl, it
-  needs nothing of the machine but the kernel, and runs the same on Debian, Alpine or OpenWrt. About 2 MB.
+  needs nothing of the machine but the kernel, and runs the same on Debian, Alpine or OpenWrt.
 - Hub image `ghcr.io/xoadev/limen`, one tag for `amd64` and `arm64`: distroless —no shell, no package manager—
   with the binary and OpenSSH's `ssh` and `ssh-keygen`, taken from Alpine with the libraries they load. It runs as
   distroless's `nonroot` (uid 65532). Volume `/data` holds `limen.toml` and the SSH key.
@@ -502,8 +502,9 @@ hub:   [nodes.nas] with the request's source address, then `hello`  →  {"reach
   `SHA256SUMS`.
 - `install.sh` downloads only over https, with a client that checks certificates (curl, OpenWrt's
   `uclient-fetch`, GNU wget; never busybox's wget), and runs only once it has been read whole.
-- Nodes: any Linux with OpenSSH and sudo, or OpenWrt with dropbear. What else a node needs —systemd, Docker,
-  git— is its packs' business.
+- Nodes: Debian, Ubuntu and OpenWrt with dropbear; `make e2e` runs Debian and OpenWrt. Another Linux whose
+  `install` finds OpenSSH's `sshd`, `sudo` reading `/etc/sudoers.d`, and `useradd`/`usermod` should work the same
+  way, untested. What else a node needs —systemd, Docker, git— is its packs' business.
 - Not supported: macOS, Windows; 32-bit ARM and MIPS (many routers), which have no release binary.
 
 ## 12. Implementation
@@ -570,7 +571,7 @@ hub:   [nodes.nas] with the request's source address, then `hello`  →  {"reach
 | A pack's tag `pack-<pack>-vX.Y.Z`, and limen's `vX.Y.Z` | One version for everything; or `packs/<pack>/vX.Y.Z` | Each has its own history and its own changelog, and the nodes already deployed keep finding limen's releases as `vX.Y.Z`. No slash: a tag's name is also a path in its download URLs |
 | Filters after redaction, in limen | Scripts taking `grep` | A filter on the raw text tells a secret apart letter by letter by whether a line comes back |
 | Empty allowlist by default | A broad default such as `/etc/**` | `/etc` holds Wi-Fi passwords, VPN keys and TLS keys |
-| Rust | Kotlin/Native (the first implementation), Go | Static musl binaries of about 2 MB built by the toolchain itself, arm64 without a cross compiler, and memory safety without a garbage collector in what runs as root. Kotlin/Native had no musl target: a static glibc needed its own linker script, no NSS, and a hand-written HTTP client where glibc's iconv was missing |
+| Rust | Kotlin/Native (the first implementation), Go | Small static musl binaries built by the toolchain itself, arm64 without a cross compiler, and memory safety without a garbage collector in what runs as root. Kotlin/Native had no musl target: a static glibc needed its own linker script, no NSS, and a hand-written HTTP client where glibc's iconv was missing |
 | A static binary | A package per distribution | One file runs on any Linux, and OpenWrt has no package for it |
 | Configuration as `serde` types, edited with `toml_edit` | Reading and editing TOML by hand | `deny_unknown_fields` turns a typo into an error with its line; an edited document can't gain a table from a value, and keeps the operator's comments |
 | A person's approval through MCP elicitation, asked by the hub | A push to a phone, a webhook, a chat bot | No service, no TLS, no open port: the question reaches the person where the agent already is, and never the model. The price: an agent nobody watches can't be approved, and over HTTP it needs SSE first |
@@ -584,7 +585,7 @@ hub:   [nodes.nas] with the request's source address, then `hello`  →  {"reach
 - Authentication of the HTTP hub beyond one shared token: named tokens per client, with the nodes each
   may see; OAuth 2.1 only if the hub is ever reachable from outside the VPN.
 - The `arm64` binary runs under qemu-user, children included, but has not run on hardware yet.
-- 32-bit routers: an ARMv7 build (`armv7-unknown-linux-musleabihf`, 2.4 MB) links and runs under qemu; MIPS
+- 32-bit routers: an ARMv7 build (`armv7-unknown-linux-musleabihf`) links and runs under qemu; MIPS
   needs Rust's nightly. Neither is released.
 - Following a script's output (`follow`): v1 only answers once it has finished.
 - A `.deb` package besides `limen install`.

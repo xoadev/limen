@@ -6,7 +6,7 @@ limen ships one file per architecture that runs on Debian, Ubuntu, Alpine and Op
 
 - **Static, against musl.** Rust's `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl` targets carry
   musl's C library inside the binary, which then needs nothing of the machine but the kernel: glibc or musl, old or
-  new, doesn't matter. About 2.2 MB for x86-64 and 1.8 MB for arm64 in release.
+  new, doesn't matter.
 - **No cross compiler.** `.cargo/config.toml` links both targets with `rust-lld`, the linker the Rust toolchain
   ships, and no dependency needs a C compiler: `make cli ARCH="x86_64 aarch64"` builds both on any Linux.
 - **The release checks it.** `release.yml`, the workflow that publishes a release, refuses a binary that `file`
@@ -38,4 +38,4 @@ a static binary; its arm64 build couldn't start processes under qemu. The Rust o
 - The **arm64** binary runs under qemu-user, child processes included, but has not yet run on real hardware, such as
   a Banana Pi.
 - **32-bit routers** (ARMv7, MIPS) have no release binary. ARMv7 builds and runs under qemu
-  (`armv7-unknown-linux-musleabihf`, 2.4 MB); MIPS needs Rust's nightly.
+  (`armv7-unknown-linux-musleabihf`); MIPS needs Rust's nightly.

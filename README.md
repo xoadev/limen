@@ -303,8 +303,9 @@ What is readable or printed reaches the model provider, by design. The full thre
 
 ## Platforms
 
-- Machines: any Linux with OpenSSH and sudo, and OpenWrt with dropbear. What the scripts need is the packs' business.
-- Binaries: Linux x86-64 and arm64, static (musl), about 2 MB; the same file runs on any distribution. OpenWrt
+- Machines: Debian, Ubuntu and OpenWrt with dropbear; the tests run Debian and OpenWrt. Another Linux with OpenSSH's
+  `sshd`, `sudo` and `useradd` should work the same way, untested. What the scripts need is the packs' business.
+- Binaries: Linux x86-64 and arm64, static (musl); the same file runs on any distribution. OpenWrt
   in detail: [`docs/openwrt.md`](docs/openwrt.md).
 - Hub: anything that runs the binary and OpenSSH's `ssh`; the image is `ghcr.io/xoadev/limen`, amd64 and arm64.
 
