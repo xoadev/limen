@@ -6,7 +6,7 @@ limen ships one file per architecture that runs on Debian, Ubuntu, Alpine and Op
 
 - **Static, against musl.** Rust's `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl` targets carry
   musl's C library inside the binary, which then needs nothing of the machine but the kernel: glibc or musl, old or
-  new, doesn't matter. About 3 MB for x86-64 and 2.5 MB for arm64 in release.
+  new, doesn't matter.
 - **No cross compiler.** `.cargo/config.toml` links both targets with `rust-lld`, the linker the Rust toolchain
   ships, and no dependency needs a C compiler: `make cli ARCH="x86_64 aarch64"` builds both on any Linux.
 - **The release checks it.** `release.yml`, the workflow that publishes a release, refuses a binary that `file`
@@ -15,9 +15,9 @@ limen ships one file per architecture that runs on Debian, Ubuntu, Alpine and Op
   limen. The same code answers on glibc and musl machines; what differs between them —busybox's tools— is the
   business of each machine's packs.
 
-The first implementation was Kotlin/Native, which only targets glibc. Making it static took an own linker script,
-an own HTTP client where glibc's iconv was missing, and parsing `/etc/passwd` because glibc's NSS can't load in a
-static binary; its arm64 build couldn't start processes under qemu. The Rust one needs none of that.
+The first implementation was Kotlin/Native, which only targets glibc. Making it static took a linker script of its own,
+a hand-written HTTP client where glibc's iconv was missing, and parsing `/etc/passwd` because glibc's NSS can't load in
+a static binary; its arm64 build couldn't start processes under qemu. The Rust one needs none of that.
 
 ## OpenWrt as a node
 
@@ -35,7 +35,7 @@ static binary; its arm64 build couldn't start processes under qemu. The Rust one
 
 - `make e2e` runs OpenWrt's official image (`openwrt/rootfs:x86-64`, busybox, musl, dropbear): installing, reading,
   the gate as the only way in, a script under busybox, joining a hub, uninstalling.
-- The **arm64** binary runs under qemu-user, child processes included, but has not run on hardware yet, such as a
-  Banana Pi.
+- The **arm64** binary runs under qemu-user, child processes included, but has not yet run on real hardware, such as
+  a Banana Pi.
 - **32-bit routers** (ARMv7, MIPS) have no release binary. ARMv7 builds and runs under qemu
-  (`armv7-unknown-linux-musleabihf`, 2.4 MB); MIPS needs Rust's nightly.
+  (`armv7-unknown-linux-musleabihf`); MIPS needs Rust's nightly.

@@ -381,7 +381,7 @@ fn invite(name: &str, home: Option<&str>, ttl: &str) -> Exit {
         // No HTTP hub to call back: the line carries the key, and the machine prints what to trust here.
         let key = join::without_comment(&hub.public_key()?);
         print_install_lines(name, &format!("--hub-key '{key}' --name {name}"));
-        sys::out("It ends printing a `limen trust` line to run here.\n");
+        sys::out("When it finishes, it prints a `limen trust` line to run here.\n");
         return Ok(0);
     };
     let valid_for = durations::parse(ttl).ok_or_else(|| Stop::Usage("--ttl takes a duration like 30m or 2h".into()))?;

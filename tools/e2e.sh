@@ -505,7 +505,7 @@ suite_join() {
     mcp_http '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
   expect "a tool call reaches a node" 'duration_ms' \
     mcp_http '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"history","arguments":{"node":"nas"}}}'
-  # Text both ways with more than ASCII: Ktor's server must not go through iconv, which the static binary lacks.
+  # Text both ways with more than ASCII: the hub's server must keep UTF-8 whole, in the request and in the answer.
   expect "UTF-8 in and out of the server" 'unknown tool ñandú' \
     mcp_http '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"ñandú","arguments":{}}}'
   status_of() { curl -s -o /dev/null -w '%{http_code}' -X POST "$url/mcp" -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' "$@"; }

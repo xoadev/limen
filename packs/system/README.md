@@ -19,7 +19,7 @@ Needs limen 0.1.3 or later: its headers use `read_only`, which older versions re
 | `filesystems` | Each real file system: size, space and inodes used, read-only or not | no |
 | `disks` | Each disk's size and model, SMART health and the attributes that warn of a failure, software RAID | no |
 
-Needs `/proc`, `df`, `awk`, and `ss` or `netstat`; `dns_lookup` uses `dig`, else `nslookup`, else `getent`, which can only list addresses. With procps `ps` sorts the processes; with busybox, `top` does.
+Needs `/proc`, `df`, `awk`, and `ss` or `netstat`; `dns_lookup` uses `dig`, else `nslookup`, else `getent`, which can only list addresses. With procps, `ps` sorts the processes; with busybox, `top` does.
 
 - `reach` lets the agent probe what this machine can reach, inside its network too. Leave it out of a machine where
   that matters. A port needs `nc` with `-z`, `bash` or `curl`; OpenWrt's default image has none of them, so there it

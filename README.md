@@ -80,7 +80,7 @@ The hub talks to each machine (each *node*) with the system's `ssh`; nothing lis
 | Tool | What it answers |
 |---|---|
 | `nodes` | The machines, whether they answer, their OS, limen version and the scripts each one offers |
-| `read_file`, `list_dir` | Files the machine allows, and the directories that lead to them: a range of lines, or the last ones with `grep` |
+| `read_file`, `list_dir` | Files the machine allows, and the directories that lead to them: a range of lines, the last ones (`tail`), or those holding a text (`grep`) |
 | `history` | The machine's audit log |
 | *each script* | One tool per script in the machines' packs, with its own typed arguments, plus `grep` and `tail` to narrow its output |
 
@@ -90,7 +90,7 @@ The packs in [`packs/`](packs/), each released on its own with its own version (
 |---|---|---|
 | `system` | [![system](https://img.shields.io/github/v/release/xoadev/limen?filter=pack-system-v*&display_name=tag&label=)](https://github.com/xoadev/limen/releases?q=pack-system&expanded=true) | Status, memory, processes, ports, network, whether a host is reachable, DNS, the kernel's log, the clock, file systems, disks and SMART |
 | `systemd` | [![systemd](https://img.shields.io/github/v/release/xoadev/limen?filter=pack-systemd-v*&display_name=tag&label=)](https://github.com/xoadev/limen/releases?q=pack-systemd&expanded=true) | Units, failed units, timers, a unit's journal, the whole journal; restarting a unit |
-| `debian` | [![debian](https://img.shields.io/github/v/release/xoadev/limen?filter=pack-debian-v*&display_name=tag&label=)](https://github.com/xoadev/limen/releases?q=pack-debian&expanded=true) | Upgradable packages, one package's versions; `apt-get upgrade`, autoremove, rebooting |
+| `debian` | [![debian](https://img.shields.io/github/v/release/xoadev/limen?filter=pack-debian-v*&display_name=tag&label=)](https://github.com/xoadev/limen/releases?q=pack-debian&expanded=true) | Upgradable packages, installed packages, one package's versions; `apt-get upgrade`, autoremove, rebooting and cancelling it |
 | `docker` | [![docker](https://img.shields.io/github/v/release/xoadev/limen?filter=pack-docker-v*&display_name=tag&label=)](https://github.com/xoadev/limen/releases?q=pack-docker&expanded=true) | Containers, their stats and logs, images, disk use, Compose projects; restarting, purging, updating a Compose project you listed |
 | `openwrt` | [![openwrt](https://img.shields.io/github/v/release/xoadev/limen?filter=pack-openwrt-v*&display_name=tag&label=)](https://github.com/xoadev/limen/releases?q=pack-openwrt&expanded=true) | The board, services, log, interfaces, DHCP leases, Wi-Fi clients, upgradable packages; restarting a service |
 | `limen` | [![limen](https://img.shields.io/github/v/release/xoadev/limen?filter=pack-limen-v*&display_name=tag&label=)](https://github.com/xoadev/limen/releases?q=pack-limen&expanded=true) | limen's version, its packs' versions, lint; updating limen itself |
@@ -158,7 +158,7 @@ Paste the line for the machine's system on it. It downloads limen and checks it,
 it against the fingerprint in the line, sets the machine up and reports to the hub, which adds it and tries it:
 
 ```
-nas is on the hub, at 100.64.0.5: Debian GNU/Linux 13, limen X.Y.Z
+nas is on the hub, at 100.64.0.5: Debian GNU/Linux 13, limen X.Y.Z.
 ```
 
 - **Debian, Ubuntu**: a `limen` user whose key only runs `limen gate`, and a sudo rule for exactly that.
@@ -224,7 +224,7 @@ document, read and never run.
 #: [args.since]
 #: type = "string"
 #: default = "1h"
-#: pattern = '^[0-9]{1,4}[smhd]$'
+#: pattern = '^[0-9]{1,4}[smh]$'
 exec docker logs --timestamps --since "$LIMEN_ARG_SINCE" "$LIMEN_ARG_NAME" 2>&1
 ```
 
@@ -246,11 +246,12 @@ pack can use a header key an older limen refuses, and each pack's README says wh
   `curl -fsSL …/install.sh | sudo env LIMEN_YES=1 sh` installs limen with nothing open to SSH, and a hub joins it
   later with its line. [`docs/scripts.md`](docs/scripts.md#a-machine-from-a-git-repository) shows a bootstrap that
   clones the machine's repository first.
+  [Our machines, through pull requests](https://xoa.dev/notes/machines-through-pull-requests/) is that setup in use.
 - **The hub on your laptop**, for Claude Code there (stdio, nothing listening):
   `curl -fsSL …/install.sh | sh -s -- --hub` installs `limen` in `~/.local/bin`, creates `~/.limen` and prints the
   `claude mcp add` line. Without an HTTP hub to call back, `limen invite nas` prints a line with the hub's key in it
-  (`--hub-key`), and the machine ends printing the `limen trust nas <address> '<host key>'` to run on the laptop
-  (`--address` on the installer fills the address in).
+  (`--hub-key`), and the machine ends by printing the `limen trust nas <address> '<host key>'` line to run on the
+  laptop (`--address` on the installer fills the address in).
 - **Unattended**, every answer comes from the environment: `sudo env LIMEN_YES=1 LIMEN_JOIN='…' sh install.sh`.
   `LIMEN_FROM` (`--from`) limits where the hub's key may connect from (not on OpenWrt), `LIMEN_ADDRESS`
   (`--address`) is where the hub reaches this machine, and `LIMEN_SSH_PORT` (`--ssh-port`) its SSH port when it isn't
@@ -302,8 +303,9 @@ What is readable or printed reaches the model provider, by design. The full thre
 
 ## Platforms
 
-- Machines: any Linux with OpenSSH and sudo, and OpenWrt with dropbear. What the scripts need is the packs' business.
-- Binaries: Linux x86-64 and arm64, static (musl), about 3 MB; the same file runs on any distribution. OpenWrt
+- Machines: Debian, Ubuntu and OpenWrt with dropbear; the tests run Debian and OpenWrt. Another Linux with OpenSSH's
+  `sshd`, `sudo` and `useradd` should work the same way, untested. What the scripts need is the packs' business.
+- Binaries: Linux x86-64 and arm64, static (musl); the same file runs on any distribution. OpenWrt
   in detail: [`docs/openwrt.md`](docs/openwrt.md).
 - Hub: anything that runs the binary and OpenSSH's `ssh`; the image is `ghcr.io/xoadev/limen`, amd64 and arm64.
 
@@ -314,6 +316,8 @@ What is readable or printed reaches the model provider, by design. The full thre
 | [`docs/spec.md`](docs/spec.md) | The design and the reference: access, protocol, tools, packs, configuration, CLI, joining, threat model, decisions |
 | [`docs/scripts.md`](docs/scripts.md) | Writing scripts and packs, and a machine set up from a Git repository |
 | [`docs/openwrt.md`](docs/openwrt.md) | OpenWrt as a node, and one binary for every Linux |
+| [Our machines, through pull requests](https://xoa.dev/notes/machines-through-pull-requests/) | How we run our own machines: the agent proposes scripts and permissions as pull requests |
+| [Immutable releases with convco-version](https://xoa.dev/notes/immutable-releases-with-convco-version/) | How limen is released, and why its releases can't change |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | How to build, test and send a change |
 | [`AGENTS.md`](AGENTS.md) | The full working contract, for people and coding agents |
 | [`SECURITY.md`](SECURITY.md) | How to report a vulnerability, and what counts as one |

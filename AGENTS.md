@@ -25,11 +25,11 @@ next session, another agent or a person can't read it.
 | `rustfmt.toml`, `clippy.toml`, `[workspace.lints]` | The layout and the lints `make lint` applies (see [Code](#code)) |
 | `.claude/settings.json` | Claude Code's hooks for this repository: an edited Rust file is formatted at once |
 | `crates/limen-core/` | Pure rules: protocol, request schemas, argument validation, configuration, TOML reading, script headers, path policy, redaction, the join's formats. No processes, files or network |
-| `crates/limen/` | The `limen` binary: `os/` (processes, files), `node/` (gate, requests, files, scripts, lint, install, join), `hub/` (SSH client, MCP server, HTTP server, transports, the hub's directory) |
+| `crates/limen/` | The `limen` binary: `os/` (processes, files, the system, `join`'s HTTP client), `node/` (gate, requests, files, scripts, lint, install, join), `hub/` (SSH client, MCP server, HTTP server, transports, the hub's directory) |
 | `install.sh` | The installer a user pipes into `sh` on a new machine. POSIX `sh` (OpenWrt has no bash); `make e2e` runs it under dash and ash |
-| `tools/` | Scripts the `Makefile` calls: `cargo.sh` builds, `lint.sh`, `e2e.sh`, `docker.sh`, `workflow.sh` runs a release workflow on `main` |
+| `tools/` | Scripts the `Makefile` calls: `cargo.sh` builds, `lint.sh`, `e2e.sh`, `docker.sh`, `pack.sh`, `local-install.sh`, `hooks-install.sh` (installs `pre-push.sh`), `workflow.sh` runs a draft or release workflow on `main`; `format-edited.sh` is Claude Code's hook |
 | `etc/` | `Dockerfile` of the hub image; `e2e/` the Debian node image of `make e2e` (OpenWrt's is the official one) |
-| `.github/workflows/` | CI, always through `Makefile` targets |
+| `.github/workflows/` | CI; what it checks or builds always goes through `Makefile` targets |
 
 ## Crates
 
@@ -47,8 +47,8 @@ Rules that hold:
 - **A new dependency must build for both musl targets without a C compiler** —`make cli ARCH="x86_64 aarch64"`—
   and earn its size: the binary goes on routers with a few megabytes of flash. `make e2e` runs the result on Debian
   and OpenWrt.
-- **No `unsafe` code**: `unsafe_code = "forbid"` in the workspace lints. What `std` lacks (`statvfs`, `poll`, `flock`,
-  `kill` of a process group, termios, `uname`) comes from `rustix`'s safe API.
+- **No `unsafe` code**: `unsafe_code = "forbid"` in the workspace lints. What `std` lacks (`poll`, `flock`, `kill` of a
+  process group, `uname`, `getrandom`, directory reads through a descriptor) comes from `rustix`'s safe API.
 
 ## Technical choices
 
@@ -57,14 +57,14 @@ Each one had an alternative. Changing one is changing this table and the spec's 
 | What | With | Why this one |
 |---|---|---|
 | Limits | On the node, in `gate` | A client-side policy is bypassed by a compromised or deceived client |
-| Transport to nodes | The system `ssh` with a forced command | No daemon on the nodes; the system client brings agent support, multiplexing and the operator's configuration |
+| Transport to nodes | The system `ssh` with a forced command | No daemon on the nodes; the system client brings multiplexing, host key checking and every key type, run with `-F none` and no agent so nothing of the operator's own SSH setup reaches a node |
 | Request | One JSON line on stdin | No word splitting; `sudo` keeps stdin and drops `SSH_ORIGINAL_COMMAND` |
 | Language | Rust | One small static binary per architecture, no runtime, and memory safety in a program that runs as root at a security boundary. Kotlin/Native was the first implementation; docs/openwrt.md says what it cost |
 | Child processes | `std::process::Command`, argument arrays, own process group | A timeout reaches what a script started; never a shell |
-| MCP | Own JSON-RPC 2.0, no SDK | A few hundred lines, fully under control; the SDKs bring an async runtime |
+| MCP | Our own JSON-RPC 2.0, no SDK | A few hundred lines, fully under control; the SDKs bring an async runtime |
 | TOML | `toml_edit`: `#[derive(Deserialize)]` with `deny_unknown_fields` to read, `DocumentMut` to edit | A typo is an error with its line; editing a document keeps the operator's comments, and a value can't become a table |
 | CLI | `clap` (derive) | Help and usage from the definitions |
-| HTTP | An own HTTP/1.1 server for the hub (`hub/server.rs`); `join`'s two requests over `std::net` (`os/http.rs`) | `tiny_http` let one unauthenticated request with a huge `Content-Length` stop the hub; a server of a few hundred lines has the limits (connections, head, body, time) where they can be seen. A client library was ten crates for two requests to our own server |
+| HTTP | Our own HTTP/1.1 server for the hub (`hub/server.rs`); `join`'s two requests over `std::net` (`os/http.rs`) | `tiny_http` let one unauthenticated request with a huge `Content-Length` stop the hub; a server of a few hundred lines has the limits (connections, head, body, time) where they can be seen. A client library was ten crates for two requests to our own server |
 | libc | musl, linked statically by Rust's own targets and `rust-lld` | One file per architecture runs on any Linux, and building for arm64 needs no cross compiler |
 | What a machine does | Scripts in packs, run with validated arguments and redacted output | limen follows no init system, runtime or tool, and the operator reads every command the agent can cause |
 | Users and groups | `/etc/passwd` and `/etc/group`, read by limen | `getpwnam` and friends read other files on other libcs |
@@ -73,10 +73,10 @@ Each one had an alternative. Changing one is changing this table and the spec's 
 
 - **Everything in English**: code, comments, documentation, commit messages, tool descriptions.
 - **Security rules are code, not habits.** Every path `read_file` and `list_dir` open is walked by `files::walk` and
-  opened once with `fs::open_exact`, every check made on that descriptor; every argument goes through
-  `params::validate`; every script through `scripts::find` and `proc::run` with an argument array; every text leaving
-  the node through `Node::clean` (control sequences removed, then `Redactor`), and every filter after it
-  (`Node::filter`).
+  opened once with `fs::open_exact` (`fs::open_dir_exact` for a directory), every check made on that descriptor;
+  every argument goes through `params::validate`; every script through `scripts::find` and `proc::run` with an
+  argument array; every text leaving the node through `Node::clean` (control sequences removed, then `Redactor`),
+  and every filter after it (`Node::filter`).
 - **The README names no version**: no `0.1.3`, no `@0.1.1`. The latest release of limen and of each pack shows in
   a badge, and examples say `X.Y.Z`; a number written down is wrong at the next release. A requirement that stays
   true —"needs limen 0.1.3 or later" in a pack's README— is not an example and stays.
@@ -115,18 +115,18 @@ spec → change → documentation → make check → commit
 ```
 
 1. Find what you are implementing in `docs/spec.md`. If it is not there, or is wrong, change the spec **first**.
-2. Write or adjust the tests first: `core` with samples, `cli` with fakes, `tools/e2e.sh` for what only a real
-   sshd proves. A test must fail when the promise breaks: break the code on purpose and watch it go red. An e2e
-   scene that checks for an absence (`refuse`) also names something the answer must contain, or an empty answer
-   —a crash— passes it.
+2. Write or adjust the tests first: `limen-core` with samples, `limen` with fakes, `tools/e2e.sh` for what only a real
+   sshd proves. A test must fail when the promise breaks: break the code on purpose and watch it go red. An e2e scene
+   that checks for an absence (`refuse`) also names something the answer must contain, or an empty answer —a crash—
+   passes it.
 3. Implement.
 4. **Update the documentation in the same PR**, every time: whatever the change makes wrong or incomplete. A new
    or changed script: its pack's README, and the README's pack table. A new setting, tool or behaviour: the README
    where a user meets it, and `docs/scripts.md` or `SECURITY.md` when it touches them. A release that changes what
    a user must do: the README and the pack READMEs. Before the commit, search the docs for what the change
    contradicts (`grep -rn` the old name, the old behaviour), not only for where the new thing goes.
-5. `make check`. Green means correct; there is no other criterion. Anything touching `gate`, `install`, SSH or
-   sudo also needs `make e2e`.
+5. `make check`. Green means correct; there is no other criterion. Anything touching `gate`, `install`, `join`,
+   SSH or sudo also needs `make e2e`.
 6. Small commits. One goal per branch; the PR includes the output of `make check`.
 
 **Commits follow [Conventional Commits](https://www.conventionalcommits.org)**: `feat(gate): answer ports`. Types:
@@ -152,22 +152,22 @@ covers what you need, add the target or the script in `tools/`.
 | `make cli` | Only the static binary. `VARIANT=release` for the optimised one; `ARCH="x86_64 aarch64"` for both architectures |
 | `make pack` | One pack as it is released, in `dist/`: `PACK=<pack>`, `VERSION=X.Y.Z` (else `dev`). Reproducible from the commit |
 | `make e2e` | Containers with a real SSH server —Debian with OpenSSH, OpenWrt's image with dropbear—, `limen install` inside, packs of scripts, the hub against them with its key. `SUITE=debian`, `openwrt` or `join` for one. Needs Docker. Not in `make check` |
-| `make docker` | The hub image, `limen:local` (or `IMAGE=…`, `TAGS=…`, `LABELS=…`), from the binaries of `make cli` (or `BINARY_AMD64=…`, `BINARY_ARM64=…`). `PLATFORMS=linux/amd64,linux/arm64 PUSH=1` pushes both under one tag (after `make cli ARCH="x86_64 aarch64"`); without `PUSH`, one platform, because Docker loads one per tag. The release goes through this same target |
+| `make docker` | The hub image, `limen:local` (or `IMAGE=…`, `TAGS=…`, `LABELS=…`), from the binaries of `make cli` (or `BINARY_AMD64=…`, `BINARY_ARM64=…`). `PLATFORMS=linux/amd64,linux/arm64 PUSH=1` pushes both under one tag (after `make cli ARCH="x86_64 aarch64"`); `OCI=<file>` writes both to an OCI archive instead, as the release does; without `PUSH` or `OCI`, one platform, because Docker loads one per tag. The release goes through this same target |
 | `make pack-drafts` | `packs-draft.yml` run on `main`: every pack's draft rewritten, as a push to `packs/` would. Needs `gh` |
 | `make pack-release` | `packs.yml` run on `main` for `PACK=<pack>`, followed to the end: its draft built, the tarball left as the run's artifact. Published and attested only with `PUBLISH=1` |
 | `make release` | `release.yml` run on `main`, followed to the end: everything a release builds and checks, nothing public. Published only with `PUBLISH=1` |
-| `make local-install` | The binary in `~/.local/bin` |
+| `make local-install` | The binary in `~/.local/bin` (or `PREFIX=…`) |
 | `make hooks` | The `pre-push` hook |
 
 `make -k check` runs every check even when one fails.
 
 ## CI
 
-Every workflow calls `Makefile` targets: what is checked is defined once, and CI can't drift from a laptop. Every
-third-party action is pinned by commit SHA with its version in a comment (`actions/checkout@3d3c42e… # v7.0.1`):
-a tag can move, a SHA can't, and the repository refuses to run one that isn't. A workflow's token only reads unless
-its job asks for more. Secrets reach a step through `env:`, never interpolated into `run:`. Releases are immutable,
-and no `v*` or `pack-*` tag can be moved or deleted.
+Every workflow that checks or builds calls `Makefile` targets: what is checked is defined once, and CI can't drift from
+a laptop. Every third-party action is pinned by commit SHA with its version in a comment (`actions/checkout@3d3c42e… #
+v7.0.1`): a tag can move, a SHA can't, and the repository refuses to run one that isn't. A workflow's token only reads
+unless its job asks for more. Secrets reach a step through `env:`, never interpolated into `run:`. Releases are
+immutable, and no `v*` or `pack-*` tag can be moved or deleted.
 
 A push only ever prepares: the workflows it runs are the `-draft` ones, and publishing is always a workflow run by
 hand. Each pair shares one concurrency group, `release` or `packs`, that never cancels a run, so a push while a
@@ -175,13 +175,13 @@ release is being built waits instead of moving the draft under it.
 
 | Workflow | When | What |
 |---|---|---|
-| `check.yml` | Every push to `main` and every PR | `make -k check`, and both binaries linked and checked static: the one mandatory gate. On `main`, a red run opens (or comments) the `main-red` issue |
+| `check.yml` | Every push to `main` and every PR; by hand | `make -k check`, and both binaries linked and checked static: the one mandatory gate. On `main`, a red run opens (or comments) the `main-red` issue |
 | `release-draft.yml` | Every push to `main` | [convco-version](https://github.com/xoadev/convco-version) reads the conventional commits that touched what goes into the binary or the image and rewrites **one draft** release, `vX.Y.Z`, with what went in, deleting any other `vX.Y.Z` draft; nothing is built, nothing published |
 | `release.yml` | By hand only, to publish | **Run by hand** (Actions → release → Run workflow, or `make release`), it publishes the draft `release-draft.yml` left: waits for `check.yml` green on the draft's commit, stamps the version (`limen --version`), builds both static binaries in release, runs `make e2e` with the release binary, checks they are static, builds the image per architecture and starts it, pushes it to `ghcr.io/<repo>` as `X.Y.Z`, attests binaries and image, attaches the binaries and `SHA256SUMS` to the draft, and only then publishes it —which creates the tag— and moves `latest`. With `publish` unticked it builds all of it and publishes nothing. Nobody publishes from the releases page: a release would be public without its files |
 | `packs-draft.yml` | Every push to `main` that touches `packs/`; by hand (`make pack-drafts`) | convco-version reads, for each pack, the commits that touched `packs/<pack>/` and rewrites that pack's draft, `pack-<pack>-vX.Y.Z`; nothing is published |
-| `packs.yml` | By hand only, with a pack's name, to publish it | **Run by hand** (or `make pack-release`), it publishes that pack's draft: waits for `check.yml` green on its commit, `make pack`, attests the tarball, attaches it and `SHA256SUMS`, and publishes it **never as the latest release** —that is limen's, which `install.sh` and `limen_update` ask for |
+| `packs.yml` | By hand only, with a pack's name, to publish it | **Run by hand** (or `make pack-release`), it publishes that pack's draft: waits for `check.yml` green on its commit, `make pack`, attests the tarball, attaches it and `SHA256SUMS`, and publishes it **never as the latest release** —that is limen's, which `install.sh`, `limen_version` and `limen_update` ask for |
 | `cli.yml` | Label `cli` on a PR, or by hand | Both binaries (debug) as an artifact, with the link commented on the PR: for trying a change on a real node |
-| `e2e.yml` | Every PR that touches code (`crates/`, the Cargo files, `tools/`, `etc/`, `install.sh`, `packs/`, `Makefile`); weekly; by hand | `make e2e`, every suite. Weekly because the Debian and OpenWrt images it runs move upstream |
+| `e2e.yml` | Every PR that touches code (`crates/`, `Cargo.*`, `rust-toolchain.toml`, `.cargo/`, `tools/`, `etc/`, `install.sh`, `packs/`, `Makefile`, the workflow itself); weekly; by hand | `make e2e`, every suite. Weekly because the Debian and OpenWrt images it runs move upstream |
 | `dependabot.yml` | Weekly | Pull requests that update the pinned actions (SHA and version comment together), the crates and the image's base images |
 
 The version is never written in the code: the commits decide it, and it only exists once a release is published.
