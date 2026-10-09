@@ -77,6 +77,9 @@ Each one had an alternative. Changing one is changing this table and the spec's 
   `params::validate`; every script through `scripts::find` and `proc::run` with an argument array; every text leaving
   the node through `Node::clean` (control sequences removed, then `Redactor`), and every filter after it
   (`Node::filter`).
+- **The README names no version**: no `0.1.3`, no `@0.1.1`. The latest release of limen and of each pack shows in
+  a badge, and examples say `X.Y.Z`; a number written down is wrong at the next release. A requirement that stays
+  true —"needs limen 0.1.3 or later" in a pack's README— is not an example and stays.
 - **Errors say what to do**: `no SSH key at /data/id_ed25519 ([ssh].identity in /data/limen.toml)`, not
   `file not found`.
 
@@ -108,7 +111,7 @@ clippy: the workspace lints in `Cargo.toml` and `clippy.toml`, where every warni
 ## Mandatory loop
 
 ```
-spec → change → make check → commit
+spec → change → documentation → make check → commit
 ```
 
 1. Find what you are implementing in `docs/spec.md`. If it is not there, or is wrong, change the spec **first**.
@@ -117,9 +120,14 @@ spec → change → make check → commit
    scene that checks for an absence (`refuse`) also names something the answer must contain, or an empty answer
    —a crash— passes it.
 3. Implement.
-4. `make check`. Green means correct; there is no other criterion. Anything touching `gate`, `install`, SSH or
+4. **Update the documentation in the same PR**, every time: whatever the change makes wrong or incomplete. A new
+   or changed script: its pack's README, and the README's pack table. A new setting, tool or behaviour: the README
+   where a user meets it, and `docs/scripts.md` or `SECURITY.md` when it touches them. A release that changes what
+   a user must do: the README and the pack READMEs. Before the commit, search the docs for what the change
+   contradicts (`grep -rn` the old name, the old behaviour), not only for where the new thing goes.
+5. `make check`. Green means correct; there is no other criterion. Anything touching `gate`, `install`, SSH or
    sudo also needs `make e2e`.
-5. Small commits. One goal per branch; the PR includes the output of `make check`.
+6. Small commits. One goal per branch; the PR includes the output of `make check`.
 
 **Commits follow [Conventional Commits](https://www.conventionalcommits.org)**: `feat(gate): answer ports`. Types:
 `feat`, `fix`, `docs`, `refactor`, `test`, `chore`, `build`, `ci`; scopes: `core`, `node`, `gate`, `hub`, `install`,
@@ -219,6 +227,9 @@ Mistakes made here, with what avoids them. `make check` does not see them.
   in `make e2e` fail; `hub::ssh::runtime_dir` falls back to `/tmp` when the path would not fit.
 - **`userdel --remove` won't remove a home its user doesn't own**, and the `limen` user's home is root's:
   `uninstall` removes the one it made itself.
+- **The documentation said there was no release a week after the first one**, and called the packs examples to
+  copy after they were released on their own: each change had updated only the place it was about. The loop now
+  has a documentation step, and it starts with searching for what the change makes wrong.
 - **What a workflow does with `GITHUB_TOKEN` starts no other workflow.** A tag or a release it creates triggers
   nothing, which is why publishing is one workflow run by hand, not a tag that starts another.
 

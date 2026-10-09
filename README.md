@@ -29,9 +29,9 @@ Agent:  (purge on nas) Freed 41 GB; immich-server is up.
 ```
 
 > **Status: early.** limen works end to end —its tests run it on Debian and on OpenWrt's own image, against real
-> SSH servers—, but it has not run for long on real machines, and until 1.0 its configuration and protocol may
-> change between minor versions. **There is no release yet**: the image and the binaries the install below
-> downloads don't exist until the first one. Until then, [build them from source](#before-the-first-release).
+> SSH servers—, and its [releases](https://github.com/xoadev/limen/releases) publish the binaries, the hub's image
+> and each pack. It has not run for long on real machines yet, and until 1.0 its configuration and protocol may
+> change between versions: read a release's notes before updating.
 
 ## Why
 
@@ -84,9 +84,18 @@ The hub talks to each machine (each *node*) with the system's `ssh`; nothing lis
 | `history` | The machine's audit log |
 | *each script* | One tool per script in the machines' packs, with its own typed arguments, plus `grep` and `tail` to narrow its output |
 
-The packs in [`packs/`](packs/), each released on its own with its own version ([how](docs/scripts.md#released-packs)): `system` (status, memory, processes, ports, DNS lookups),
-`systemd` (units, their logs, restarting one), `debian` (upgradable packages, `apt-get upgrade`, rebooting), `docker`
-(containers, their stats and logs, restarting, purging), `limen` (updating limen itself) and `openwrt`.
+The packs in [`packs/`](packs/), each released on its own with its own version ([how](#packs)):
+
+| Pack | Latest | Its scripts answer, or do |
+|---|---|---|
+| `system` | [![system](https://img.shields.io/github/v/release/xoadev/limen?filter=pack-system-v*&display_name=tag&label=)](https://github.com/xoadev/limen/releases?q=pack-system&expanded=true) | Status, memory, processes, ports, network, whether a host is reachable, DNS, the kernel's log, the clock, file systems, disks and SMART |
+| `systemd` | [![systemd](https://img.shields.io/github/v/release/xoadev/limen?filter=pack-systemd-v*&display_name=tag&label=)](https://github.com/xoadev/limen/releases?q=pack-systemd&expanded=true) | Units, failed units, timers, a unit's journal, the whole journal; restarting a unit |
+| `debian` | [![debian](https://img.shields.io/github/v/release/xoadev/limen?filter=pack-debian-v*&display_name=tag&label=)](https://github.com/xoadev/limen/releases?q=pack-debian&expanded=true) | Upgradable packages, one package's versions; `apt-get upgrade`, autoremove, rebooting |
+| `docker` | [![docker](https://img.shields.io/github/v/release/xoadev/limen?filter=pack-docker-v*&display_name=tag&label=)](https://github.com/xoadev/limen/releases?q=pack-docker&expanded=true) | Containers, their stats and logs, images, disk use, Compose projects; restarting, purging, updating a Compose project you listed |
+| `openwrt` | [![openwrt](https://img.shields.io/github/v/release/xoadev/limen?filter=pack-openwrt-v*&display_name=tag&label=)](https://github.com/xoadev/limen/releases?q=pack-openwrt&expanded=true) | The board, services, log, interfaces, DHCP leases, Wi-Fi clients, upgradable packages; restarting a service |
+| `limen` | [![limen](https://img.shields.io/github/v/release/xoadev/limen?filter=pack-limen-v*&display_name=tag&label=)](https://github.com/xoadev/limen/releases?q=pack-limen&expanded=true) | limen's version, its packs' versions, lint; updating limen itself |
+
+Each pack's README says what each script needs and what it never prints.
 
 ## Install
 
@@ -149,7 +158,7 @@ Paste the line for the machine's system on it. It downloads limen and checks it,
 it against the fingerprint in the line, sets the machine up and reports to the hub, which adds it and tries it:
 
 ```
-nas is on the hub, at 100.64.0.5: Debian GNU/Linux 13, limen 0.1.0
+nas is on the hub, at 100.64.0.5: Debian GNU/Linux 13, limen X.Y.Z
 ```
 
 - **Debian, Ubuntu**: a `limen` user whose key only runs `limen gate`, and a sudo rule for exactly that.
@@ -165,9 +174,9 @@ address or by a name the hub resolves: `sudo sh -s -- --join '…' --address 100
 The hub needs no restart, and the invitation is spent: the next machine gets its own. How the join is protected
 against someone in between: [`docs/spec.md`](docs/spec.md#101-joining-a-node).
 
-### Before the first release
+### From source
 
-There is nothing to download yet. Build from source (see [Develop](#develop)), then `make docker` for the hub
+To run a commit that isn't released: build it (see [Develop](#develop)), then `make docker` for the hub
 —`image: limen:local` in the compose file— and, on each machine, copy the binary of `make cli` and `install.sh`
 and run `sudo env LIMEN_BINARY=./limen sh install.sh --join '<line>'`.
 
@@ -181,7 +190,7 @@ allow = ["/etc/nginx/**", "/opt/stacks/*/compose.yaml", "/var/log/nginx/*.log"]
 deny = ["**/*.env"]
 
 [scripts]
-packs = ["/opt/state/packs/system", "/opt/state/packs/docker", "/opt/state/nodes/nas"]
+packs = ["/opt/limen-packs/system@X.Y.Z", "/opt/limen-packs/docker@X.Y.Z", "/opt/state/nodes/nas"]
 
 [redact]
 names = ["DB_PASSWORD", "MQTT_PASS"]
@@ -208,6 +217,7 @@ document, read and never run.
 ```sh
 #!/bin/sh
 #: description = "Last lines of a Docker container's log"
+#: read_only = true
 #: [args.name]
 #: type = "string"
 #: pattern = '^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$'
@@ -219,9 +229,16 @@ exec docker logs --timestamps --since "$LIMEN_ARG_SINCE" "$LIMEN_ARG_NAME" 2>&1
 ```
 
 The agent gets a tool with `name` and `since`; limen checks both before the script runs, and they reach it as
-`LIMEN_ARG_NAME` and `LIMEN_ARG_SINCE`. The script runs as root, owned by root and writable by nobody else, like
-every directory above it. The whole format, and a machine set up from a Git repository with a `sync` script the
-agent can run, are in [`docs/scripts.md`](docs/scripts.md).
+`LIMEN_ARG_NAME` and `LIMEN_ARG_SINCE`. `read_only = true` tells MCP clients the script changes nothing, so they may
+run it without asking. The script runs as root, owned by root and writable by nobody else, like every directory
+above it. The whole format, and a machine set up from a Git repository with a `sync` script the agent can run, are
+in [`docs/scripts.md`](docs/scripts.md).
+
+The packs of this repository are released on their own, as `pack-<pack>-vX.Y.Z`: a tarball and its `SHA256SUMS`,
+with a build attestation. limen downloads none of them: the machine's own setup unpacks each one into a folder of its
+version, `/opt/limen-packs/<pack>@X.Y.Z`, pinning its hash, as [`docs/scripts.md`](docs/scripts.md#released-packs)
+shows; the `limen` pack's `limen_packs` then says when a newer one is out. **Update limen before the packs**: a
+pack can use a header key an older limen refuses, and each pack's README says which limen it needs.
 
 ### Other ways
 
@@ -247,7 +264,7 @@ agent can run, are in [`docs/scripts.md`](docs/scripts.md).
 
 Ask the agent as you would ask a colleague with access to the machines' scripts:
 
-- *"What's wrong on the NAS?"* — `status`, then `units state=failed` and `unit_logs` of what failed.
+- *"What's wrong on the NAS?"* — `status`, then `failed_units`, and `unit_logs` of what failed.
 - *"Why does Immich restart?"* — `container immich`, then `container_logs name=immich grep=error`.
 - *"Bring the NAS to the repository."* — `sync`, if the machine's pack offers it.
 

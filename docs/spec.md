@@ -21,7 +21,7 @@ limen/
   docs/spec.md          # this spec: the design and the reference, the single source of truth
   docs/scripts.md       # writing scripts and packs: the header, how they run, an example setup
   docs/openwrt.md       # OpenWrt as a node, and one binary for every Linux
-  packs/                # example packs, to copy: systemd, debian, docker, openwrt, system
+  packs/                # packs, each released on its own: system, systemd, debian, docker, openwrt, limen
   AGENTS.md             # the working contract (CLAUDE.md points there); CONTRIBUTING.md is its short version
   SECURITY.md           # reporting vulnerabilities, and what counts as one
   install.sh            # the installer piped into `sh` on a new machine or a laptop hub
@@ -180,8 +180,8 @@ A **pack** is a directory of scripts. A node offers the scripts of the packs lis
   until one goes.
 - The header's format, the arguments' types, the environment a script runs in, its limits and the rules
   on who owns it are in [scripts.md](scripts.md): what a script's author needs, in one place.
-- The packs under `packs/` in this repository are examples to copy, not installed with limen: a pack changes
-  with the machines it runs on, not with limen's releases.
+- The packs under `packs/` in this repository are released on their own, as `pack-<pack>-vX.Y.Z` (§11), not
+  installed with limen: a pack changes with the machines it runs on, not with limen's releases.
 - **Where the packs come from is the operator's.** A Git repository kept in sync by a script of its own, a
   configuration manager, files copied by hand: limen reads what is there. [scripts.md](scripts.md) shows the
   setup of a node from a repository.

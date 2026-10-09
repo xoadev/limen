@@ -2,6 +2,8 @@
 
 apt packages and rebooting, on a Debian (or derived) machine with systemd.
 
+Needs limen 0.1.3 or later: its headers use `read_only`, which older versions refuse.
+
 | Script | Answers | Changes the machine |
 |---|---|---|
 | `updates` | Packages that can be upgraded, the security ones, those apt keeps back, whether a reboot is pending, the age of the package lists | no (with `refresh`, only the lists) |

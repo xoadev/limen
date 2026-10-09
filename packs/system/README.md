@@ -3,6 +3,8 @@
 What any Linux machine can answer, systemd or not: its state, its busiest processes, what it listens on, its network,
 its disks and its clock.
 
+Needs limen 0.1.3 or later: its headers use `read_only`, which older versions refuse.
+
 | Script | Answers | Changes the machine |
 |---|---|---|
 | `status` | Uptime, load, memory, disk use of each real filesystem, whether a reboot is pending | no |

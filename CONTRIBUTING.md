@@ -31,12 +31,15 @@ Go through `make`: a plain `cargo build` builds for this machine's libc, not the
    pull request.
 2. **Tests with it.** Rules and parsers go in `limen-core`, tested with captured samples and no machine. Anything touching
    the gate, `install`, `join`, SSH or sudo also needs a scene in `tools/e2e.sh`.
-3. **`make check` green**, and `make e2e` when the change reaches a real machine. CI runs both on your pull request:
+3. **Documentation with it.** Whatever the change makes wrong or incomplete —the README, a pack's README,
+   `docs/scripts.md`, `SECURITY.md`— changes in the same pull request. The README names no version: badges show
+   the latest releases, and examples say `X.Y.Z`.
+4. **`make check` green**, and `make e2e` when the change reaches a real machine. CI runs both on your pull request:
    `check` always, `e2e` when it touches code.
-4. **Keep the boundary where it is.** No shell anywhere, every path through the path policy, every argument through
+5. **Keep the boundary where it is.** No shell anywhere, every path through the path policy, every argument through
    its schema, nothing read by the hub that the node didn't allow. A change that moves a limit from the node to the
    hub will not be merged.
-5. **Small and pure dependencies.** A new crate must build for both musl targets without a C compiler, and earn
+6. **Small and pure dependencies.** A new crate must build for both musl targets without a C compiler, and earn
    its size: the binary goes on routers.
 
 ## Pull requests
