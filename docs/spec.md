@@ -475,27 +475,31 @@ hub:   [nodes.nas] with the request's source address, then `hello`  →  {"reach
 - Hub image `ghcr.io/xoadev/limen`, one tag for `amd64` and `arm64`: distroless —no shell, no package manager—
   with the binary and OpenSSH's `ssh` and `ssh-keygen`, taken from Alpine with the libraries they load. It runs as
   distroless's `nonroot` (uid 65532). Volume `/data` holds `limen.toml` and the SSH key.
-- **Releases** follow the conventional commits: every push to `main` rewrites a draft release with the next
-  `X.Y.Z` and its changes. Running the release workflow by hand publishes it: once `make check` is green on the
-  draft's commit, it builds the binaries (release variant, checked static) and the image, starts the image on both
-  architectures, attaches the binaries and `SHA256SUMS` to the draft and only then publishes it, which creates the
-  `vX.Y.Z` tag. A release is never public without its files, and releases are immutable: once published, neither
+- **Releases** follow the conventional commits: every push to `main` runs `release-draft.yml`, which rewrites a
+  draft release with the next `X.Y.Z` and its changes and builds nothing. Publishing is another workflow,
+  `release.yml`, run only by hand: once `make check` is green on the draft's commit, it builds the binaries (release
+  variant, checked static) and the image, starts the image on both architectures, attaches the binaries and
+  `SHA256SUMS` to the draft and only then publishes it, which creates the `vX.Y.Z` tag. A release is never public without its files, and releases are immutable: once published, neither
   its files nor its tag change. The version exists only from the tag: `limen --version` says
   `X.Y.Z · build <run> · <date>`, or `dev` for a local build.
 - **Each pack under `packs/` is released on its own**, apart from limen and from the other packs: its tag is
-  `pack-<pack>-vX.Y.Z`, its version comes from the conventional commits that touched `packs/<pack>/`, and the
-  same workflow by hand publishes it —run with no pack, it rewrites every pack's draft as a push would— with `limen-pack-<pack>-<version>.tar.gz` —reproducible from the commit, owned
-  by root, writable only by its owner— and `SHA256SUMS`. It is never the latest release: that one is limen's, which
+  `pack-<pack>-vX.Y.Z`, and its version comes from the conventional commits that touched `packs/<pack>/`. A push
+  that touches `packs/` runs `packs-draft.yml`, which rewrites the draft of each pack that changed; run by hand, it
+  rewrites every pack's draft. `packs.yml`, run by hand with the pack's name, publishes its draft with
+  `limen-pack-<pack>-<version>.tar.gz` —reproducible from the commit, owned by root, writable only by its owner— and
+  `SHA256SUMS`. It is never the latest release: that one is limen's, which
   `install.sh` and the `limen` pack ask GitHub for. limen does not fetch it (§14): the operator unpacks it where
   `scripts.packs` lists it, pinning the tarball's hash, not only its tag ([docs/scripts.md](scripts.md#released-packs)).
 - No job that runs someone else's code —convco, the compiler and the crates' build scripts, QEMU, BuildKit— holds
   a token that writes, nor keeps credentials on disk, and the release builds without caches. The jobs that write
   run only `gh`, `skopeo` and GitHub's `attest` on what the others handed over; QEMU's and BuildKit's images are
-  pinned by digest, the linters by checksum.
+  pinned by digest, the linters by checksum. Each pair of workflows shares one concurrency group, `release` or
+  `packs`, and never cancels a run: a push while a release is being built can't move the draft under it.
 - Every binary and the image carry a build provenance attestation, signed keyless through Sigstore:
   `gh attestation verify limen-<version>-linux-x86_64 --repo xoadev/limen` (or `oci://ghcr.io/xoadev/limen:<version>`)
-  says they were built by this repository's release workflow, from which commit and tag. `install.sh` can't check
-  it —nodes have no `gh`— and checks `SHA256SUMS`.
+  says they were built by this repository's `release.yml` (each pack's tarball, by `packs.yml`), from which commit
+  and tag; the attestation names the workflow's file. `install.sh` can't check it —nodes have no `gh`— and checks
+  `SHA256SUMS`.
 - `install.sh` downloads only over https, with a client that checks certificates (curl, OpenWrt's
   `uclient-fetch`, GNU wget; never busybox's wget), and runs only once it has been read whole.
 - Nodes: any Linux with OpenSSH and sudo, or OpenWrt with dropbear. What else a node needs —systemd, Docker,

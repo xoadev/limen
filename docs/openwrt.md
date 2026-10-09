@@ -9,8 +9,8 @@ limen ships one file per architecture that runs on Debian, Ubuntu, Alpine and Op
   new, doesn't matter. About 3 MB for x86-64 and 2.5 MB for arm64 in release.
 - **No cross compiler.** `.cargo/config.toml` links both targets with `rust-lld`, the linker the Rust toolchain
   ships, and no dependency needs a C compiler: `make cli ARCH="x86_64 aarch64"` builds both on any Linux.
-- **The release checks it.** `release.yml` refuses a binary that `file` doesn't call statically linked, and runs
-  every end-to-end scene with the release binary before publishing it.
+- **The release checks it.** `release.yml`, the workflow that publishes a release, refuses a binary that `file`
+  doesn't call statically linked, and runs every end-to-end scene with the release binary before publishing it.
 - **Nothing resolved through the C library.** Users and groups come from `/etc/passwd` and `/etc/group`, read by
   limen. The same code answers on glibc and musl machines; what differs between them —busybox's tools— is the
   business of each machine's packs.

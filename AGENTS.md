@@ -20,7 +20,7 @@ next session, another agent or a person can't read it.
 | Folder | What |
 |---|---|
 | `docs/` | `spec.md`; `scripts.md`, writing scripts and packs; `openwrt.md`, OpenWrt as a node and the one binary for every Linux |
-| `packs/` | Packs of scripts: `system`, `systemd`, `debian`, `docker`, `limen`, `openwrt`. Each released on its own as `pack-<pack>-vX.Y.Z` (`packs.yml`); not installed with limen |
+| `packs/` | Packs of scripts: `system`, `systemd`, `debian`, `docker`, `limen`, `openwrt`. Each released on its own as `pack-<pack>-vX.Y.Z` (`packs-draft.yml`, `packs.yml`); not installed with limen |
 | `Cargo.toml`, `rust-toolchain.toml` | The workspace and the Rust version it is built with, targets included; `.cargo/config.toml` links the musl targets with `rust-lld` |
 | `rustfmt.toml`, `clippy.toml`, `[workspace.lints]` | The layout and the lints `make lint` applies (see [Code](#code)) |
 | `.claude/settings.json` | Claude Code's hooks for this repository: an edited Rust file is formatted at once |
@@ -153,7 +153,7 @@ covers what you need, add the target or the script in `tools/`.
 | `make pack` | One pack as it is released, in `dist/`: `PACK=<pack>`, `VERSION=X.Y.Z` (else `dev`). Reproducible from the commit |
 | `make e2e` | Containers with a real SSH server —Debian with OpenSSH, OpenWrt's image with dropbear—, `limen install` inside, packs of scripts, the hub against them with its key. `SUITE=debian`, `openwrt` or `join` for one. Needs Docker. Not in `make check` |
 | `make docker` | The hub image, `limen:local` (or `IMAGE=…`, `TAGS=…`, `LABELS=…`), from the binaries of `make cli` (or `BINARY_AMD64=…`, `BINARY_ARM64=…`). `PLATFORMS=linux/amd64,linux/arm64 PUSH=1` pushes both under one tag (after `make cli ARCH="x86_64 aarch64"`); without `PUSH`, one platform, because Docker loads one per tag. The release goes through this same target |
-| `make pack-drafts` | `packs.yml` run on `main` with no pack: every pack's draft rewritten, as a push to `packs/` would. Needs `gh` |
+| `make pack-drafts` | `packs-draft.yml` run on `main`: every pack's draft rewritten, as a push to `packs/` would. Needs `gh` |
 | `make pack-release` | `packs.yml` run on `main` for `PACK=<pack>`, followed to the end: its draft built, the tarball left as the run's artifact. Published and attested only with `PUBLISH=1` |
 | `make release` | `release.yml` run on `main`, followed to the end: everything a release builds and checks, nothing public. Published only with `PUBLISH=1` |
 | `make local-install` | The binary in `~/.local/bin` |
@@ -169,11 +169,17 @@ a tag can move, a SHA can't, and the repository refuses to run one that isn't. A
 its job asks for more. Secrets reach a step through `env:`, never interpolated into `run:`. Releases are immutable,
 and no `v*` or `pack-*` tag can be moved or deleted.
 
+A push only ever prepares: the workflows it runs are the `-draft` ones, and publishing is always a workflow run by
+hand. Each pair shares one concurrency group, `release` or `packs`, that never cancels a run, so a push while a
+release is being built waits instead of moving the draft under it.
+
 | Workflow | When | What |
 |---|---|---|
 | `check.yml` | Every push to `main` and every PR | `make -k check`, and both binaries linked and checked static: the one mandatory gate. On `main`, a red run opens (or comments) the `main-red` issue |
-| `release.yml` | Every push to `main`; by hand to publish | On a push, [convco-version](https://github.com/xoadev/convco-version) reads the conventional commits that touched what goes into the binary or the image and rewrites **one draft** release, `vX.Y.Z`, with what went in; nothing is built. **Run by hand** (Actions → release → Run workflow), it publishes that draft: waits for `check.yml` green on the draft's commit, stamps the version (`limen --version`), builds both static binaries in release, runs `make e2e` with the release binary, checks they are static, builds the image per architecture and starts it, pushes it to `ghcr.io/<repo>` as `X.Y.Z`, attests binaries and image, attaches the binaries and `SHA256SUMS` to the draft, and only then publishes it —which creates the tag— and moves `latest`. With `publish` unticked it builds all of it and publishes nothing. Nobody publishes from the releases page: a release would be public without its files |
-| `packs.yml` | Every push to `main` that touches `packs/`; by hand to publish one | On a push, or run by hand with no pack (`make pack-drafts`), convco-version reads, for each pack, the commits that touched `packs/<pack>/` and rewrites that pack's draft, `pack-<pack>-vX.Y.Z`. **Run by hand** with the pack's name, it publishes its draft: waits for `check.yml` green on its commit, `make pack`, attests the tarball, attaches it and `SHA256SUMS`, and publishes it **never as the latest release** —that is limen's, which `install.sh` and `limen_update` ask for |
+| `release-draft.yml` | Every push to `main` | [convco-version](https://github.com/xoadev/convco-version) reads the conventional commits that touched what goes into the binary or the image and rewrites **one draft** release, `vX.Y.Z`, with what went in, deleting any other `vX.Y.Z` draft; nothing is built, nothing published |
+| `release.yml` | By hand only, to publish | **Run by hand** (Actions → release → Run workflow, or `make release`), it publishes the draft `release-draft.yml` left: waits for `check.yml` green on the draft's commit, stamps the version (`limen --version`), builds both static binaries in release, runs `make e2e` with the release binary, checks they are static, builds the image per architecture and starts it, pushes it to `ghcr.io/<repo>` as `X.Y.Z`, attests binaries and image, attaches the binaries and `SHA256SUMS` to the draft, and only then publishes it —which creates the tag— and moves `latest`. With `publish` unticked it builds all of it and publishes nothing. Nobody publishes from the releases page: a release would be public without its files |
+| `packs-draft.yml` | Every push to `main` that touches `packs/`; by hand (`make pack-drafts`) | convco-version reads, for each pack, the commits that touched `packs/<pack>/` and rewrites that pack's draft, `pack-<pack>-vX.Y.Z`; nothing is published |
+| `packs.yml` | By hand only, with a pack's name, to publish it | **Run by hand** (or `make pack-release`), it publishes that pack's draft: waits for `check.yml` green on its commit, `make pack`, attests the tarball, attaches it and `SHA256SUMS`, and publishes it **never as the latest release** —that is limen's, which `install.sh` and `limen_update` ask for |
 | `cli.yml` | Label `cli` on a PR, or by hand | Both binaries (debug) as an artifact, with the link commented on the PR: for trying a change on a real node |
 | `e2e.yml` | Every PR that touches code (`crates/`, the Cargo files, `tools/`, `etc/`, `install.sh`, `packs/`, `Makefile`); weekly; by hand | `make e2e`, every suite. Weekly because the Debian and OpenWrt images it runs move upstream |
 | `dependabot.yml` | Weekly | Pull requests that update the pinned actions (SHA and version comment together), the crates and the image's base images |
