@@ -71,7 +71,7 @@ jobs:
 
       - name: Next version and changes
         id: version
-        uses: xoadev/convco-version@97bbabfd76db29aaa7046eebcfb419a4e892449a # v1.0.1
+        uses: xoadev/convco-version@e8cf4f03b64bbbb8b2e10cecdab9c99ada457e9c # v1.1.0
         with:
           paths: packs/${{ matrix.pack }}
           tag-prefix: pack-${{ matrix.pack }}-v
