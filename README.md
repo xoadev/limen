@@ -300,6 +300,9 @@ can't ask means nothing runs. Over HTTP (`limen serve`) the hub can't ask yet, s
 | Someone can change a pack, or push where a script fetches packs from | **They are root on the machine.** Keep the agent out of it, and protect the branch |
 | A script is malicious or prints secrets | Not covered: scripts belong to root, and limen trusts them. Masking catches the usual shapes |
 
+The HTTP hub bounds connections and request sizes and deadlines. Excess connections are rejected without waiting
+for the client; discarding unread input after a response has a total deadline too.
+
 What is readable or printed reaches the model provider, by design. The full threat model is in
 [`docs/spec.md`](docs/spec.md#13-threat-model); to report a vulnerability, see [`SECURITY.md`](SECURITY.md).
 
