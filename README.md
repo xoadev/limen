@@ -1,10 +1,6 @@
 # limen
 
-```
-    ╭─────╮
-    │  ◉  │   limen
-  ══╧═════╧══  only what the machine allows
-```
+<img src="docs/assets/logo.svg" alt="limen — only what the machine allows" width="440">
 
 [![check](https://github.com/xoadev/limen/actions/workflows/check.yml/badge.svg)](https://github.com/xoadev/limen/actions/workflows/check.yml)
 [![release](https://img.shields.io/github/v/release/xoadev/limen?include_prereleases&sort=semver)](https://github.com/xoadev/limen/releases)
