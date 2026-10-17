@@ -77,7 +77,10 @@ pub fn serve(listener: &TcpListener, handler: &Arc<dyn Handler>, limits: Limits)
         };
         stream.set_write_timeout(Some(limits.timeout)).ok();
         let Some(slot) = ConnectionSlot::take(&open, limits.connections) else {
-            send(&mut stream, &Response::status(503));
+            // A rejected peer must never hold the accept loop waiting for reads or writes.
+            if stream.set_nonblocking(true).is_ok() {
+                send(&mut stream, &Response::status(503));
+            }
             continue;
         };
         let (handler, limits) = (handler.clone(), limits.clone());
@@ -269,10 +272,16 @@ fn reason_phrase(status: u16) -> &'static str {
 /// Reads and drops what the client is still sending, a little and briefly: closing with it unread resets the
 /// connection, and the client would never see a 413 or a 431.
 fn drain(stream: &mut TcpStream) {
-    stream.set_read_timeout(Some(Duration::from_millis(500))).ok();
+    let deadline = Instant::now() + Duration::from_millis(500);
     let mut sink = [0u8; 4096];
     let mut drained = 0;
     while drained < 64 * 1024 {
+        let Some(left) = deadline.checked_duration_since(Instant::now()).filter(|left| !left.is_zero()) else {
+            break;
+        };
+        if stream.set_read_timeout(Some(left)).is_err() {
+            break;
+        }
         match stream.read(&mut sink) {
             Ok(n) if n > 0 => drained += n,
             _ => break,
@@ -314,6 +323,43 @@ mod tests {
         let mut answer = String::new();
         stream.read_to_string(&mut answer).ok();
         answer
+    }
+
+    #[test]
+    fn draining_trickled_input_has_a_total_deadline() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (mut stream, _) = listener.accept().unwrap();
+        let writer = std::thread::spawn(move || {
+            for _ in 0..40 {
+                if client.write_all(b"x").is_err() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        });
+        let started = Instant::now();
+        drain(&mut stream);
+        let elapsed = started.elapsed();
+        drop(stream);
+        writer.join().unwrap();
+        assert!(elapsed < Duration::from_secs(1), "drain took {elapsed:?}");
+    }
+
+    #[test]
+    fn an_overflow_connection_does_not_hold_up_accept() {
+        let address = server(Limits { connections: 0, ..Limits::default() });
+        let mut first = TcpStream::connect(&address).unwrap();
+        first.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
+        let mut response = [0u8; 256];
+        let length = first.read(&mut response).unwrap();
+        assert!(response[..length].starts_with(b"HTTP/1.1 503"));
+        // Keep the rejected connection's write side open while another client arrives.
+        let mut second = TcpStream::connect(&address).unwrap();
+        second.set_read_timeout(Some(Duration::from_millis(300))).unwrap();
+        let length = second.read(&mut response).expect("accept must not wait for the rejected client");
+        assert!(response[..length].starts_with(b"HTTP/1.1 503"));
+        drop(first);
     }
 
     #[test]

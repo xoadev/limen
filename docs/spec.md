@@ -383,6 +383,8 @@ host_key = "ssh-ed25519 AAAA…"
   - Its own small HTTP/1.1 server, one request per connection: at most 64 connections, 16 KiB of head
     and 15 seconds for the whole request. The token and `Origin` are checked before the body is read, and a body
     is read only with its `Content-Length`, up to 1 MiB (16 KiB for a join): `Transfer-Encoding` gets `411`.
+  - A connection above the limit gets a best-effort `503` without blocking the accept loop. After a response,
+    discarding unread input is bounded by 64 KiB and a total of 500 ms, even when bytes keep arriving.
   - Validates `Origin` against `http.origins` (§7.2), against DNS rebinding.
   - Listens on `127.0.0.1:7341` unless told otherwise (§7.2). The image listens on every interface;
     whoever publishes the port decides who gets in.
