@@ -1,11 +1,9 @@
 # limen
 
-```text
-    .-----.
-    |  o  |   limen
-  ==+-----+==
-
-only what the machine allows
+```
+    ╭─────╮
+    │  ◉  │   limen
+  ══╧═════╧══  only what the machine allows
 ```
 
 [![check](https://github.com/xoadev/limen/actions/workflows/check.yml/badge.svg)](https://github.com/xoadev/limen/actions/workflows/check.yml)
