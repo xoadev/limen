@@ -22,8 +22,8 @@ updates:
       default-days: 7
     commit-message:
       prefix: build
-    # An exact requirement is raised to the new version; Cargo's default would only raise one the version breaks.
-    versioning-strategy: increase
+    # The default strategy (the only other one cargo accepts is lockfile-only) raises a requirement the new version
+    # breaks, and an `=X.Y.Z` pin is broken by every new version: requirement and Cargo.lock move together.
     groups:
       crates:
         patterns: ["*"]
