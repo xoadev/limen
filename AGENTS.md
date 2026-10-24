@@ -54,10 +54,13 @@ behind, the smallest thing that fails if the logic breaks. Trivial one-liners ne
 - **Everything runs through `make`**: build, lint, tests, deploy. CI calls the same targets, so what
   is checked is defined once and cannot drift from a laptop. If no target covers what you need, add
   the target; do not run it by hand.
-- **Every repository has `make lint` and `make test`, and CI runs them on every pull request.** A
-  repository without them adds them before its next feature. `make lint` green before pushing.
+- **Every repository has `make lint` and `make test`, and CI runs them on every pull request**, at
+  least over what the pull request touches. A repository without them adds them before its next
+  feature. `make lint` green before pushing.
 - **Strict linters**: the stack's official ones, with warnings as errors, and the cross-cutting ones
-  for the files there are (shellcheck, actionlint, markdownlint, typos). The formatter, no debate.
+  for the files there are (shellcheck, actionlint, markdownlint, typos). When one needs a runtime
+  the repository does not use, its ecosystem's equivalent with the same rules will do (rumdl instead
+  of markdownlint in Rust). The formatter, no debate.
 - **A change in behaviour comes with its test in the same pull request**, and a fixed bug with the
   test that reproduces it. Integration tests over real flows are the base; unit tests only where
   they pay off (domain, parsers, state machines).
