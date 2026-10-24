@@ -72,7 +72,9 @@ behind, the smallest thing that fails if the logic breaks. Trivial one-liners ne
 
 ## Spec, documentation and knowledge
 
-- **The spec is the source of truth.** If the code has to diverge, the spec changes first.
+- **The spec is the source of truth.** If the code has to diverge, the spec changes first. A
+  contradiction between spec, documentation and code is raised before acting; no side is picked in
+  silence.
 - **Documentation is updated in the same pull request** that makes it wrong. Before the commit,
   search for what the change contradicts (the old name, the old behaviour), not only for where the
   new thing goes.
@@ -113,7 +115,8 @@ behind, the smallest thing that fails if the logic breaks. Trivial one-liners ne
 
 This block is shared by the open source repositories of XOA Desarrollo and its source is
 <https://xoa.dev/_dev/OSS_AGENTS.md>: it changes there, never in a repository's copy, and
-`make agents-sync` brings it in. What belongs to each repository goes below.
+`make agents-sync` brings it in. What belongs to each repository goes below and prevails where it
+narrows what is above.
 <!-- xoadev:end -->
 
 ## limen
@@ -143,7 +146,7 @@ for any agent (Claude Code or another) and for people: the shared head above, an
 | `crates/limen-core/` | Pure rules: protocol, request schemas, argument validation, configuration, TOML reading, script headers, path policy, redaction, the join's formats. No processes, files or network |
 | `crates/limen/` | The `limen` binary: `os/` (processes, files, the system, `join`'s HTTP client), `node/` (gate, requests, files, scripts, lint, install, join), `hub/` (SSH client, MCP server, HTTP server, transports, the hub's directory) |
 | `install.sh` | The installer a user pipes into `sh` on a new machine. POSIX `sh` (OpenWrt has no bash); `make e2e` runs it under dash and ash |
-| `tools/` | Scripts the `Makefile` calls: `cargo.sh` builds, `lint.sh`, `e2e.sh`, `docker.sh`, `pack.sh`, `local-install.sh`, `hooks-install.sh` (installs `pre-push.sh`), `agents.sh` syncs and checks the shared head of this file, `workflow.sh` runs a draft or release workflow on `main`; `format-edited.sh` is Claude Code's hook |
+| `tools/` | Scripts the `Makefile` calls: `cargo.sh` builds, `lint.sh`, `e2e.sh`, `docker.sh`, `pack.sh`, `local-install.sh`, `hooks-install.sh` (installs `pre-push.sh`), `workflow.sh` runs a draft or release workflow on `main`; `format-edited.sh` is Claude Code's hook |
 | `etc/` | `Dockerfile` of the hub image; `e2e/` the Debian node image of `make e2e` (OpenWrt's is the official one) |
 | `.github/workflows/` | CI; what it checks or builds always goes through `Makefile` targets |
 
@@ -249,7 +252,7 @@ calls a script in `tools/`.
 | `make check` | `lint build test`. What CI runs |
 | `make lint` | rustfmt and clippy (every warning an error, the workspace lints included) over `crates/`, shellcheck over `tools/`, `install.sh` and `packs/`, actionlint over the workflows, and `agents-check`. `FIX=1` formats instead of checking |
 | `make agents-check` | Fails if the shared head of this file, everything above `<!-- xoadev:end -->`, differs from `AGENTS_URL`; warns and passes when it is unreachable |
-| `make agents-sync` | Rewrites that head from `AGENTS_URL`, keeping everything below the mark. `AGENTS_URL=file://…` takes a local copy |
+| `make agents-sync` | Rewrites that head from `AGENTS_URL`, keeping everything below the mark. `AGENTS_URL=file://…` takes a local copy. Both run [xoa.dev's script](https://xoa.dev/_dev/agents.sh), shared by our repositories, not one in `tools/` |
 | `make build` / `make test` | Every crate, tests included, for this machine |
 | `make cli` | Only the static binary. `VARIANT=release` for the optimised one; `ARCH="x86_64 aarch64"` for both architectures |
 | `make pack` | One pack as it is released, in `dist/`: `PACK=<pack>`, `VERSION=X.Y.Z` (else `dev`). Reproducible from the commit |

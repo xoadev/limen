@@ -5,8 +5,9 @@ SHELL := /bin/bash
 .DEFAULT_GOAL := help
 # What `cli` and `docker` compile. `debug` links in seconds; a published binary is `release`.
 VARIANT ?= debug
-# The shared head of AGENTS.md, everything above its `<!-- xoadev:end -->` line, lives here.
+# The shared head of AGENTS.md, above its <!-- xoadev:end --> line, comes from AGENTS_URL.
 AGENTS_URL := https://xoa.dev/_dev/OSS_AGENTS.md
+AGENTS_SCRIPT := https://xoa.dev/_dev/agents.sh
 
 .PHONY: check lint agents-sync agents-check build test cli local-install docker e2e pack pack-drafts pack-release release hooks clean help
 
@@ -14,13 +15,12 @@ check: lint build test ## Everything CI runs (`make -k check` to see every failu
 	@echo "check: OK"
 
 lint: ## rustfmt, clippy, shellcheck, actionlint and agents-check. `make lint FIX=1` formats instead of checking
-	@FIX=$(FIX) AGENTS_URL='$(AGENTS_URL)' tools/lint.sh
+	@FIX=$(FIX) tools/lint.sh
 
-agents-sync: ## Rewrite the shared head of AGENTS.md from AGENTS_URL
-	@AGENTS_URL='$(AGENTS_URL)' tools/agents.sh sync
-
-agents-check: ## Fail if the shared head of AGENTS.md differs from AGENTS_URL (warns when offline)
-	@AGENTS_URL='$(AGENTS_URL)' tools/agents.sh check
+# Not a tools/ script: the script is xoa.dev's, shared by our repositories.
+agents-sync agents-check: ## Sync (agents-sync) or check (agents-check) the shared head of AGENTS.md; agents-check warns when offline
+	@if s=$$(curl -fsS --max-time 20 '$(AGENTS_SCRIPT)'); then sh -c "$$s" agents $(@:agents-%=%) '$(AGENTS_URL)'; \
+	else echo "warning: $(AGENTS_SCRIPT) unreachable, $@ not run" >&2; [ $@ = agents-check ]; fi
 
 build: ## Compile every crate, tests included
 	@tools/cargo.sh build
