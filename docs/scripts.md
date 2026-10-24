@@ -12,7 +12,7 @@ else —a README, helpers without a header, subdirectories— is the pack's own,
 agent never sees it. A file with a header that isn't executable, or that [Who owns it](#who-owns-it) refuses, is
 no helper: `limen lint` and `nodes` report it.
 
-```
+```text
 packs/docker/
   containers          #: header → a tool
   container_logs      #: header → a tool
@@ -160,7 +160,7 @@ packs = ["/opt/limen-packs/system@X.Y.Z", "/opt/state/nodes/nas"]
 One way to keep a machine's packs and configuration in a private repository. limen takes no part in it beyond
 running the `sync` script.
 
-```
+```text
 infra/
   packs/systemd/  packs/docker/          shared packs
   nodes/nas/limen.toml                   the machine's configuration: files.allow, scripts.packs, redact

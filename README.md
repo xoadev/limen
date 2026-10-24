@@ -1,6 +1,6 @@
 # limen
 
-```
+```text
     ╭─────╮
     │  ◉  │   limen
   ══╧═════╧══  only what the machine allows
@@ -19,7 +19,7 @@ reaches every machine you join to it over SSH. Every script becomes a tool: `con
 
 *Limen* is Latin for *threshold*: the agent stands at the door of each machine, and the machine decides what crosses.
 
-```
+```text
 You:    Immich is down. Why?
 Agent:  (status on nas, then container immich, then container_logs immich)
         immich-server restarts every minute: Postgres can't write, "No space left on device".
@@ -63,7 +63,7 @@ limen turns it around: **the machine decides.**
 
 ## How it works
 
-```
+```text
 MCP client ──stdio or HTTP──▶ hub: limen mcp | limen serve
 (Claude Code…)                  │  ssh limen@node   (one JSON request on stdin)
                                 ▼
@@ -157,7 +157,7 @@ docker compose exec limen limen invite nas
 Paste the line for the machine's system on it. It downloads limen and checks it, fetches the hub's key and checks
 it against the fingerprint in the line, sets the machine up and reports to the hub, which adds it and tries it:
 
-```
+```text
 nas is on the hub, at 100.64.0.5: Debian GNU/Linux 13, limen X.Y.Z.
 ```
 

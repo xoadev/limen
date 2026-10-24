@@ -1,0 +1,11 @@
+# The Markdown lints of `make lint` (rumdl, markdownlint's rules). Prose wraps at rustfmt's width; a table row or a
+# code block is as wide as it needs.
+[MD013]
+line-length = 120
+tables = false
+code-blocks = false
+
+# Neither starts a document: CLAUDE.md is one import line, the template fills a pull request's body.
+[per-file-ignores]
+"CLAUDE.md" = ["MD041"]
+".github/pull_request_template.md" = ["MD041"]

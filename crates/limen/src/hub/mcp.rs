@@ -1140,13 +1140,13 @@ mod tests {
         let fake = Arc::try_unwrap(asking()).ok().unwrap();
         let client = Arc::new(Fake {
             approval: Approval {
-                scripts: ApprovalScripts::Named(vec!["purge".into(), "upgarde".into()]),
+                scripts: ApprovalScripts::Named(vec!["purge".into(), "upgarde".into()]), // typos: ignore-line
                 ..fake.approval.clone()
             },
             ..fake
         });
         let nodes = text_of(&call_tool(&mcp_server(&client), "nodes", &json!({}))).to_string();
-        assert!(nodes.contains("upgarde"), "{nodes}");
+        assert!(nodes.contains("upgarde"), "{nodes}"); // typos: ignore-line
         assert!(!nodes.contains("'purge'"), "{nodes}");
     }
 }

@@ -31,7 +31,7 @@ mod tests {
     #[test]
     fn token_comparison() {
         assert!(super::constant_time_eq("abc", "abc"));
-        assert!(!super::constant_time_eq("abc", "abd"));
+        assert!(!super::constant_time_eq("abc", "abd")); // typos: ignore-line
         assert!(!super::constant_time_eq("abc", "abcd"));
         assert!(!super::constant_time_eq("", "a"));
     }

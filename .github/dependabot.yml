@@ -1,12 +1,16 @@
 # Keeps what the build and the image take from others up to date, one pull request at a time that check.yml and
 # e2e.yml then test: the actions of the workflows (pinned by commit SHA with the version in a comment), the crates
-# of Cargo.lock, and the base images of etc/Dockerfile.
+# (pinned `=X.Y.Z` in the Cargo.toml files, so the requirement moves with Cargo.lock), and the base images of
+# etc/Dockerfile and etc/e2e/node.Dockerfile. Only versions a week old: a release pulled in its first days never
+# reaches the build. The linters of tools/lint.sh are no manifest Dependabot reads: lint-updates.yml watches them.
 version: 2
 updates:
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7
     commit-message:
       prefix: ci
 
@@ -14,15 +18,21 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7
     commit-message:
       prefix: build
+    # The default strategy (the only other one cargo accepts is lockfile-only) raises a requirement the new version
+    # breaks, and an `=X.Y.Z` pin is broken by every new version: requirement and Cargo.lock move together.
     groups:
       crates:
         patterns: ["*"]
 
   - package-ecosystem: docker
-    directory: /etc
+    directories: [/etc, /etc/e2e]
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7
     commit-message:
       prefix: build

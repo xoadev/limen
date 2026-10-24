@@ -175,7 +175,7 @@ mod tests {
     #[test]
     fn rejects_mistakes() {
         for (text, expected) in [
-            ("[files]\nalow = []", "line 2, column 1: unknown field `alow`"),
+            ("[files]\nalow = []", "line 2, column 1: unknown field `alow`"), // typos: ignore-line
             ("[files]\nallow = [\"etc/*\"]", "files.allow"),
             ("[files]\nallow = [1]", "line 2"),
             ("[scripts]\npacks = [\"relative\"]", "scripts.packs: must be an absolute path"),

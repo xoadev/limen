@@ -15,7 +15,7 @@ scripts it offers.
 
 ## 0. Repository
 
-```
+```text
 limen/
   README.md             # what limen is, install and use
   docs/spec.md          # this spec: the design and the reference, the single source of truth
@@ -51,7 +51,7 @@ limen/
 
 ## 2. Components
 
-```
+```text
 MCP client ──stdio or HTTP──▶ hub: limen mcp | limen serve
                                 │  ssh limen@node   (request as JSON on stdin)
                                 ▼
@@ -167,7 +167,7 @@ Every tool but `nodes` takes a `node` argument.
 A **pack** is a directory of scripts. A node offers the scripts of the packs listed in `scripts.packs`
 (§7.1), and nothing else.
 
-```
+```text
 /opt/state/packs/systemd/   failed_units  journal  restart_unit
 /opt/state/packs/docker/    containers  container_logs  purge
 /opt/state/nodes/nas/       sync  backup_status
@@ -232,7 +232,6 @@ max_bytes = 5242880
   `/run/limen/slot-<n>`; one more gets `unavailable`), ten seconds to send the request, and two minutes in all; a script
   gets its own timeout (an hour at most) and 30 seconds more instead. A request out of time has what it started killed,
   answers `timeout` and is audited as such. `read_file` goes at most 64 MiB into a file to reach its first line.
-
 - **Nothing is readable by default.** `files.allow` starts empty. Everything readable ends up in a model
   provider's context, so the operator decides it path by path.
 - `files.allow` and `files.deny` are path patterns, each starting with `/` or `**`. `**` as a whole segment is any
@@ -272,7 +271,8 @@ max_bytes = 5242880
   key ids `AKIA…`/`ASIA…`, Stripe's `sk_live_…`/`rk_live_…`, Google API keys `AIza…`), PEM private keys and lines of
   base64 alone, as a key's body is written, unless they are all hexadecimal: those are hashes and IDs, such as a
   container's.
-  - `redact.names` adds names, case-insensitive: the value after `NAME=`, `NAME: ` or `"NAME": ` is replaced.
+  - `redact.names` adds names, case-insensitive: the value after `NAME=`, `NAME:` or `"NAME":`, spaces
+    around the sign included, is replaced.
   - `redact.patterns` adds regular expressions; a group named `secret` limits what is replaced. Each runs over a
     whole text —a file's range or window, a script's stdout—, not line by line: `^` and `$` are its start and end
     unless the pattern says `(?m)`. They are Rust `regex`, as a script's `pattern` is ([scripts.md](scripts.md)):
@@ -390,8 +390,8 @@ host_key = "ssh-ed25519 AAAA…"
     whoever publishes the port decides who gets in.
 - `GET /join/<code>` and `POST /join/<code>` (§10.1) need no token: the one-time code is the authorisation.
 - Catalogs are fetched when the set of nodes changes, and when a session starts (`initialize`) or `nodes`
-  is called, at most once every ten seconds. A change is announced with `notifications/tools/list_changed` over stdio; over HTTP
-  without SSE it shows up in the next session.
+  is called, at most once every ten seconds. A change is announced with `notifications/tools/list_changed` over
+  stdio; over HTTP without SSE it shows up in the next session.
 
 ## 10. CLI
 
@@ -442,7 +442,7 @@ Every answer can come from a `LIMEN_*` variable instead, for unattended installs
 
 ### 10.1 Joining a node
 
-```
+```text
 hub:   limen invite nas  →  …/install.sh | sudo sh -s -- --join 'http://<hub>:7341/join/<code>#SHA256:<hub key>.<secret>'
 node:  GET  /join/<code>  →  {"name": "nas", "hub_key": "ssh-ed25519 …", "proof": "<HMAC>"}   key against the fingerprint, both with the secret
        limen install with that key
@@ -481,8 +481,9 @@ hub:   [nodes.nas] with the request's source address, then `hello`  →  {"reach
   draft release with the next `X.Y.Z` and its changes and builds nothing. Publishing is another workflow,
   `release.yml`, run only by hand: once `make check` is green on the draft's commit, it builds the binaries (release
   variant, checked static) and the image, starts the image on both architectures, attaches the binaries and
-  `SHA256SUMS` to the draft and only then publishes it, which creates the `vX.Y.Z` tag. A release is never public without its files, and releases are immutable: once published, neither
-  its files nor its tag change. The version exists only from the tag: `limen --version` says
+  `SHA256SUMS` to the draft and only then publishes it, which creates the `vX.Y.Z` tag. A release is never public
+  without its files, and releases are immutable: once published, neither its files nor its tag change. The version
+  exists only from the tag: `limen --version` says
   `X.Y.Z · build <run> · <date>`, or `dev` for a local build.
 - **Each pack under `packs/` is released on its own**, apart from limen and from the other packs: its tag is
   `pack-<pack>-vX.Y.Z`, and its version comes from the conventional commits that touched `packs/<pack>/`. A push
@@ -518,7 +519,8 @@ hub:   [nodes.nas] with the request's source address, then `hello`  →  {"reach
     redaction and the join's formats. Pure, tested without a machine.
   - `limen`: the binary — processes, files, SSH, MCP and HTTP.
 - MCP: its own JSON-RPC 2.0 implementation, no SDK. HTTP: its own bounded HTTP/1.1 server for the hub (§9);
-  `join`'s two requests over `std::net`. Neither has TLS. JSON: `serde_json`. CLI: `clap`. System calls: `rustix`; no `unsafe` code.
+  `join`'s two requests over `std::net`. Neither has TLS. JSON: `serde_json`. CLI: `clap`. System calls: `rustix`;
+  no `unsafe` code.
 - Users and groups come from `/etc/passwd` and `/etc/group`, read by limen itself; nodes resolve no host
   names.
 - Processes: `std::process::Command` with an argument array, never a shell; own process group, a clean

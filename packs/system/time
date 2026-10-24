@@ -24,7 +24,7 @@ fi
 if command -v ntpq > /dev/null 2>&1; then
   client=ntpd
   echo "ntpd:"
-  ntpq -pn 2> /dev/null || echo "ntpd does not answer"
+  ntpq -pn 2> /dev/null || echo "ntpd does not answer" # typos: ignore-line
 fi
 # OpenWrt's busybox ntpd, started by sysntpd.
 if [ -x /etc/init.d/sysntpd ]; then

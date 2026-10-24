@@ -9,7 +9,7 @@ license = "Apache-2.0"
 repository = "https://github.com/xoadev/limen"
 rust-version = "1.85"
 
-# What makes code readable is checked by clippy, not left to review (AGENTS.md, "Code"). Warnings fail `make lint`.
+# What makes code readable is checked by clippy, not left to review (AGENTS.md, "Rust code"). Warnings fail `make lint`.
 [workspace.lints.rust]
 unsafe_code = "forbid"
 
@@ -22,6 +22,11 @@ unwrap_used = "warn"
 allow_attributes_without_reason = "warn"
 dbg_macro = "warn"
 todo = "warn"
+
+# The spelling `make lint` checks with typos. A misspelling on purpose (a test's wrong input, a command's flags) ends
+# its line with a `typos: ignore-line` comment, so the same word elsewhere is still caught.
+[workspace.metadata.typos.default]
+extend-ignore-re = ["(?Rm)^.*(#|//)\\s*typos: ignore-line$"]
 
 # One small static binary per architecture (spec §11): what a router's flash has room for.
 [profile.release]

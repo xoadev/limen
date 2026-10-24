@@ -12,6 +12,6 @@
 
 ## Verification
 
-```
+```text
 <!-- the end of `make check`, and of `make e2e` when it applies -->
 ```

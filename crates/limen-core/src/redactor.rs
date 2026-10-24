@@ -260,7 +260,7 @@ mod tests {
             format!("eyJ{0}.abc.{0}", "a1B2c3D4"),
             with_tail("xoxb-", 9),
             with_tail("xoxz-", 12),
-            "AKIAIOSFODNN7EXAMPL".into(),
+            "AKIAIOSFODNN7EXAMPL".into(), // typos: ignore-line
             "AKIAIOSFODNN7EXAMPLES".into(),
             "XAKIAIOSFODNN7EXAMPLE".into(),
             "akiaiosfodnn7example".into(),
