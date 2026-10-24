@@ -1,7 +1,126 @@
-# AGENTS.md — working contract
+# AGENTS.md
+
+You are a lazy senior developer. Lazy means efficient, not careless. The best code is the code never
+written.
+
+Before writing any code, stop at the first rung that holds:
+
+1. Does this need to be built at all? (YAGNI)
+2. Does the standard library already do this? Use it.
+3. Does a native platform feature cover it? Use it.
+4. Does an already-installed dependency solve it? Use it.
+5. Can this be one line? Make it one line.
+6. Only then: write the minimum code that works.
+
+Rules:
+
+- No abstractions, dependencies or boilerplate nobody asked for.
+- Deletion over addition. Boring over clever. Fewest files possible.
+- Question complex requests: "Do you actually need X, or does Y cover it?"
+- Same size, pick the edge-case-correct option: lazy means less code, not the flimsier algorithm.
+- Mark intentional shortcuts with a `ponytail:` comment that names the ceiling and the upgrade path.
+
+Not lazy about: input validation at trust boundaries, error handling that prevents data loss,
+security, accessibility, anything explicitly requested. Non-trivial logic leaves ONE runnable check
+behind, the smallest thing that fails if the logic breaks. Trivial one-liners need no test.
+
+---
+
+## Languages
+
+- **Everything in the repository is in English**: code, comments, logs, errors, commits and
+  documentation. It is open source, and English is what its readers share.
+- **The agent answers in the language it is spoken to.**
+- **What a machine reads is never translated**: Conventional Commits, `Closes #12`, JSON keys.
+
+## Code
+
+- **Code reads aloud**: descriptive names, small functions with one responsibility, named constants,
+  explicit types on public interfaces and explicit errors (no silent `catch`).
+- **Minimal comments, only for what the code cannot say**: the why, an invariant, a trap, a ceiling
+  (`ponytail:`). If a comment explains what the code does, the problem is the code: rewrite it and
+  delete the comment.
+- **Nothing is written twice, neither code nor documentation.** Before writing, look for the
+  component, helper or validator that already exists. Repeated logic is extracted into a shared
+  component whose name says its intent. A fact lives in one place and the rest link to it, they do
+  not copy it.
+- **Composition over inheritance or copying**, and small interfaces that hide their details.
+- **Errors say what to do**: `no SSH key at /data/id_ed25519 ([ssh].identity in limen.toml)`, not
+  `file not found`.
+- No `TODO` in the code: what is pending goes to an issue.
+
+## Commands and checks
+
+- **Everything runs through `make`**: build, lint, tests, deploy. CI calls the same targets, so what
+  is checked is defined once and cannot drift from a laptop. If no target covers what you need, add
+  the target; do not run it by hand.
+- The stack's official formatter and linter, no debate. `make lint` green before pushing.
+- **A check is never disabled or relaxed** to make it green. A silenced lint carries its reason on
+  the same line. If something outside the change keeps it red, say so in the pull request.
+- **A test documents a behaviour and fails when the promise breaks**: break the code on purpose and
+  watch it go red. No tests to fill coverage.
+
+## Dependencies
+
+- **Only if they are alive, used, and make sense.** Alive: recent releases and maintainers who
+  answer. Used: wide adoption. Make sense: they are worth their weight against the lines they save.
+  No open security advisories.
+- **Pinned versions, at least a week old**: an exact version, never a range or `latest`; actions by
+  SHA with the version in a comment. Dependabot with the same cooldown.
+- In workflows, secrets and `${{ }}` values reach `run:` through `env:`, never interpolated, and the
+  token only reads unless the job asks for more.
+
+## Spec, documentation and knowledge
+
+- **The spec is the source of truth.** If the code has to diverge, the spec changes first.
+- **Documentation is updated in the same pull request** that makes it wrong. Before the commit,
+  search for what the change contradicts (the old name, the old behaviour), not only for where the
+  new thing goes.
+- **No version numbers in the documentation**: examples say `X.Y.Z`. A number written down is wrong
+  at the next release.
+- **What an agent learns is written in the repository** (its `AGENTS.md`, a skill or `docs/`), never
+  only in its private memory: the next session, another agent or a person cannot read it. A mistake
+  already made is written down with what avoids it.
+
+## Git and pull requests
+
+- **Nothing goes straight to `main`**: everything through a pull request. Branches `feat/`, `fix/`
+  and `chore/` from `origin/main`: the local `main` may lag behind.
+- **Work iterates on one branch** while it is being built and tried: new work goes to the branch and
+  the pull request already open. **A new pull request is opened only when asked for.**
+- **Squash is the only merge strategy**: the pull request title becomes the commit subject and its
+  description, the body. The description explains the why in a couple of paragraphs; it does not
+  list the diff.
+- **Before pushing**: rebase on the remote and get build, lint and tests green on that tree. The
+  check that decides a push has no pipes: `| tail` exits 0 even when it fails.
+- With several changes queued, no push and no full suites per change until told.
+
+## How to talk to whoever asked for the work
+
+- **Technical and concise.** The conclusion first, then the why, in short sentences, with no
+  preamble and no tour of the options left out.
+- **When done, or when you need an answer, close with a brief summary**: what is done and verified,
+  what failed or was skipped, and what the person has to decide or do. If nothing, say so.
+- A question comes with its recommendation and just enough to answer it without reading the rest.
+- Before a large change, summarize the plan and wait for confirmation.
+
+## For agents
+
+- Waits end on their own: no `until pgrep` loops and no `tail -f` until the timeout.
+- Untrusted code (someone else's builds or tests) runs with a memory cap (`ulimit -d`).
+
+---
+
+This block is shared by the open source repositories of XOA Desarrollo and its source is
+<https://xoa.dev/_dev/OSS_AGENTS.md>: it changes there, never in a repository's copy, and
+`make agents-sync` brings it in. What belongs to each repository goes below.
+<!-- xoadev:end -->
+
+## limen
 
 This repository is **limen**: an MCP server that lets an agent into Linux machines through the files each allows
-and the scripts each offers, where every limit is enforced on the machine itself. This file is the working contract for any agent (Claude Code or another) and for people.
+and the scripts each offers, where every limit is enforced on the machine itself. This file is the working contract
+for any agent (Claude Code or another) and for people: the shared head above, and what follows, which is limen's own.
 `CLAUDE.md` points here.
 
 ## Sources of truth
@@ -11,9 +130,6 @@ and the scripts each offers, where every limit is enforced on the machine itself
 | Product | `docs/spec.md` | The only source of truth. If code and spec disagree, the spec wins; if the spec is wrong, change the spec first |
 | Protocol, requests and their arguments | `crates/limen-core/src/requests.rs`, `protocol.rs` | The same values validate on the node and become MCP tool schemas on the hub. The spec's tables describe them |
 | What a user needs | `README.md` | Install, configure, use. Written from the spec, never the other way round |
-
-What an agent learns working here is written here or in the spec — never in an agent's private memory, where the
-next session, another agent or a person can't read it.
 
 ## Layout
 
@@ -27,7 +143,7 @@ next session, another agent or a person can't read it.
 | `crates/limen-core/` | Pure rules: protocol, request schemas, argument validation, configuration, TOML reading, script headers, path policy, redaction, the join's formats. No processes, files or network |
 | `crates/limen/` | The `limen` binary: `os/` (processes, files, the system, `join`'s HTTP client), `node/` (gate, requests, files, scripts, lint, install, join), `hub/` (SSH client, MCP server, HTTP server, transports, the hub's directory) |
 | `install.sh` | The installer a user pipes into `sh` on a new machine. POSIX `sh` (OpenWrt has no bash); `make e2e` runs it under dash and ash |
-| `tools/` | Scripts the `Makefile` calls: `cargo.sh` builds, `lint.sh`, `e2e.sh`, `docker.sh`, `pack.sh`, `local-install.sh`, `hooks-install.sh` (installs `pre-push.sh`), `workflow.sh` runs a draft or release workflow on `main`; `format-edited.sh` is Claude Code's hook |
+| `tools/` | Scripts the `Makefile` calls: `cargo.sh` builds, `lint.sh`, `e2e.sh`, `docker.sh`, `pack.sh`, `local-install.sh`, `hooks-install.sh` (installs `pre-push.sh`), `agents.sh` syncs and checks the shared head of this file, `workflow.sh` runs a draft or release workflow on `main`; `format-edited.sh` is Claude Code's hook |
 | `etc/` | `Dockerfile` of the hub image; `e2e/` the Debian node image of `make e2e` (OpenWrt's is the official one) |
 | `.github/workflows/` | CI; what it checks or builds always goes through `Makefile` targets |
 
@@ -71,39 +187,30 @@ Each one had an alternative. Changing one is changing this table and the spec's 
 
 ## Conventions
 
-- **Everything in English**: code, comments, documentation, commit messages, tool descriptions.
 - **Security rules are code, not habits.** Every path `read_file` and `list_dir` open is walked by `files::walk` and
   opened once with `fs::open_exact` (`fs::open_dir_exact` for a directory), every check made on that descriptor;
   every argument goes through `params::validate`; every script through `scripts::find` and `proc::run` with an
   argument array; every text leaving the node through `Node::clean` (control sequences removed, then `Redactor`),
   and every filter after it (`Node::filter`).
-- **The README names no version**: no `0.1.3`, no `@0.1.1`. The latest release of limen and of each pack shows in
-  a badge, and examples say `X.Y.Z`; a number written down is wrong at the next release. A requirement that stays
-  true —"needs limen 0.1.3 or later" in a pack's README— is not an example and stays.
-- **Errors say what to do**: `no SSH key at /data/id_ed25519 ([ssh].identity in /data/limen.toml)`, not
-  `file not found`.
+- **The README names no version**: the latest release of limen and of each pack shows in a badge. A requirement
+  that stays true —"needs limen 0.1.3 or later" in a pack's README— is not an example and stays.
 
 ## Code
 
 Code here is read far more than written, often by someone who has never seen it. Most of what follows is checked by
 clippy: the workspace lints in `Cargo.toml` and `clippy.toml`, where every warning fails `make lint`.
 
-- **Names say what a thing holds or does.** No single-letter names (`min_ident_chars`; `i`, `j`, `n`, `x`… are the
-  exceptions), closures and tests included: `entry`, `line`, `answer`, not `e`, `l`, `o`. Functions are verbs, or
-  the thing they return (`resolve`, `last_matching`, `allowed_file`). No abbreviation a reader has to decode.
-- **One function, one job.** A hundred lines at most (`too_many_lines`), and far fewer is normal; seven arguments at
-  most (`too_many_arguments`): more is a struct asking to exist.
-- **One place for each thing.** A second copy of a piece of logic becomes a function, a type or a module both use.
-  Look before writing: paths and files are `os::fs` (`parent`, `is_directory`, `open_exact`…), processes `os::proc`
-  (`run`, `located`), what goes to the terminal `sys::say` and `sys::log`, settings from the
-  environment `sys::env_setting`, argument rules `limen_core::params`, masking `Redactor`, errors `protocol::error`
-  and `internal`, fixed patterns `limen_core::own_regex`.
-- **Small types with one responsibility, traits at the seams.** What talks to the outside sits behind a trait a
-  test can fake (`NodeClient` for the nodes, `server::Handler` for HTTP); rules are plain functions over data in
-  `limen-core`. Code depends on those traits and types, not on the concrete I/O behind them.
-- **Comments for what the code can't say**: why, a platform constraint, a rule of the spec, a decision with an
-  alternative, context without which the code would mislead. Never a narration of the line below; a name that
-  needs a comment needs a better name.
+- **Names**: no single-letter names (`min_ident_chars`; `i`, `j`, `n`, `x`… are the exceptions), closures and tests
+  included: `entry`, `line`, `answer`, not `e`, `l`, `o`. Functions are verbs, or the thing they return (`resolve`, `last_matching`, `allowed_file`). No abbreviation a reader has to decode.
+- **Size**: a hundred lines at most (`too_many_lines`), and far fewer is normal; seven arguments at most
+  (`too_many_arguments`): more is a struct asking to exist.
+- **What already exists**: paths and files are `os::fs` (`parent`, `is_directory`, `open_exact`…), processes
+  `os::proc` (`run`, `located`), what goes to the terminal `sys::say` and `sys::log`, settings from the environment
+  `sys::env_setting`, argument rules `limen_core::params`, masking `Redactor`, errors `protocol::error` and
+  `internal`, fixed patterns `limen_core::own_regex`.
+- **Traits at the seams.** What talks to the outside sits behind a trait a test can fake (`NodeClient` for the nodes,
+  `server::Handler` for HTTP); rules are plain functions over data in `limen-core`. Code depends on those traits and
+  types, not on the concrete I/O behind them.
 - **No `unwrap` outside tests** (`unwrap_used`): `expect("…")` says why it can't fail, and whatever can fail returns
   an error. A lock is `lock().expect("nothing panics holding …")`: release builds abort on a panic, so no lock is
   ever found poisoned. A silenced lint says why: `#[allow(clippy::…, reason = "…")]` (`allow_attributes_without_reason`).
@@ -116,38 +223,33 @@ spec → change → documentation → make check → commit
 
 1. Find what you are implementing in `docs/spec.md`. If it is not there, or is wrong, change the spec **first**.
 2. Write or adjust the tests first: `limen-core` with samples, `limen` with fakes, `tools/e2e.sh` for what only a real
-   sshd proves. A test must fail when the promise breaks: break the code on purpose and watch it go red. An e2e scene
-   that checks for an absence (`refuse`) also names something the answer must contain, or an empty answer —a crash—
-   passes it.
+   sshd proves. An e2e scene that checks for an absence (`refuse`) also names something the answer must contain, or an
+   empty answer —a crash— passes it.
 3. Implement.
-4. **Update the documentation in the same PR**, every time: whatever the change makes wrong or incomplete. A new
-   or changed script: its pack's README, and the README's pack table. A new setting, tool or behaviour: the README
-   where a user meets it, and `docs/scripts.md` or `SECURITY.md` when it touches them. A release that changes what
-   a user must do: the README and the pack READMEs. Before the commit, search the docs for what the change
-   contradicts (`grep -rn` the old name, the old behaviour), not only for where the new thing goes.
+4. **Update the documentation.** A new or changed script: its pack's README, and the README's pack table. A new
+   setting, tool or behaviour: the README where a user meets it, and `docs/scripts.md` or `SECURITY.md` when it
+   touches them. A release that changes what a user must do: the README and the pack READMEs.
 5. `make check`. Green means correct; there is no other criterion. Anything touching `gate`, `install`, `join`,
    SSH or sudo also needs `make e2e`.
-6. Small commits. One goal per branch; the PR includes the output of `make check`.
+6. One goal per branch; the PR includes the output of `make check`.
 
-**Commits follow [Conventional Commits](https://www.conventionalcommits.org)**: `feat(gate): answer ports`. Types:
-`feat`, `fix`, `docs`, `refactor`, `test`, `chore`, `build`, `ci`; scopes: `core`, `node`, `gate`, `hub`, `install`,
-`image`, `release`, `packs`, `spec`, `readme`, `harness`. **PRs are merged with squash**, so the PR title is the commit that stays.
+**Commits**: `feat(gate): answer ports`. Types: `feat`, `fix`, `docs`, `refactor`, `test`, `chore`, `build`, `ci`;
+scopes: `core`, `node`, `gate`, `hub`, `install`, `image`, `release`, `packs`, `spec`, `readme`, `harness`.
 
-**Nothing is committed straight to `main`.** Everything through a PR, one-line changes included: a ruleset on `main`
-refuses pushes and merges without `check` green, and allows squash only. `make hooks` installs a `pre-push` that
-refuses pushes to `main` before GitHub has to.
-
-If `make check` can't go green for a reason outside your goal, say so in the PR; never disable or relax a check.
+A ruleset on `main` refuses pushes and merges without `check` green, and allows squash only. `make hooks` installs a
+`pre-push` that refuses pushes to `main` before GitHub has to.
 
 ## Makefile targets only
 
-Never launch the build by hand: `cargo` alone builds for this machine's libc, not the static binaries. If no target
-covers what you need, add the target or the script in `tools/`.
+Never launch the build by hand: `cargo` alone builds for this machine's libc, not the static binaries. A target only
+calls a script in `tools/`.
 
 | Target | What it does |
 |---|---|
 | `make check` | `lint build test`. What CI runs |
-| `make lint` | rustfmt and clippy (every warning an error, the workspace lints included) over `crates/`, shellcheck over `tools/`, `install.sh` and `packs/`, actionlint over the workflows. `FIX=1` formats instead of checking |
+| `make lint` | rustfmt and clippy (every warning an error, the workspace lints included) over `crates/`, shellcheck over `tools/`, `install.sh` and `packs/`, actionlint over the workflows, and `agents-check`. `FIX=1` formats instead of checking |
+| `make agents-check` | Fails if the shared head of this file, everything above `<!-- xoadev:end -->`, differs from `AGENTS_URL`; warns and passes when it is unreachable |
+| `make agents-sync` | Rewrites that head from `AGENTS_URL`, keeping everything below the mark. `AGENTS_URL=file://…` takes a local copy |
 | `make build` / `make test` | Every crate, tests included, for this machine |
 | `make cli` | Only the static binary. `VARIANT=release` for the optimised one; `ARCH="x86_64 aarch64"` for both architectures |
 | `make pack` | One pack as it is released, in `dist/`: `PACK=<pack>`, `VERSION=X.Y.Z` (else `dev`). Reproducible from the commit |
@@ -163,11 +265,8 @@ covers what you need, add the target or the script in `tools/`.
 
 ## CI
 
-Every workflow that checks or builds calls `Makefile` targets: what is checked is defined once, and CI can't drift from
-a laptop. Every third-party action is pinned by commit SHA with its version in a comment (`actions/checkout@3d3c42e… #
-v7.0.1`): a tag can move, a SHA can't, and the repository refuses to run one that isn't. A workflow's token only reads
-unless its job asks for more. Secrets reach a step through `env:`, never interpolated into `run:`. Releases are
-immutable, and no `v*` or `pack-*` tag can be moved or deleted.
+The repository refuses to run a third-party action that is not pinned by commit SHA. Releases are immutable, and no
+`v*` or `pack-*` tag can be moved or deleted.
 
 A push only ever prepares: the workflows it runs are the `-draft` ones, and publishing is always a workflow run by
 hand. Each pair shares one concurrency group, `release` or `packs`, that never cancels a run, so a push while a

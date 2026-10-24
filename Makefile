@@ -5,14 +5,22 @@ SHELL := /bin/bash
 .DEFAULT_GOAL := help
 # What `cli` and `docker` compile. `debug` links in seconds; a published binary is `release`.
 VARIANT ?= debug
+# The shared head of AGENTS.md, everything above its `<!-- xoadev:end -->` line, lives here.
+AGENTS_URL := https://xoa.dev/_dev/OSS_AGENTS.md
 
-.PHONY: check lint build test cli local-install docker e2e pack pack-drafts pack-release release hooks clean help
+.PHONY: check lint agents-sync agents-check build test cli local-install docker e2e pack pack-drafts pack-release release hooks clean help
 
 check: lint build test ## Everything CI runs (`make -k check` to see every failure at once)
 	@echo "check: OK"
 
-lint: ## rustfmt, clippy, shellcheck and actionlint. `make lint FIX=1` formats instead of checking
-	@FIX=$(FIX) tools/lint.sh
+lint: ## rustfmt, clippy, shellcheck, actionlint and agents-check. `make lint FIX=1` formats instead of checking
+	@FIX=$(FIX) AGENTS_URL='$(AGENTS_URL)' tools/lint.sh
+
+agents-sync: ## Rewrite the shared head of AGENTS.md from AGENTS_URL
+	@AGENTS_URL='$(AGENTS_URL)' tools/agents.sh sync
+
+agents-check: ## Fail if the shared head of AGENTS.md differs from AGENTS_URL (warns when offline)
+	@AGENTS_URL='$(AGENTS_URL)' tools/agents.sh check
 
 build: ## Compile every crate, tests included
 	@tools/cargo.sh build

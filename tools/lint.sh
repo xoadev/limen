@@ -5,6 +5,7 @@
 #   tools/, install.sh, packs/   shellcheck   quoting, unset variables, the classics
 #   crates/**/*.rs               rustfmt      the layout of rustfmt.toml (FIX=1 rewrites)
 #   crates/**/*.rs               clippy       Rust's own lints, every warning an error
+#   AGENTS.md                    agents.sh    its shared head is the one at AGENTS_URL (make agents-check)
 #
 # (the tool names go second on purpose: a comment line that starts with a linter's name is read by that linter
 # as a directive)
@@ -76,6 +77,7 @@ run actionlint "$CACHE/actionlint-$ACTIONLINT_VERSION" -shellcheck "$CACHE/shell
 
 run rustfmt tools/cargo.sh fmt
 run clippy tools/cargo.sh clippy
+run agents-check tools/agents.sh check
 
 [[ $status -eq 0 ]] && echo "lint: OK"
 exit $status
