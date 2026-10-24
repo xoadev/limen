@@ -155,7 +155,7 @@ for any agent (Claude Code or another) and for people: the shared head above, an
 | `crates/limen-core/` | Pure rules: protocol, request schemas, argument validation, configuration, TOML reading, script headers, path policy, redaction, the join's formats. No processes, files or network |
 | `crates/limen/` | The `limen` binary: `os/` (processes, files, the system, `join`'s HTTP client), `node/` (gate, requests, files, scripts, lint, install, join), `hub/` (SSH client, MCP server, HTTP server, transports, the hub's directory) |
 | `install.sh` | The installer a user pipes into `sh` on a new machine. POSIX `sh` (OpenWrt has no bash); `make e2e` runs it under dash and ash |
-| `tools/` | Scripts the `Makefile` calls: `cargo.sh` builds, `lint.sh`, `e2e.sh`, `docker.sh`, `pack.sh`, `local-install.sh`, `hooks-install.sh` (installs `pre-push.sh`), `workflow.sh` runs a draft or release workflow on `main`; `format-edited.sh` is Claude Code's hook |
+| `tools/` | Scripts the `Makefile` calls: `cargo.sh` builds, `lint.sh`, `lint-updates.sh`, `e2e.sh`, `docker.sh`, `pack.sh`, `local-install.sh`, `hooks-install.sh` (installs `pre-push.sh`), `workflow.sh` runs a draft or release workflow on `main`; `format-edited.sh` is Claude Code's hook |
 | `etc/` | `Dockerfile` of the hub image; `e2e/` the Debian node image of `make e2e` (OpenWrt's is the official one) |
 | `.github/workflows/` | CI; what it checks or builds always goes through `Makefile` targets |
 
@@ -261,6 +261,7 @@ calls a script in `tools/`.
 |---|---|
 | `make check` | `lint build test`. What CI runs |
 | `make lint` | rustfmt and clippy (every warning an error, the workspace lints included) over `crates/`, shellcheck over `tools/`, `install.sh` and `packs/`, actionlint over the workflows, rumdl (markdownlint's rules, `.rumdl.toml`) over the Markdown, typos over every file (`[workspace.metadata.typos]`), and `agents-check`. `FIX=1` formats instead of checking |
+| `make lint-updates` | Fails if a linter pinned in `tools/lint.sh` has a newer release at least a week old, naming it; `lint-updates.yml` runs it weekly. A bump, in a pull request: the version and both architectures' `sha256` in `lint.sh` (`curl -fsSL <archive URL of lint.sh> \| sha256sum`, once per architecture), then `make lint` and fix what the new version reports |
 | `make agents-check` | Fails if the shared head of this file, everything above `<!-- xoadev:end -->`, differs from `AGENTS_URL`; warns and passes when it is unreachable |
 | `make agents-sync` | Rewrites that head from `AGENTS_URL`, keeping everything below the mark. `AGENTS_URL=file://…` takes a local copy. Both run [xoa.dev's script](https://xoa.dev/_dev/agents.sh), shared by our repositories, not one in `tools/` |
 | `make build` / `make test` | Every crate, tests included, for this machine |
@@ -293,8 +294,9 @@ release is being built waits instead of moving the draft under it.
 | `packs-draft.yml` | Every push to `main` that touches `packs/`; by hand (`make pack-drafts`) | convco-version reads, for each pack, the commits that touched `packs/<pack>/` and rewrites that pack's draft, `pack-<pack>-vX.Y.Z`; nothing is published |
 | `packs.yml` | By hand only, with a pack's name, to publish it | **Run by hand** (or `make pack-release`), it publishes that pack's draft: waits for `check.yml` green on its commit, `make pack`, attests the tarball, attaches it and `SHA256SUMS`, and publishes it **never as the latest release** —that is limen's, which `install.sh`, `limen_version` and `limen_update` ask for |
 | `cli.yml` | Label `cli` on a PR, or by hand | Both binaries (debug) as an artifact, with the link commented on the PR: for trying a change on a real node |
-| `e2e.yml` | Every PR that touches code (`crates/`, `Cargo.*`, `rust-toolchain.toml`, `.cargo/`, `tools/`, `etc/`, `install.sh`, `packs/`, `Makefile`, the workflow itself); weekly; by hand | `make e2e`, every suite. Weekly because the Debian and OpenWrt images it runs move upstream |
-| `dependabot.yml` | Weekly, versions a week old | Pull requests that update the pinned actions (SHA and version comment together), the crates and the image's base images |
+| `e2e.yml` | Every PR that touches code (`crates/`, `Cargo.*`, `rust-toolchain.toml`, `.cargo/`, `tools/`, `etc/`, `install.sh`, `packs/`, `Makefile`, the workflow itself); weekly; by hand | `make e2e`, every suite. Weekly because OpenWrt's image moves upstream; Debian's is pinned by digest in `etc/e2e/node.Dockerfile`, and follows upstream through Dependabot's weekly pull request, which this workflow tests |
+| `dependabot.yml` | Weekly, versions a week old | Pull requests that update the pinned actions (SHA and version comment together), the crates (pinned `=X.Y.Z` in the `Cargo.toml` files, `versioning-strategy: increase` moves requirement and `Cargo.lock` together) and the base images of `etc/Dockerfile` and `etc/e2e/node.Dockerfile` |
+| `lint-updates.yml` | Weekly; by hand | `make lint-updates`: the linters of `tools/lint.sh`, which Dependabot cannot see. When one is behind, it opens (or comments) the `lint-updates` issue |
 
 The version is never written in the code: the commits decide it, and it only exists once a release is published.
 The build reads it from `LIMEN_VERSION`, `LIMEN_BUILD_DATE` and `LIMEN_BUILD_NUMBER` (`tools/cargo.sh` checks their

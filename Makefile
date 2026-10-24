@@ -9,13 +9,16 @@ VARIANT ?= debug
 AGENTS_URL := https://xoa.dev/_dev/OSS_AGENTS.md
 AGENTS_SCRIPT := https://xoa.dev/_dev/agents.sh
 
-.PHONY: check lint agents-sync agents-check build test cli local-install docker e2e pack pack-drafts pack-release release hooks clean help
+.PHONY: check lint lint-updates agents-sync agents-check build test cli local-install docker e2e pack pack-drafts pack-release release hooks clean help
 
 check: lint build test ## Everything CI runs (`make -k check` to see every failure at once)
 	@echo "check: OK"
 
 lint: ## rustfmt, clippy, shellcheck, actionlint, rumdl, typos and agents-check. `make lint FIX=1` formats instead of checking
 	@FIX=$(FIX) tools/lint.sh
+
+lint-updates: ## Fails if a linter pinned in tools/lint.sh has a newer release a week old (weekly in lint-updates.yml)
+	@tools/lint-updates.sh
 
 # Not a tools/ script: the script is xoa.dev's, shared by our repositories.
 agents-sync agents-check: ## Sync (agents-sync) or check (agents-check) the shared head of AGENTS.md; agents-check warns when offline

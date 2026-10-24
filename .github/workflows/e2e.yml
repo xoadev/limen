@@ -1,7 +1,8 @@
 # `make e2e`: Debian and OpenWrt containers with a real SSH server, `limen install` and `limen join` inside, and the
 # hub's image against them. It is what proves the limits hold on a real machine —forced commands, sudo, dropbear,
 # the static binary on musl—, so it runs on every pull request that touches code, and once a week against the
-# latest upstream images (debian:trixie-slim and openwrt/rootfs move under us).
+# upstream images: openwrt/rootfs is taken as it is that day, and debian:trixie-slim is pinned by digest in
+# etc/e2e/node.Dockerfile, which Dependabot moves weekly in a pull request this workflow tests.
 name: e2e
 
 on:

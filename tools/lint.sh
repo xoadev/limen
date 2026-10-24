@@ -22,7 +22,8 @@ SHELLCHECK_VERSION=0.11.0
 ACTIONLINT_VERSION=1.7.12
 RUMDL_VERSION=0.2.79
 TYPOS_VERSION=1.51.1
-# sha256 of each archive, per architecture: a changed download is refused, not run. Update them with the versions.
+# sha256 of each archive, per architecture: a changed download is refused, not run. Update them with the versions
+# (`make lint-updates` says when one is behind; AGENTS.md, how to bump it).
 declare -A SHA256=(
   [shellcheck-x86_64]=8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
   [shellcheck-aarch64]=12b331c1d2db6b9eb13cfca64306b1b157a86eb69db83023e261eaa7e7c14588
