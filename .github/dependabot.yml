@@ -1,12 +1,15 @@
 # Keeps what the build and the image take from others up to date, one pull request at a time that check.yml and
 # e2e.yml then test: the actions of the workflows (pinned by commit SHA with the version in a comment), the crates
-# of Cargo.lock, and the base images of etc/Dockerfile.
+# of Cargo.lock, and the base images of etc/Dockerfile. Only versions a week old: a release pulled in its first days
+# never reaches the build.
 version: 2
 updates:
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7
     commit-message:
       prefix: ci
 
@@ -14,6 +17,8 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7
     commit-message:
       prefix: build
     groups:
@@ -24,5 +29,7 @@ updates:
     directory: /etc
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7
     commit-message:
       prefix: build

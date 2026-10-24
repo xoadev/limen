@@ -54,7 +54,13 @@ behind, the smallest thing that fails if the logic breaks. Trivial one-liners ne
 - **Everything runs through `make`**: build, lint, tests, deploy. CI calls the same targets, so what
   is checked is defined once and cannot drift from a laptop. If no target covers what you need, add
   the target; do not run it by hand.
-- The stack's official formatter and linter, no debate. `make lint` green before pushing.
+- **Every repository has `make lint` and `make test`, and CI runs them on every pull request.** A
+  repository without them adds them before its next feature. `make lint` green before pushing.
+- **Strict linters**: the stack's official ones, with warnings as errors, and the cross-cutting ones
+  for the files there are (shellcheck, actionlint, markdownlint, typos). The formatter, no debate.
+- **A change in behaviour comes with its test in the same pull request**, and a fixed bug with the
+  test that reproduces it. Integration tests over real flows are the base; unit tests only where
+  they pay off (domain, parsers, state machines).
 - **A check is never disabled or relaxed** to make it green. A silenced lint carries its reason on
   the same line. If something outside the change keeps it red, say so in the pull request.
 - **A test documents a behaviour and fails when the promise breaks**: break the code on purpose and
@@ -141,7 +147,7 @@ for any agent (Claude Code or another) and for people: the shared head above, an
 | `docs/` | `spec.md`; `scripts.md`, writing scripts and packs; `openwrt.md`, OpenWrt as a node and the one binary for every Linux |
 | `packs/` | Packs of scripts: `system`, `systemd`, `debian`, `docker`, `limen`, `openwrt`. Each released on its own as `pack-<pack>-vX.Y.Z` (`packs-draft.yml`, `packs.yml`); not installed with limen |
 | `Cargo.toml`, `rust-toolchain.toml` | The workspace and the Rust version it is built with, targets included; `.cargo/config.toml` links the musl targets with `rust-lld` |
-| `rustfmt.toml`, `clippy.toml`, `[workspace.lints]` | The layout and the lints `make lint` applies (see [Code](#code)) |
+| `rustfmt.toml`, `clippy.toml`, `[workspace.lints]`, `.rumdl.toml`, `[workspace.metadata.typos]` | The layout and the lints `make lint` applies (see [Rust code](#rust-code)) |
 | `.claude/settings.json` | Claude Code's hooks for this repository: an edited Rust file is formatted at once |
 | `crates/limen-core/` | Pure rules: protocol, request schemas, argument validation, configuration, TOML reading, script headers, path policy, redaction, the join's formats. No processes, files or network |
 | `crates/limen/` | The `limen` binary: `os/` (processes, files, the system, `join`'s HTTP client), `node/` (gate, requests, files, scripts, lint, install, join), `hub/` (SSH client, MCP server, HTTP server, transports, the hub's directory) |
@@ -198,13 +204,14 @@ Each one had an alternative. Changing one is changing this table and the spec's 
 - **The README names no version**: the latest release of limen and of each pack shows in a badge. A requirement
   that stays true —"needs limen 0.1.3 or later" in a pack's README— is not an example and stays.
 
-## Code
+## Rust code
 
 Code here is read far more than written, often by someone who has never seen it. Most of what follows is checked by
 clippy: the workspace lints in `Cargo.toml` and `clippy.toml`, where every warning fails `make lint`.
 
 - **Names**: no single-letter names (`min_ident_chars`; `i`, `j`, `n`, `x`… are the exceptions), closures and tests
-  included: `entry`, `line`, `answer`, not `e`, `l`, `o`. Functions are verbs, or the thing they return (`resolve`, `last_matching`, `allowed_file`). No abbreviation a reader has to decode.
+  included: `entry`, `line`, `answer`, not `e`, `l`, `o`. Functions are verbs, or the thing they return (`resolve`,
+  `last_matching`, `allowed_file`). No abbreviation a reader has to decode.
 - **Size**: a hundred lines at most (`too_many_lines`), and far fewer is normal; seven arguments at most
   (`too_many_arguments`): more is a struct asking to exist.
 - **What already exists**: paths and files are `os::fs` (`parent`, `is_directory`, `open_exact`…), processes
@@ -220,7 +227,7 @@ clippy: the workspace lints in `Cargo.toml` and `clippy.toml`, where every warni
 
 ## Mandatory loop
 
-```
+```text
 spec → change → documentation → make check → commit
 ```
 
@@ -250,7 +257,7 @@ calls a script in `tools/`.
 | Target | What it does |
 |---|---|
 | `make check` | `lint build test`. What CI runs |
-| `make lint` | rustfmt and clippy (every warning an error, the workspace lints included) over `crates/`, shellcheck over `tools/`, `install.sh` and `packs/`, actionlint over the workflows, and `agents-check`. `FIX=1` formats instead of checking |
+| `make lint` | rustfmt and clippy (every warning an error, the workspace lints included) over `crates/`, shellcheck over `tools/`, `install.sh` and `packs/`, actionlint over the workflows, rumdl (markdownlint's rules, `.rumdl.toml`) over the Markdown, typos over every file (`[workspace.metadata.typos]`), and `agents-check`. `FIX=1` formats instead of checking |
 | `make agents-check` | Fails if the shared head of this file, everything above `<!-- xoadev:end -->`, differs from `AGENTS_URL`; warns and passes when it is unreachable |
 | `make agents-sync` | Rewrites that head from `AGENTS_URL`, keeping everything below the mark. `AGENTS_URL=file://…` takes a local copy. Both run [xoa.dev's script](https://xoa.dev/_dev/agents.sh), shared by our repositories, not one in `tools/` |
 | `make build` / `make test` | Every crate, tests included, for this machine |
@@ -284,7 +291,7 @@ release is being built waits instead of moving the draft under it.
 | `packs.yml` | By hand only, with a pack's name, to publish it | **Run by hand** (or `make pack-release`), it publishes that pack's draft: waits for `check.yml` green on its commit, `make pack`, attests the tarball, attaches it and `SHA256SUMS`, and publishes it **never as the latest release** —that is limen's, which `install.sh`, `limen_version` and `limen_update` ask for |
 | `cli.yml` | Label `cli` on a PR, or by hand | Both binaries (debug) as an artifact, with the link commented on the PR: for trying a change on a real node |
 | `e2e.yml` | Every PR that touches code (`crates/`, `Cargo.*`, `rust-toolchain.toml`, `.cargo/`, `tools/`, `etc/`, `install.sh`, `packs/`, `Makefile`, the workflow itself); weekly; by hand | `make e2e`, every suite. Weekly because the Debian and OpenWrt images it runs move upstream |
-| `dependabot.yml` | Weekly | Pull requests that update the pinned actions (SHA and version comment together), the crates and the image's base images |
+| `dependabot.yml` | Weekly, versions a week old | Pull requests that update the pinned actions (SHA and version comment together), the crates and the image's base images |
 
 The version is never written in the code: the commits decide it, and it only exists once a release is published.
 The build reads it from `LIMEN_VERSION`, `LIMEN_BUILD_DATE` and `LIMEN_BUILD_NUMBER` (`tools/cargo.sh` checks their

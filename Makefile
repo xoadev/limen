@@ -14,7 +14,7 @@ AGENTS_SCRIPT := https://xoa.dev/_dev/agents.sh
 check: lint build test ## Everything CI runs (`make -k check` to see every failure at once)
 	@echo "check: OK"
 
-lint: ## rustfmt, clippy, shellcheck, actionlint and agents-check. `make lint FIX=1` formats instead of checking
+lint: ## rustfmt, clippy, shellcheck, actionlint, rumdl, typos and agents-check. `make lint FIX=1` formats instead of checking
 	@FIX=$(FIX) tools/lint.sh
 
 # Not a tools/ script: the script is xoa.dev's, shared by our repositories.
