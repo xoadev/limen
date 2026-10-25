@@ -48,6 +48,8 @@ behind, the smallest thing that fails if the logic breaks. Trivial one-liners ne
 - **Errors say what to do**: `no SSH key at /data/id_ed25519 ([ssh].identity in limen.toml)`, not
   `file not found`.
 - No `TODO` in the code: what is pending goes to an issue.
+- **Secrets stay out of the repository**: not in code, logs or error messages. What is committed
+  encrypted says so in its name, and a check proves it is.
 
 ## Commands and checks
 
@@ -76,6 +78,11 @@ behind, the smallest thing that fails if the logic breaks. Trivial one-liners ne
   No open security advisories.
 - **Pinned versions, at least a week old**: an exact version, never a range or `latest`; actions by
   SHA with the version in a comment. Dependabot with the same cooldown.
+- **Node through pnpm**, never npm or yarn: its version pinned in `package.json`'s `packageManager`;
+  `pnpm install --frozen-lockfile` in CI; a one-week `minimumReleaseAge`, and install scripts only
+  for the packages that need them.
+- **Python through uv**: the Python version and dependencies pinned in `uv.lock`, with hashes;
+  `uv sync --frozen` in CI, and `uvx` with an exact version for standalone tools.
 - In workflows, secrets and `${{ }}` values reach `run:` through `env:`, never interpolated, and the
   token only reads unless the job asks for more.
 
@@ -84,6 +91,10 @@ behind, the smallest thing that fails if the logic breaks. Trivial one-liners ne
 - **The spec is the source of truth.** If the code has to diverge, the spec changes first. A
   contradiction between spec, documentation and code is raised before acting; no side is picked in
   silence.
+- **What is published only grows, once there is production**: in an API, a schema, an event or a
+  format real users already rely on, things are added, never removed or renamed. Breaking it is a
+  task to prepare, not a change in a pull request. While a project is in testing or has no users,
+  break what is needed; the repository says in its own part which of the two it is in.
 - **Documentation is updated in the same pull request** that makes it wrong. Before the commit,
   search for what the change contradicts (the old name, the old behaviour), not only for where the
   new thing goes.
@@ -96,7 +107,8 @@ behind, the smallest thing that fails if the logic breaks. Trivial one-liners ne
 ## Git and pull requests
 
 - **Nothing goes straight to `main`**: everything through a pull request. Branches `feat/`, `fix/`
-  and `chore/` from `origin/main`: the local `main` may lag behind.
+  and `chore/` from `origin/main`, in a worktree of your own: never in the person's checkout nor on
+  a local `main`, which may lag behind.
 - **Work iterates on one branch** while it is being built and tried: new work goes to the branch and
   the pull request already open. **A new pull request is opened only when asked for.**
 - **Squash is the only merge strategy**: the pull request title becomes the commit subject and its
@@ -112,11 +124,15 @@ behind, the smallest thing that fails if the logic breaks. Trivial one-liners ne
   preamble and no tour of the options left out.
 - **When done, or when you need an answer, close with a brief summary**: what is done and verified,
   what failed or was skipped, and what the person has to decide or do. If nothing, say so.
+- **Report with evidence**: "done" comes with the output that proves it, and what was not verified
+  is said to be unverified. A skipped check is not a passing one.
 - A question comes with its recommendation and just enough to answer it without reading the rest.
 - Before a large change, summarize the plan and wait for confirmation.
 
 ## For agents
 
+- **What cannot be undone needs explicit confirmation**: a deploy, a migration, deleting data,
+  touching a machine. Production is deployed only from CI, never from a branch or by hand.
 - Waits end on their own: no `until pgrep` loops and no `tail -f` until the timeout.
 - Untrusted code (someone else's builds or tests) runs with a memory cap (`ulimit -d`).
 
@@ -134,6 +150,10 @@ This repository is **limen**: an MCP server that lets an agent into Linux machin
 and the scripts each offers, where every limit is enforced on the machine itself. This file is the working contract
 for any agent (Claude Code or another) and for people: the shared head above, and what follows, which is limen's own.
 `CLAUDE.md` points here.
+
+**limen is in production**: its releases are public, `install.sh` and `limen_update` fetch the latest one, and our own
+machines run it. So the request schemas, the tools the hub offers, `limen.toml`, script headers and the packs' scripts
+only grow.
 
 ## Sources of truth
 
@@ -295,7 +315,7 @@ release is being built waits instead of moving the draft under it.
 | `packs.yml` | By hand only, with a pack's name, to publish it | **Run by hand** (or `make pack-release`), it publishes that pack's draft: waits for `check.yml` green on its commit, `make pack`, attests the tarball, attaches it and `SHA256SUMS`, and publishes it **never as the latest release** —that is limen's, which `install.sh`, `limen_version` and `limen_update` ask for |
 | `cli.yml` | Label `cli` on a PR, or by hand | Both binaries (debug) as an artifact, with the link commented on the PR: for trying a change on a real node |
 | `e2e.yml` | Every PR that touches code (`crates/`, `Cargo.*`, `rust-toolchain.toml`, `.cargo/`, `tools/`, `etc/`, `install.sh`, `packs/`, `Makefile`, the workflow itself); weekly; by hand | `make e2e`, every suite. Weekly because OpenWrt's image moves upstream; Debian's is pinned by digest in `etc/e2e/node.Dockerfile`, and follows upstream through Dependabot's weekly pull request, which this workflow tests |
-| `dependabot.yml` | Weekly, versions a week old | Pull requests that update the pinned actions (SHA and version comment together), the crates (pinned `=X.Y.Z` in the `Cargo.toml` files, each pull request moves the requirement and `Cargo.lock` together) and the base images of `etc/Dockerfile` and `etc/e2e/node.Dockerfile` |
+| `dependabot.yml` | Weekly, versions a week old | Pull requests that update the pinned actions (SHA and version comment together), the crates (pinned `=X.Y.Z` in the `Cargo.toml` files, each pull request moves the requirement and `Cargo.lock` together), the Rust version of `rust-toolchain.toml` and the base images of `etc/Dockerfile` and `etc/e2e/node.Dockerfile` |
 | `lint-updates.yml` | Weekly; by hand | `make lint-updates`: the linters of `tools/lint.sh`, which Dependabot cannot see. When one is behind, it opens (or comments) the `lint-updates` issue |
 
 The version is never written in the code: the commits decide it, and it only exists once a release is published.
