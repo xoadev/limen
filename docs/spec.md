@@ -52,7 +52,7 @@ limen/
 ## 2. Components
 
 ```text
-MCP client ──stdio or HTTP──▶ hub: limen mcp | limen serve
+MCP client ──stdio or HTTP──▶ hub: limen mcp | limen serve ◀──MQTT──▶ broker ◀──▶ Home Assistant
                                 │  ssh limen@node   (request as JSON on stdin)
                                 ▼
 node:  sshd ──forced command──▶ sudo limen gate ──▶ allowed files, the packs' scripts
@@ -61,7 +61,8 @@ node:  sshd ──forced command──▶ sudo limen gate ──▶ allowed file
 
 - **Hub**: runs the MCP server, holds the SSH key and the list of nodes. A container (`limen serve`,
   HTTP) or a laptop (`limen mcp`, stdio). It is a directory —`$LIMEN_HOME`, `/data` in the image—, created
-  by `limen init`, or by `limen serve` on its first start.
+  by `limen init`, or by `limen serve` on its first start. `limen serve` can also publish scripts' output to an
+  MQTT broker as Home Assistant sensors, and run scripts as buttons pressed there (§9.1).
 - **Node**: a machine the agent works on. Has the `limen` binary, its configuration in `/etc/limen/`, its
   packs, and the SSH and sudo wiring that `limen install` sets up.
 - A hub can be a node too: it reaches itself over SSH like any other.
@@ -129,7 +130,7 @@ Every tool but `nodes` takes a `node` argument.
 
 | Tool | Returns |
 |---|---|
-| `nodes` | Configured nodes, reachability, limen version, OS, and each node's catalog and its problems |
+| `nodes` | Configured nodes, reachability, limen version, OS, each node's catalog and its problems, and the MQTT sensors and buttons refused (§9.1) |
 | `read_file` | An allowed file: a range, `from` and `lines`; or its end, the last `tail` lines, or those that hold `grep` |
 | `list_dir` | An allowed directory: names, types, sizes, owners, modes, modification times. Only entries that are readable or lead to something readable; at most 1000 |
 | `history` | The node's audit log |
@@ -215,6 +216,7 @@ concurrency = 8
 [audit]
 path = "/var/log/limen/audit.jsonl"
 max_bytes = 5242880
+read_only = "all"
 ```
 
 - The limits and paths show their defaults. `files`, `scripts` and `redact` are examples: they default to
@@ -302,6 +304,28 @@ scripts = "changes"
 except = ["restart_container"]
 timeout = "5m"
 
+[mqtt]
+enabled = true
+url = "mqtt://192.168.1.229:1883"
+user = "limen"
+password_file = "mqtt-password"
+prefix = "limen"
+discovery = "homeassistant"
+
+[[mqtt.sensor]]
+node = "nas"
+id = "disk_used"
+script = "disk_used_percent"
+args = { path = "/srv" }
+every = "60s"
+discovery = { unit_of_measurement = "%" }
+
+[[mqtt.button]]
+node = "nas"
+id = "restart_immich"
+script = "restart_container"
+args = { name = "immich_server" }
+
 [nodes.nas]
 host = "100.64.0.2"
 host_key = "ssh-ed25519 AAAA…"
@@ -318,8 +342,9 @@ host_key = "ssh-ed25519 AAAA…"
 - `ssh.identity` is the hub's SSH key: a path relative to the hub's directory (`--home`, else `LIMEN_HOME`), or
   absolute. `init` makes it with `ssh-keygen` when it is missing. Its public key is the same path with `.pub`: the
   one `invite` hands out, whose fingerprint `init`, `serve` and the join line show.
-- `limen.toml` is read again whenever it changes: a node that joins is there for the next request. `[http]` is read
-  once, when `serve` starts. A broken `limen.toml` makes the MCP answer errors, not stop.
+- `limen.toml` is read again whenever it changes: a node that joins is there for the next request. `[http]` and the
+  keys of `[mqtt]` itself are read once, when `serve` starts; `[[mqtt.sensor]]` and `[[mqtt.button]]` with the rest
+  of the file. A broken `limen.toml` makes the MCP answer errors, not stop.
 - `[http] public_url` (or `LIMEN_PUBLIC_URL`) is where nodes reach the hub to join: an address, not a name,
   because the static binary resolves no names.
 - `http.origins` lists the web pages that may call `/mcp`, each compared whole with the request's `Origin` header:
@@ -346,7 +371,18 @@ host_key = "ssh-ed25519 AAAA…"
 - `http.listen` is where `serve` listens, as `host:port`. `--listen` wins over `LIMEN_LISTEN`, and that over the
   file; each is checked the same way. The image's command is `serve --listen 0.0.0.0:7341`, so in the image the
   address changes by overriding the command: `LIMEN_LISTEN` and the file don't reach it.
-- What the hub reads from its environment, where a blank value counts as unset:
+- `[mqtt]` is off unless `enabled = true`: without it `serve` opens no connection and starts no thread, and
+  `limen mcp` never reads it. `url` is `mqtt://<address>[:<port>]`, 1883 unless given: an address, not a name, and no
+  TLS (§9.1). `user` is optional; its password is `LIMEN_MQTT_PASSWORD`, else the file `password_file` names (relative
+  to the hub's directory, or absolute), never a key of `limen.toml`. `prefix`, `limen` unless given, and
+  `discovery`, Home Assistant's discovery prefix, `homeassistant` unless given and `""` for plain topics only, match
+  `^[a-z0-9][a-z0-9_-]{0,31}$`. Two hubs on one broker need two prefixes.
+- `[[mqtt.sensor]]` and `[[mqtt.button]]` name a `node` of `[nodes]`, an `id` matching `^[a-z0-9][a-z0-9_]{0,31}$`
+  and unique within its node among both, a `script` and its `args`, fixed and validated against the script's header
+  in the node's catalog. A sensor adds `every`, `10s` to `24h` and `60s` unless given, and both take `discovery`, a
+  table of strings, numbers and booleans merged into the discovery payload (§9.1), which can't set the keys limen
+  writes there. A sensor or button that breaks one of these rules, or of §9.1's, is refused, and named in `nodes` and
+  in the hub's log; the others go on. from its environment, where a blank value counts as unset:
 
   | Variable | |
   |---|---|
@@ -354,6 +390,7 @@ host_key = "ssh-ed25519 AAAA…"
   | `LIMEN_TOKEN` | The HTTP clients' token, instead of the `token` file (§9) |
   | `LIMEN_PUBLIC_URL` | Over `http.public_url`, checked the same way |
   | `LIMEN_LISTEN` | Over `http.listen`, under `--listen` |
+  | `LIMEN_MQTT_PASSWORD` | The broker's password, over `mqtt.password_file` |
   | `XDG_RUNTIME_DIR` | Where ssh's control sockets go (§12) |
 
 ## 8. Audit
@@ -365,10 +402,16 @@ host_key = "ssh-ed25519 AAAA…"
   it becomes `audit.jsonl.1`: no logrotate, which OpenWrt doesn't have.
 - A script's run is written when it starts too, with `started` as its result: it may change the machine, and a run
   killed halfway still leaves a trace.
+- `audit.read_only = "none"` leaves out the requests that change nothing and succeed: `hello`, `read_file`,
+  `list_dir`, `history`, and the runs of scripts whose header says `read_only = true` that exit 0. `"all"`, the
+  default, writes every one. Polling a sensor every minute (§9.1) would otherwise rotate an agent's calls out of the
+  log within hours, and write a disk every minute; the node decides it, since it trusts nothing a hub says about a
+  request. Requests that are refused, fail or may change something are always written.
 - `history` shows it redacted, like everything that leaves the node. Arguments are recorded: a script
   doesn't take secrets as arguments.
 - The hub logs each tool call to stderr (node, tool, result, duration): over stdio, stdout is the
-  protocol; in the image, stderr is the container's log.
+  protocol; in the image, stderr is the container's log. A button's press is logged as a tool call; a sensor only
+  when a read fails, and a node or the broker connection when it goes down or comes back.
 
 ## 9. Transports
 
@@ -392,6 +435,49 @@ host_key = "ssh-ed25519 AAAA…"
 - Catalogs are fetched when the set of nodes changes, and when a session starts (`initialize`) or `nodes`
   is called, at most once every ten seconds. A change is announced with `notifications/tools/list_changed` over
   stdio; over HTTP without SSE it shows up in the next session.
+
+### 9.1 MQTT
+
+`limen serve` with `[mqtt]` enabled (§7.2) publishes scripts' output as sensors and runs scripts as buttons, through
+an MQTT broker and Home Assistant's discovery: Home Assistant shows them with nothing to install. Nodes don't change:
+the hub runs their scripts over SSH as it does for an MCP client, so every limit stays on the node, and the broker is
+one more untrusted client of the hub. A node offering a script never makes it reachable over MQTT: each sensor and
+button is declared in the hub's `limen.toml`. Only `serve`: a hub that lives as long as its MCP client
+(`limen mcp`) would turn every entity unavailable whenever the laptop closes.
+
+| Topic | Retained | What |
+|---|---|---|
+| `<prefix>/status` | yes | `online`, or `offline`: the connection's last will, and what a hub that stops publishes before it disconnects |
+| `<prefix>/<node>/status` | yes | `online` while the node answers, `offline` when it is unreachable, refuses the host key or times out |
+| `<prefix>/<node>/<id>/state` | yes | A sensor's state |
+| `<prefix>/<node>/<id>/press` | — | A button's command topic: any message presses it |
+| `<prefix>/<node>/<id>/result` | no | A button's run: the node's answer, as the hub got it (§4) |
+| `<discovery>/sensor/<prefix>/<node>-<id>/config`, `<discovery>/button/…` | yes | Home Assistant's discovery payload |
+
+- **Sensors** run only scripts whose header says `read_only = true` on their node, and never one `[approval]` would
+  ask about. Every `every` the hub runs the script and, when it exits 0 and its stdout —redacted and bounded by the
+  node— trimmed differs from the last state published, publishes it. A run that fails, exits otherwise or prints
+  more than 16 KiB publishes nothing and is logged. limen parses nothing it runs: a field out of JSON is Home
+  Assistant's `value_template`, in `discovery`; rounding, so a number doesn't change on every read, is the script's ([scripts.md](scripts.md)).
+- **Buttons** run their script, with their fixed arguments, once per message on their command topic: a message
+  presses the button, it chooses nothing. The hub subscribes only to its own prefix. A retained message is ignored,
+  or it would press the button on every connection, and so is a press while the button's last run hasn't finished.
+  Never a script `[approval]` would ask about: over MQTT there is nobody to ask.
+- **Sharing a node with the agent.** All the sensors of a node take one of its `ssh.per_node_concurrency` slots, one
+  read at a time, so polling never makes an agent's call wait for more than one read; a sensor whose last read is
+  still waiting or running skips its turn. A button's run takes a slot as a tool call does.
+- **Discovery.** One Home Assistant device per node, `<prefix>-<node>`, named after the node; `unique_id` is
+  `<prefix>-<node>-<id>` and `name` the `id`, unless `discovery` names it. An entity is available when both statuses
+  are `online` (`availability_mode: all`). `<node>-<id>` is unambiguous because an `id` has no `-`. With
+  `discovery = ""` nothing goes under a discovery prefix; the other topics stay.
+- **Every connection resends everything**: statuses, discovery and the last states, retained, QoS 0. The hub
+  subscribes to `<prefix>/#` and `<discovery>/+/<prefix>/+/config`, so it receives the retained messages it left
+  before, and empties every one its configuration no longer declares: a sensor removed from `limen.toml`, while the
+  hub runs or while it was stopped, leaves Home Assistant.
+- **Its own MQTT 3.1.1 client**, as limen has for MCP and HTTP: CONNECT with a will and a 60-second keep-alive,
+  PUBLISH and SUBSCRIBE at QoS 0, PINGREQ, over `std::net`, with reconnection and a backoff up to a minute. The client
+  id is `limen-<prefix>`. A packet from the broker over 64 KiB closes the connection. No TLS: the broker is on the
+  LAN or a VPN, and its password crosses it in clear.
 
 ## 10. CLI
 
@@ -519,8 +605,8 @@ hub:   [nodes.nas] with the request's source address, then `hello`  →  {"reach
     redaction and the join's formats. Pure, tested without a machine.
   - `limen`: the binary — processes, files, SSH, MCP and HTTP.
 - MCP: its own JSON-RPC 2.0 implementation, no SDK. HTTP: its own bounded HTTP/1.1 server for the hub (§9);
-  `join`'s two requests over `std::net`. Neither has TLS. JSON: `serde_json`. CLI: `clap`. System calls: `rustix`;
-  no `unsafe` code.
+  `join`'s two requests over `std::net`. MQTT: its own 3.1.1 client over `std::net` (§9.1). None has TLS. JSON:
+  `serde_json`. CLI: `clap`. System calls: `rustix`; no `unsafe` code.
 - Users and groups come from `/etc/passwd` and `/etc/group`, read by limen itself; nodes resolve no host
   names.
 - Processes: `std::process::Command` with an argument array, never a shell; own process group, a clean
@@ -542,6 +628,8 @@ hub:   [nodes.nas] with the request's source address, then `hello`  →  {"reach
 | A compromised MCP client | Answers yes to its own approval questions. Approval guards against the model, not against the client, nor the hub that asks |
 | Whoever can change a pack, or where a script fetches packs from | Runs code as root on the node. The agent must not be able to write there (§6) |
 | A compromised node | Answers what it likes about itself. Its catalog can't name tools or arguments beyond plain, bounded text, nor reach other nodes. Calling its own scripts `read_only` makes no other node's script look read-only: a tool is read-only only when every node that offers it says so |
+| Whoever can publish to the hub's MQTT broker | Presses the declared buttons, with their fixed arguments, and never one `[approval]` would ask about: a second door to those scripts, beside the MCP token. Reads the sensors' states and can forge them, or the statuses, for Home Assistant. Can't reach any other script, argument or node. Give the hub a broker user whose ACL covers only its prefix and its discovery topics, and declare as buttons only what anyone on the broker may press. A node can't tell the hub's clients apart, so this is the hub's control, not a node's limit |
+| Someone on the path to the MQTT broker | Reads the broker's password and every message: there is no TLS. A LAN or a VPN |
 | Someone who reaches the HTTP port without the token | Gets `401` before any body is read. Connections, heads and bodies are bounded; a flood denies service, it doesn't stop the hub |
 | Argument injection | Arguments are typed, validated on the node, reach the script as environment variables and never a shell |
 | Symlink from an allowed path to a secret | Resolved before matching (§7.1) |
@@ -579,6 +667,7 @@ hub:   [nodes.nas] with the request's source address, then `hello`  →  {"reach
 | A static binary | A package per distribution | One file runs on any Linux, and OpenWrt has no package for it |
 | Configuration as `serde` types, edited with `toml_edit` | Reading and editing TOML by hand | `deny_unknown_fields` turns a typo into an error with its line; an edited document can't gain a table from a value, and keeps the operator's comments |
 | A person's approval through MCP elicitation, asked by the hub | A push to a phone, a webhook, a chat bot | No service, no TLS, no open port: the question reaches the person where the agent already is, and never the model. The price: an agent nobody watches can't be approved, and over HTTP it needs SSE first |
+| Home Assistant through MQTT on the hub, polling read-only scripts | A daemon on every node; lnxlink | The hub already reaches every node: nothing more to install or update on them, and every limit stays on the node. The price: states are as fresh as `every`, each read is an SSH run on the node, and every entity depends on the hub. lnxlink is Python on every machine, publishing everything every few seconds and offering shutdown and container prune |
 | Joining with a one-time invitation | Copying keys by hand, or the hub logging into nodes with an administrator's SSH | Nothing to carry but one line; the hub never holds more than its own key |
 
 ## 15. Open questions

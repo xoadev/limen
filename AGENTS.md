@@ -209,6 +209,7 @@ Each one had an alternative. Changing one is changing this table and the spec's 
 | Request | One JSON line on stdin | No word splitting; `sudo` keeps stdin and drops `SSH_ORIGINAL_COMMAND` |
 | Language | Rust | One small static binary per architecture, no runtime, and memory safety in a program that runs as root at a security boundary. Kotlin/Native was the first implementation; docs/openwrt.md says what it cost |
 | Child processes | `std::process::Command`, argument arrays, own process group | A timeout reaches what a script started; never a shell |
+| MQTT | Our own 3.1.1 client over `std::net`, only in `serve` and off unless configured | CONNECT, PUBLISH, SUBSCRIBE and PINGREQ at QoS 0 are a few hundred lines; the client crates bring an async runtime or TLS stacks to a binary that goes on routers |
 | MCP | Our own JSON-RPC 2.0, no SDK | A few hundred lines, fully under control; the SDKs bring an async runtime |
 | TOML | `toml_edit`: `#[derive(Deserialize)]` with `deny_unknown_fields` to read, `DocumentMut` to edit | A typo is an error with its line; editing a document keeps the operator's comments, and a value can't become a table |
 | CLI | `clap` (derive) | Help and usage from the definitions |
