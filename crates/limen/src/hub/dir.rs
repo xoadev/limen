@@ -90,7 +90,7 @@ impl Hub {
     pub fn config(&self) -> Result<HubConfig> {
         let text = fs::read_following(&self.config_path)
             .ok_or_else(|| error(ErrorCode::Unavailable, format!("no {}; run `limen init`", self.config_path)))?;
-        let nodes = fs::read_following(&self.nodes_path).unwrap_or_default();
+        let nodes = self.nodes_text()?;
         let mut config = HubConfig::parse(&text)
             .map_err(|cause| error(ErrorCode::BadRequest, format!("{}: {cause}", self.config_path)))?
             .with_nodes(&nodes)
@@ -178,7 +178,7 @@ impl Hub {
         Some(Invitation::new(&invite.name, &self.public_key().ok()?).signed(&invite.secret))
     }
 
-    /// A node that used [code] arrives: its entry goes into limen.toml, the invitation is spent, and the hub tries it
+    /// A node that used [code] arrives: its entry goes into nodes.toml, the invitation is spent, and the hub tries it
     /// at once, so the node's installer can say whether it worked.
     pub fn arrive(&self, code: &str, arrival: &Arrival, from: &str, client: &dyn NodeClient) -> Result<Welcome> {
         let (invite, address) = {
@@ -217,24 +217,30 @@ impl Hub {
     /// else in `nodes.toml`. Both files must still read as a hub's.
     fn write_node(&self, name: &str, address: &str, port: u16, user: &str, host_key: &str) -> Result<()> {
         let path = self.file_of(name)?;
-        let text = fs::read_following(path).unwrap_or_default();
+        let in_config = path == self.config_path;
+        let text = if in_config { fs::read_following(path).unwrap_or_default() } else { self.nodes_text()? };
         let updated =
             join::upsert_node(&text, name, address, port, user, host_key).map_err(|failure| in_file(path, failure))?;
-        let (config, nodes) = if path == self.config_path {
-            (updated.clone(), fs::read_following(&self.nodes_path).unwrap_or_default())
+        let (config, nodes) = if in_config {
+            (updated.clone(), self.nodes_text()?)
         } else {
             (fs::read_following(&self.config_path).unwrap_or_default(), updated.clone())
         };
-        HubConfig::parse(&config).and_then(|config| config.with_nodes(&nodes)).map_err(|cause| {
-            error(ErrorCode::BadRequest, format!("{path} would not read after adding {name}: {cause}"))
-        })?;
+        let would_not_read = |file: &str, cause| {
+            error(ErrorCode::BadRequest, format!("{file} would not read after adding {name}: {cause}"))
+        };
+        HubConfig::parse(&config)
+            .map_err(|cause| would_not_read(&self.config_path, cause))?
+            .with_nodes(&nodes)
+            .map_err(|cause| would_not_read(&self.nodes_path, cause))?;
         write_file(path, &updated)
     }
 
     /// Takes node [name] out of the file it is in; false when it is in neither.
     pub fn remove(&self, name: &str) -> Result<bool> {
         let path = self.file_of(name)?;
-        let Some(text) = fs::read_following(path) else { return Ok(false) };
+        let text =
+            if path == self.config_path { fs::read_following(path).unwrap_or_default() } else { self.nodes_text()? };
         let removed = join::remove_node(&text, name).map_err(|failure| in_file(path, failure))?;
         let Some(updated) = removed else { return Ok(false) };
         write_file(path, &updated)?;
@@ -244,9 +250,22 @@ impl Hub {
     /// `limen.toml` if node [name] is declared there, else `nodes.toml`, where new nodes go.
     fn file_of(&self, name: &str) -> Result<&str> {
         let text = fs::read_following(&self.config_path).unwrap_or_default();
-        let config = HubConfig::parse(&text)
-            .map_err(|cause| error(ErrorCode::BadRequest, format!("{}: {cause}", self.config_path)))?;
-        Ok(if config.node(name).is_some() { &self.config_path } else { &self.nodes_path })
+        let declared = join::has_node(&text, name).map_err(|failure| in_file(&self.config_path, failure))?;
+        Ok(if declared { &self.config_path } else { &self.nodes_path })
+    }
+
+    /// `nodes.toml`'s text: empty while there is none, an error when it is there and can't be read. Read as empty,
+    /// the next join would replace it with its one node, and every other would be gone.
+    fn nodes_text(&self) -> Result<String> {
+        if !fs::exists(&self.nodes_path) {
+            return Ok(String::new());
+        }
+        fs::read_following(&self.nodes_path).ok_or_else(|| {
+            error(
+                ErrorCode::Unavailable,
+                format!("can't read {}: it must be readable by the user the hub runs as", self.nodes_path),
+            )
+        })
     }
 }
 
@@ -320,7 +339,7 @@ pub fn random(length: usize) -> Result<String> {
     Ok(bytes.iter().map(|byte| ALPHABET[(*byte % 32) as usize] as char).collect())
 }
 
-/// A [NodeClient] that follows limen.toml: the file is read on every call and the SSH client rebuilt when it changed,
+/// A [NodeClient] that follows limen.toml and nodes.toml: the files are read on every call and the SSH client rebuilt when it changed,
 /// so a node that joins is there for the next request, with no restart.
 pub struct LiveHub {
     pub hub: Arc<Hub>,
@@ -561,6 +580,25 @@ mod tests {
         assert_eq!(hub.config().unwrap().node("nas").unwrap().host, "10.0.0.8");
         assert!(hub.remove("nas").unwrap());
         assert!(!std::fs::read_to_string(&hub.config_path).unwrap().contains("[nodes.nas]"));
+    }
+
+    #[test]
+    fn a_nodes_toml_that_cant_be_read_is_an_error_not_empty() {
+        let hub = TempHub::initialised();
+        hub.trust("nas", "10.0.0.7", KEY, "limen", 22).unwrap();
+        std::fs::remove_file(&hub.nodes_path).unwrap();
+        std::os::unix::fs::symlink("/nonexistent/nodes.toml", &hub.nodes_path).unwrap();
+        assert!(hub.config().unwrap_err().message.contains("can't read"));
+        assert!(hub.trust("router", "10.0.0.8", KEY, "limen", 22).unwrap_err().message.contains("can't read"));
+        assert!(std::fs::symlink_metadata(&hub.nodes_path).unwrap().file_type().is_symlink(), "left as it was");
+    }
+
+    #[test]
+    fn forget_needs_limen_toml_to_be_toml_only() {
+        let hub = TempHub::initialised();
+        hub.trust("nas", "10.0.0.7", KEY, "limen", 22).unwrap();
+        std::fs::write(&hub.config_path, "[approval]\nscripts = \"sometimes\"\n").unwrap();
+        assert!(hub.remove("nas").unwrap());
     }
 
     #[test]

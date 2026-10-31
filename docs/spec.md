@@ -606,7 +606,7 @@ hub:   [nodes.nas] with the request's source address, then `hello`  →  {"reach
   needs nothing of the machine but the kernel, and runs the same on Debian, Alpine or OpenWrt.
 - Hub image `ghcr.io/xoadev/limen`, one tag for `amd64` and `arm64`: distroless —no shell, no package manager—
   with the binary and OpenSSH's `ssh` and `ssh-keygen`, taken from Alpine with the libraries they load. It runs as
-  distroless's `nonroot` (uid 65532). Volume `/data` holds `limen.toml` and the SSH key.
+  distroless's `nonroot` (uid 65532). Volume `/data` holds `limen.toml`, `nodes.toml` and the SSH key.
 - **Releases** follow the conventional commits: every push to `main` runs `release-draft.yml`, which rewrites a
   draft release with the next `X.Y.Z` and its changes and builds nothing. Publishing is another workflow,
   `release.yml`, run only by hand: once `make check` is green on the draft's commit, it builds the binaries (release
@@ -661,7 +661,8 @@ hub:   [nodes.nas] with the request's source address, then `hello`  →  {"reach
   would not fit a Unix socket; directories of mode `0700` that must be the user's), `-F none`, and no agent or port
   forwarding.
 - TOML: `toml_edit`. Files are read into `#[derive(Deserialize)]` types that refuse unknown keys, so a typo
-  fails with its line; the hub's `limen.toml` is edited as a document, comments kept.
+  fails with its line; the hub's `nodes.toml`, and `limen.toml` for a node declared there, are edited as
+  documents, comments kept.
 
 ## 13. Threat model
 

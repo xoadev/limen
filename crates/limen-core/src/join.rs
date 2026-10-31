@@ -24,7 +24,7 @@ pub fn fingerprint(public_key: &str) -> Result<String> {
     Ok(format!("SHA256:{}", STANDARD_NO_PAD.encode(Sha256::digest(&bytes))))
 }
 
-/// `<type> <base64>`, without the comment: how a host key is written in the hub's limen.toml.
+/// `<type> <base64>`, without the comment: how a host key is written in the hub's files of nodes.
 pub fn without_comment(public_key: &str) -> String {
     public_key.split_whitespace().take(2).collect::<Vec<_>>().join(" ")
 }
@@ -232,6 +232,11 @@ fn node_table(host: &str, port: u16, user: &str, host_key: &str) -> Table {
     }
     node["host_key"] = value(host_key);
     node
+}
+
+/// Whether a hub's file of nodes declares node [name]: TOML is all it asks of the file.
+pub fn has_node(text: &str, name: &str) -> Result<bool> {
+    Ok(document(text)?.get("nodes").and_then(Item::as_table_like).is_some_and(|nodes| nodes.contains_key(name)))
 }
 
 /// A hub's file of nodes without node [name]; None when it had no such node.
