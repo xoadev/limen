@@ -123,7 +123,7 @@ services:
     environment:
       LIMEN_PUBLIC_URL: http://100.64.0.2:7341   # where machines reach the hub: an address, not a name
     volumes:
-      - limen:/data                              # the whole hub: its key, limen.toml, the token
+      - limen:/data                              # the whole hub: its key, limen.toml, nodes.toml, the token
     ports:
       - "100.64.0.2:7341:7341"                   # only on the VPN address
     restart: unless-stopped
@@ -324,6 +324,12 @@ script = "restart_container"
 args = { name = "immich_server" }   # fixed: a press chooses nothing
 discovery = { icon = "mdi:restart" }
 ```
+
+What joins, `trust` and `forget` write goes to `nodes.toml`, next to `limen.toml`. So `limen.toml` can live in your
+own repository, with its history and reviews, and be mounted read-only over the hub's
+(`- ./limen.toml:/data/limen.toml:ro`, readable by uid 65532). The one exception: a machine declared in `limen.toml`,
+by hand or because it joined before `nodes.toml` existed, is changed or forgotten there, so move its `[nodes.<name>]`
+table to `nodes.toml` before mounting `limen.toml` read-only. The same name in both files is an error.
 
 `[mqtt]` is read when `serve` starts; the sensors and buttons, whenever the file changes. In Home Assistant each
 machine is a device, with its sensors and buttons:

@@ -182,7 +182,7 @@ pub struct PendingInvite {
     pub secret: String,
 }
 
-/// The hub's limen.toml with node [name]'s table set to these values; everything else in it —comments, order, other
+/// A hub's file of nodes, `nodes.toml` or `limen.toml`, with node [name]'s table set to these values; everything else in it —comments, order, other
 /// settings— stays as the operator wrote it. The values come from the node that joins: checked against the patterns
 /// the configuration enforces, and written as values, which can't be more than values.
 pub fn upsert_node(text: &str, name: &str, host: &str, port: u16, user: &str, host_key: &str) -> Result<String> {
@@ -195,7 +195,7 @@ pub fn upsert_node(text: &str, name: &str, host: &str, port: u16, user: &str, ho
         implicit.set_implicit(true);
         Item::Table(implicit)
     });
-    let nodes = nodes.as_table_like_mut().ok_or_else(|| bad_request("`nodes` in limen.toml is not a table"))?;
+    let nodes = nodes.as_table_like_mut().ok_or_else(|| bad_request("`nodes` is not a table"))?;
     nodes.insert(name, Item::Table(node_table(host, port, user, &key)));
     Ok(doc.to_string())
 }
@@ -234,7 +234,7 @@ fn node_table(host: &str, port: u16, user: &str, host_key: &str) -> Table {
     node
 }
 
-/// The hub's limen.toml without node [name]; None when it had no such node.
+/// A hub's file of nodes without node [name]; None when it had no such node.
 pub fn remove_node(text: &str, name: &str) -> Result<Option<String>> {
     let mut doc = document(text)?;
     let removed = doc.get_mut("nodes").and_then(Item::as_table_like_mut).and_then(|nodes| nodes.remove(name));
@@ -242,7 +242,7 @@ pub fn remove_node(text: &str, name: &str) -> Result<Option<String>> {
 }
 
 fn document(text: &str) -> Result<DocumentMut> {
-    text.parse().map_err(|error| bad_request(format!("the hub's limen.toml is not TOML: {error}")))
+    text.parse().map_err(|error| bad_request(format!("not TOML: {error}")))
 }
 
 #[cfg(test)]

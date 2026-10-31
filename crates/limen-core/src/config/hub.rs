@@ -126,6 +126,13 @@ struct File {
     nodes: IndexMap<String, Node>,
 }
 
+/// `nodes.toml`: the nodes `join`, `trust` and `forget` write, and nothing else.
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields, default)]
+struct NodesFile {
+    nodes: IndexMap<String, Node>,
+}
+
 #[derive(Deserialize, Default)]
 #[serde(deny_unknown_fields, default)]
 struct ApprovalFile {
@@ -225,6 +232,18 @@ impl HubConfig {
             approval: approval(file.approval)?,
             mqtt: file.mqtt.map(Mqtt::parse).transpose()?,
         })
+    }
+
+    /// This configuration with the nodes of `nodes.toml` [text] after its own (spec §7.2); a name in both is an error.
+    pub fn with_nodes(mut self, text: &str) -> ConfigResult<HubConfig> {
+        let file: NodesFile = super::from_str(text)?;
+        for (name, node) in file.nodes {
+            if self.node(&name).is_some() {
+                return fail(&format!("nodes.{name}"), "also in limen.toml: a node goes in one of the two files");
+            }
+            self.nodes.push(node_entry(name, node)?);
+        }
+        Ok(self)
     }
 }
 
@@ -384,6 +403,20 @@ host_key = "ecdsa-sha2-nistp256 AAAAE2VjZHNh="
             let error = identity(&format!("[ssh]\nidentity = \"{not_a_file}\"")).unwrap_err();
             assert!(error.0.starts_with("ssh.identity: "), "{error}");
         }
+    }
+
+    #[test]
+    fn nodes_toml_adds_nodes_and_only_nodes() {
+        let node = |name: &str| format!("[nodes.{name}]\nhost = \"10.0.0.1\"\nhost_key = \"ssh-ed25519 AAAA\"\n");
+        let config = HubConfig::parse(&node("nas")).unwrap().with_nodes(&node("router")).unwrap();
+        let names: Vec<_> = config.nodes.iter().map(|entry| entry.name.as_str()).collect();
+        assert_eq!(names, ["nas", "router"]);
+        let twice = HubConfig::parse(&node("nas")).unwrap().with_nodes(&node("nas")).unwrap_err();
+        assert_eq!(twice.0, "nodes.nas: also in limen.toml: a node goes in one of the two files");
+        let not_a_node = HubConfig::default().with_nodes("[approval]\nscripts = \"none\"").unwrap_err();
+        assert!(not_a_node.0.contains("unknown field `approval`"), "{not_a_node}");
+        assert!(HubConfig::default().with_nodes("[nodes.nas]\nhost = \"h\"").is_err());
+        assert_eq!(HubConfig::default().with_nodes("").unwrap(), HubConfig::default());
     }
 
     #[test]
