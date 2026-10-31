@@ -35,11 +35,13 @@ which can only list addresses. With procps, `ps` sorts the processes; with busyb
 - `kernel_log` reads what the kernel keeps in memory, so only since boot; `journal` (systemd) keeps earlier boots.
 - `temperature` reads `/sys/class/thermal` and `/sys/class/hwmon`; a machine with neither, a VM most often, has none,
   and the script fails instead of printing a 0.
-- `gpu` reads an NVIDIA Jetson's through the kernel (its load and the `gpu-thermal` zone; its memory is the system's,
-  so `memory_used` fails there), other NVIDIA through `nvidia-smi` and AMD's through the kernel's `amdgpu`. A value
-  that isn't one —`[N/A]`, a number out of range, an `nvidia-smi` that fails— fails the script instead of printing
-  it, so a sensor keeps its last state. Intel's integrated GPUs say nothing a script can read without
-  `intel_gpu_top`.
+- `gpu` reads a SoC's GPU, a Jetson's, through the kernel (its load and the `gpu-thermal` zone), NVIDIA through
+  `nvidia-smi` and AMD's through the kernel's `amdgpu`; on any other SoC with a `gpu-thermal` zone, its temperature
+  only. A GPU that shares the system's memory —a SoC's, or NVIDIA's unified memory (Grace, GB10), for which
+  `nvidia-smi` has no total— reports the system's memory in use as its `memory_used`, as this pack's `memory_used`
+  counts it. A value that isn't one —`[N/A]` anywhere else, a number out of range, an `nvidia-smi` that fails— fails
+  the script instead of printing it, so a sensor keeps its last state. AMD's integrated GPUs report their fixed
+  carve-out, not what they use of the system's memory; Intel's say nothing a script can read without `intel_gpu_top`.
 
 ## For Home Assistant
 

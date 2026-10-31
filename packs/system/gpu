@@ -1,12 +1,12 @@
 #!/bin/sh
-#: description = "One GPU's use, temperature in °C or memory in use, percent or degrees as a whole number: NVIDIA Jetson through the kernel, other NVIDIA through nvidia-smi, AMD through the kernel. A value for a sensor"
+#: description = "One GPU's use, temperature in °C or memory in use, percent or degrees as a whole number: a SoC's GPU (Jetson) through the kernel, NVIDIA through nvidia-smi, AMD through the kernel. A GPU that shares the system's memory reports the system's. A value for a sensor"
 #: read_only = true
 #: timeout = "20s"
 #: [args.metric]
 #: type = "enum"
 #: values = ["utilization", "temperature", "memory_used"]
 #: default = "utilization"
-#: description = "utilization: percent busy; temperature: °C; memory_used: percent of its memory"
+#: description = "utilization: percent busy; temperature: °C; memory_used: percent of its memory, or of the system's when it shares it"
 #: [args.index]
 #: type = "int"
 #: default = 0
@@ -39,45 +39,75 @@ value() {
   echo "$1"
 }
 
-# Jetson: one GPU in the SoC, whose load the kernel gives in tenths of a percent. Before nvidia-smi: JetPack ships
-# one that answers [N/A] for use and memory.
+# A GPU without memory of its own uses the system's: what is not available to start new programs, as this pack's
+# memory_used counts it.
+shared_memory_used() {
+  value "$(awk '
+    { kib[$1] = $2 }
+    END {
+      available = ("MemAvailable:" in kib) ? kib["MemAvailable:"] : kib["MemFree:"] + kib["Buffers:"] + kib["Cached:"]
+      if (kib["MemTotal:"] > 0) printf "%d", (kib["MemTotal:"] - available) * 100 / kib["MemTotal:"] + 0.5
+    }
+  ' /proc/meminfo)"
+}
+
+# The kernel's thermal zone for the GPU, found by its type: the zones' numbers differ between boards, and some
+# zones fail to read while what they measure is off.
+gpu_zone_temperature() {
+  for zone in /sys/class/thermal/thermal_zone*; do
+    case $(cat "$zone/type" 2>/dev/null) in
+      gpu-thermal | GPU-therm)
+        value "$(awk '{ printf "%d", $1 / 1000 + 0.5 }' "$zone/temp")"
+        exit 0
+        ;;
+    esac
+  done
+  fail "no GPU thermal zone (gpu-thermal, GPU-therm…) in /sys/class/thermal"
+}
+
+# A SoC's GPU, a Jetson's: one, in the SoC, sharing the system's memory, whose load the kernel gives in tenths of
+# a percent. Before nvidia-smi: JetPack ships one that answers [N/A] for use and memory.
 for load in /sys/devices/platform/gpu.0/load /sys/devices/gpu.0/load; do
   [ -r "$load" ] || continue
-  [ "$index" -eq 0 ] || fail "a Jetson has one GPU, 0"
+  [ "$index" -eq 0 ] || fail "this SoC has one GPU, 0"
   case $metric in
     utilization)
       tenths=$(cat "$load")
       number "its load" "$tenths"
       value "$(awk -v tenths="$tenths" 'BEGIN { printf "%d", tenths / 10 + 0.5 }')"
       ;;
-    temperature)
-      for zone in /sys/class/thermal/thermal_zone*; do
-        case $(cat "$zone/type" 2>/dev/null) in
-          gpu-thermal | GPU-therm) value "$(awk '{ printf "%d", $1 / 1000 + 0.5 }' "$zone/temp")"; exit 0 ;;
-        esac
-      done
-      fail "no gpu-thermal zone in /sys/class/thermal"
-      ;;
-    memory_used) fail "a Jetson's GPU shares the system's memory: memory_used of this pack measures it" ;;
+    temperature) gpu_zone_temperature ;;
+    memory_used) shared_memory_used ;;
   esac
   exit 0
 done
 
 if command -v nvidia-smi >/dev/null 2>&1; then
   # Without units or a header: "37, 52, 1234, 8192". Read whole first: a pipe would hide that nvidia-smi failed.
+  # Spaces out, so "[Not Supported]" stays one field.
   answer=$(nvidia-smi --id="$index" --format=csv,noheader,nounits \
     --query-gpu=utilization.gpu,temperature.gpu,memory.used,memory.total) || fail "nvidia-smi failed for GPU $index"
-  IFS=', ' read -r utilization temperature used total <<EOF
-$answer
+  IFS=, read -r utilization temperature used total <<EOF
+$(echo "$answer" | tr -d ' ')
 EOF
   case $metric in
     utilization) value "$utilization" ;;
     temperature) value "$temperature" ;;
     memory_used)
-      number "its memory in use" "$used"
-      number "its total memory" "$total"
-      [ "$total" -gt 0 ] || fail "the GPU reported 0 for its total memory"
-      value "$(awk -v used="$used" -v total="$total" 'BEGIN { printf "%d", used * 100 / total + 0.5 }')"
+      case $total in
+        # Unified memory (Grace, GB10): no total of its own, while the rest of the answer is sound.
+        '[N/A]' | '[NotSupported]')
+          number utilization "$utilization"
+          number temperature "$temperature"
+          shared_memory_used
+          ;;
+        *)
+          number "its memory in use" "$used"
+          number "its total memory" "$total"
+          [ "$total" -gt 0 ] || fail "the GPU reported 0 for its total memory"
+          value "$(awk -v used="$used" -v total="$total" 'BEGIN { printf "%d", used * 100 / total + 0.5 }')"
+          ;;
+      esac
       ;;
   esac
   exit 0
@@ -98,4 +128,7 @@ for card in /sys/class/drm/card[0-9]*/device; do
   fi
   found=$((found + 1))
 done
-fail "no GPU $index this script can read: it reads Jetson's through the kernel, other NVIDIA through nvidia-smi and AMD's through amdgpu"
+
+# Any other SoC whose kernel has a thermal zone for its GPU: its temperature, nothing more.
+[ "$metric" = temperature ] && [ "$index" -eq 0 ] && gpu_zone_temperature
+fail "no GPU $index this script can read for $metric: it reads a SoC's GPU through the kernel, NVIDIA through nvidia-smi and AMD's through amdgpu"

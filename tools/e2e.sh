@@ -291,7 +291,11 @@ EOF
   expect "system's gpu: nvidia-smi's use" $'37\nexit 0' gpu "37, 52, 1234, 8192" utilization
   expect "and its memory in use, in percent" $'15\nexit 0' gpu "37, 52, 1234, 8192" memory_used
   expect "[N/A] is no value: it fails" "reported '[N/A]' for utilization" gpu "[N/A], 52, [N/A], [N/A]" utilization
-  expect "and so does it for memory" "reported '[N/A]' for its memory in use" gpu "[N/A], 52, [N/A], [N/A]" memory_used
+  expect "and so does it for memory" "reported '[N/A]' for utilization" gpu "[N/A], 52, [N/A], [N/A]" memory_used
+  # gpu_percent <answer>: "a percent" when gpu prints one whole number and succeeds.
+  gpu_percent() { gpu "$1" memory_used | tr '\n' ' ' | grep -Eq '^[0-9]{1,3} exit 0 $' && echo "a percent"; }
+  expect "unified memory, no total of its own: the system's" "a percent" gpu_percent "37, 52, [N/A], [N/A]"
+  expect "and nvidia-smi's other way to say so" "a percent" gpu_percent "37, 52, [Not Supported], [Not Supported]"
   expect "a value out of range fails" "more than 100" gpu "250, 52, 1, 2" utilization
   expect "a failing nvidia-smi fails it too" "nvidia-smi failed" gpu fail temperature
   docker exec "$node" rm -f /usr/local/bin/nvidia-smi /tmp/nvidia-smi
