@@ -181,14 +181,14 @@ impl McpServer {
         self
     }
 
-    /// How often the nodes may be asked for their catalogs: tests ask on every call.
-    #[cfg(test)]
     /// [notify] announces, and asks nothing: what HTTP's event streams carry (spec §9).
     pub fn announcing_only(mut self) -> Self {
         self.asks = false;
         self
     }
 
+    /// How often the nodes may be asked for their catalogs: tests ask on every call.
+    #[cfg(test)]
     pub fn refreshing_every(mut self, every: Duration) -> Self {
         self.refresh_every = every;
         self
