@@ -318,7 +318,7 @@ discovery = "homeassistant"
 [[mqtt.sensor]]
 node = "nas"
 id = "disk_used"
-script = "disk_used_percent"
+script = "disk_used"
 args = { path = "/srv" }
 every = "60s"
 discovery = { unit_of_measurement = "%" }

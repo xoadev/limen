@@ -1,0 +1,11 @@
+#!/bin/sh
+#: description = "The hottest of the machine's temperature sensors, in °C as a whole number: CPU, board or disk, whatever the kernel exposes. A value for a sensor"
+#: read_only = true
+set -eu
+
+# Thermal zones (ARM boards, routers, most laptops) and hwmon inputs (desktops and servers: coretemp, k10temp, nvme),
+# in millidegrees. A missing or unreadable one is skipped; none at all is an error, not a 0.
+hottest=$(cat /sys/class/thermal/thermal_zone*/temp /sys/class/hwmon/hwmon*/temp*_input 2>/dev/null \
+  | awk '$1 > 0 && $1 < 200000 { if ($1 > max) max = $1 } END { if (max) printf "%d\n", max / 1000 + 0.5 }')
+[ -n "$hottest" ] || { echo "the kernel exposes no temperature sensor here" >&2; exit 1; }
+echo "$hottest"

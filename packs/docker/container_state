@@ -1,0 +1,15 @@
+#!/bin/sh
+#: description = "One container's state in a word: running, healthy, unhealthy, starting, exited, restarting, paused, or missing. A value for a sensor"
+#: read_only = true
+#: [args.name]
+#: type = "string"
+#: pattern = '^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$'
+#: description = "The container's name or id"
+set -eu
+
+# A health check, when there is one, says more than "running". `index` and not `.State.Health`: see `container`.
+# shellcheck disable=SC2016 # the $ are the template's variables
+format='{{$health := index .State "Health"}}{{if and $health (eq .State.Status "running")}}{{$health.Status}}{{else}}{{.State.Status}}{{end}}'
+# A container that isn't there is a state too: removed, or not created yet.
+state=$(docker inspect --type=container --format="$format" -- "$LIMEN_ARG_NAME" 2>/dev/null) || state=missing
+echo "$state"

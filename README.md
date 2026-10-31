@@ -90,10 +90,10 @@ The packs in [`packs/`](packs/), each released on its own with its own version (
 
 | Pack | Latest | Its scripts answer, or do |
 |---|---|---|
-| `system` | [![system](https://img.shields.io/github/v/release/xoadev/limen?filter=pack-system-v*&display_name=tag&label=)](https://github.com/xoadev/limen/releases?q=pack-system&expanded=true) | Status, memory, processes, ports, network, whether a host is reachable, DNS, the kernel's log, the clock, file systems, disks and SMART |
+| `system` | [![system](https://img.shields.io/github/v/release/xoadev/limen?filter=pack-system-v*&display_name=tag&label=)](https://github.com/xoadev/limen/releases?q=pack-system&expanded=true) | Status, memory, processes, ports, network, whether a host is reachable, DNS, the kernel's log, the clock, file systems, disks and SMART; CPU, memory, disk, temperature and GPU as values for Home Assistant |
 | `systemd` | [![systemd](https://img.shields.io/github/v/release/xoadev/limen?filter=pack-systemd-v*&display_name=tag&label=)](https://github.com/xoadev/limen/releases?q=pack-systemd&expanded=true) | Units, failed units, timers, a unit's journal, the whole journal; restarting a unit |
 | `debian` | [![debian](https://img.shields.io/github/v/release/xoadev/limen?filter=pack-debian-v*&display_name=tag&label=)](https://github.com/xoadev/limen/releases?q=pack-debian&expanded=true) | Upgradable packages, installed packages, one package's versions; `apt-get upgrade`, autoremove, rebooting and cancelling it |
-| `docker` | [![docker](https://img.shields.io/github/v/release/xoadev/limen?filter=pack-docker-v*&display_name=tag&label=)](https://github.com/xoadev/limen/releases?q=pack-docker&expanded=true) | Containers, their stats and logs, images, disk use, Compose projects; restarting, purging, updating a Compose project you listed |
+| `docker` | [![docker](https://img.shields.io/github/v/release/xoadev/limen?filter=pack-docker-v*&display_name=tag&label=)](https://github.com/xoadev/limen/releases?q=pack-docker&expanded=true) | Containers, their stats and logs, images, disk use, Compose projects, a container's state for Home Assistant; restarting, purging, updating a Compose project you listed |
 | `openwrt` | [![openwrt](https://img.shields.io/github/v/release/xoadev/limen?filter=pack-openwrt-v*&display_name=tag&label=)](https://github.com/xoadev/limen/releases?q=pack-openwrt&expanded=true) | The board, services, log, interfaces, DHCP leases, Wi-Fi clients, upgradable packages; restarting a service |
 | `limen` | [![limen](https://img.shields.io/github/v/release/xoadev/limen?filter=pack-limen-v*&display_name=tag&label=)](https://github.com/xoadev/limen/releases?q=pack-limen&expanded=true) | limen's version, its packs' versions, lint; updating limen itself |
 
@@ -312,7 +312,7 @@ password_file = "mqtt-password"     # in the hub's directory (/data in the image
 [[mqtt.sensor]]
 node = "nas"
 id = "disk_used"
-script = "disk_used_percent"
+script = "disk_used"
 args = { path = "/srv" }
 every = "60s"
 discovery = { unit_of_measurement = "%", state_class = "measurement" }

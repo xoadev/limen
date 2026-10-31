@@ -536,10 +536,14 @@ suite_mqtt() {
   broker_port=$(docker port "$broker" 1883/tcp | head -1 | sed 's/.*://')
   docker cp "$binary" "$node:/usr/local/bin/limen"
   docker exec "$node" limen install --hub-key "$(cat "$work/hub.pub")" >/dev/null
+  # The scenes' pack, and the system pack's sensors as they are released.
+  docker exec "$node" mkdir -p /opt/state
+  docker cp "$ROOT/packs" "$node:/opt/state/"
+  docker exec "$node" sh -c 'chown -R root:root /opt/state && chmod -R go-w /opt/state'
   # Sensors poll: the node writes only the runs that may change something, or fail.
   docker exec -i "$node" sh -c 'cat > /etc/limen/limen.toml' <<EOF
 [scripts]
-packs = ["$pack"]
+packs = ["$pack", "/opt/state/packs/system"]
 
 [audit]
 read_only = "none"
@@ -599,6 +603,12 @@ id = "broken"
 script = "broken"
 every = "10s"
 
+[[mqtt.sensor]]
+node = "mqtt"
+id = "memory"
+script = "memory_used"
+discovery = { unit_of_measurement = "%" }
+
 [[mqtt.button]]
 node = "mqtt"
 id = "marker"
@@ -618,6 +628,9 @@ EOF
   }
 
   expect "a sensor's state arrives, retained" "limen/mqtt/value/state 41" mqtt_sub 30 -C 1 -t limen/mqtt/value/state
+  expect "the system pack's memory_used is a sensor: one number" "a percent" \
+    sh -c "docker exec $broker mosquitto_sub -u limen -P e2e-secret -v -W 30 -C 1 -t limen/mqtt/memory/state \
+      | grep -Eq '^limen/mqtt/memory/state [0-9]{1,3}\$' && echo 'a percent'"
   expect "Home Assistant finds it by discovery" '"unit_of_measurement":"%"' \
     mqtt_sub 10 -C 1 -t homeassistant/sensor/limen/mqtt-value/config
   expect "the node and the hub say they are online" "limen/mqtt/status online" mqtt_sub 10 -C 1 -t limen/mqtt/status

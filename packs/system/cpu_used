@@ -1,0 +1,19 @@
+#!/bin/sh
+#: description = "Percent of CPU in use over one second, all CPUs together, as a whole number: a value for a sensor"
+#: read_only = true
+set -eu
+
+# idle (idle and iowait) and total jiffies of all CPUs, from the first line of /proc/stat.
+sample() {
+  awk '/^cpu / { total = 0; for (i = 2; i <= NF; i++) total += $i; print $5 + $6, total; exit }' /proc/stat
+}
+
+# shellcheck disable=SC2046 # two numbers, split on purpose
+set -- $(sample)
+idle=$1 total=$2
+sleep 1
+# shellcheck disable=SC2046
+set -- $(sample)
+spent=$(($2 - total))
+[ "$spent" -gt 0 ] || { echo "no CPU time passed in a second" >&2; exit 1; }
+echo $((100 * (spent - ($1 - idle)) / spent))

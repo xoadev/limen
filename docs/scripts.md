@@ -125,8 +125,8 @@ passes; one made with a looser umask, or by another user, doesn't.
 ## For Home Assistant
 
 A hub with `[mqtt]` publishes a script's output as a sensor ([spec §9.1](spec.md#91-mqtt)): its whole stdout,
-trimmed, is the state, published when it changes. The packs' scripts print text for an agent; a sensor's script
-prints a value.
+trimmed, is the state, published when it changes. Most scripts print text for an agent; a sensor's script prints a
+value.
 
 - **`read_only = true`**, or the hub refuses it as a sensor, and the node refuses each read. A button's script needs
   no such word.
@@ -135,14 +135,21 @@ prints a value.
 - **Rounded where it should be**: `87`, not `87.31`. A value that changes on every read is published on every read.
 - **Exit 0 when the value is good.** Any other exit publishes nothing and keeps the last state.
 
+The `system` pack's `cpu_used`, `memory_used`, `disk_used`, `temperature` and `gpu`, and the `docker` pack's
+`container_state`, are written this way. `disk_used`:
+
 ```sh
 #!/bin/sh
-#: description = "Percent used of a file system"
+#: description = "Percent used of the file system that holds a path, as a whole number, as df rounds it: a value for a sensor"
 #: read_only = true
 #: [args.path]
 #: type = "string"
-#: pattern = '^/[A-Za-z0-9/._-]{0,127}$'
-df -P -- "$LIMEN_ARG_PATH" | awk 'NR == 2 { print $5 + 0 }'
+#: default = "/"
+#: pattern = '^/[A-Za-z0-9/._-]{0,255}$'
+#: description = "A path on the file system, / unless given"
+set -eu
+
+df -P -- "$LIMEN_ARG_PATH" | awk 'NR == 2 { sub(/%/, "", $5); print $5 }'
 ```
 
 ## Released packs
