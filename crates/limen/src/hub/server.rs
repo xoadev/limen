@@ -1,12 +1,14 @@
-//! The hub's HTTP server (spec §9): the strict subset of HTTP/1.1 that MCP's `POST` and the join's `GET` and `POST`
-//! need, with every limit set before anything is read —connections at once, header size, body size, time— and one
-//! request per connection. Nothing reaches a handler that a stranger on the network could use to exhaust the hub.
+//! The hub's HTTP server (spec §9): the strict subset of HTTP/1.1 that MCP's `POST` and `GET` and the join's
+//! `GET` and `POST` need, with every limit set before anything is read —connections at once, header size, body
+//! size, time— and one request per connection. Nothing reaches a handler that a stranger on the network could use
+//! to exhaust the hub; an event stream is only what a handler hands out, to whom it chooses.
 
 use rustix::io::Errno;
 use std::io::{self, ErrorKind, Read, Write};
 use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
 pub struct Limits {
@@ -38,19 +40,30 @@ impl Head {
     }
 }
 
+/// How often an event stream with nothing to say sends a comment: a client that left is found by the write that fails.
+const KEEP_ALIVE: Duration = Duration::from_secs(30);
+
 pub struct Response {
     status: u16,
     headers: Vec<(&'static str, String)>,
     body: String,
+    /// Server-sent events instead of a body: each message received is sent as one, until the sender is dropped or
+    /// the client is gone.
+    events: Option<Receiver<String>>,
 }
 
 impl Response {
     pub fn status(status: u16) -> Self {
-        Response { status, headers: vec![], body: String::new() }
+        Response { status, headers: vec![], body: String::new(), events: None }
     }
 
     pub fn json(status: u16, body: String) -> Self {
-        Response { status, headers: vec![("Content-Type", "application/json".into())], body }
+        Response { status, headers: vec![("Content-Type", "application/json".into())], body, events: None }
+    }
+
+    pub fn events(events: Receiver<String>) -> Self {
+        let headers = vec![("Content-Type", "text/event-stream".into()), ("Cache-Control", "no-store".into())];
+        Response { status: 200, headers, body: String::new(), events: Some(events) }
     }
 
     pub fn with_header(mut self, name: &'static str, value: &str) -> Self {
@@ -79,7 +92,7 @@ pub fn serve(listener: &TcpListener, handler: &Arc<dyn Handler>, limits: Limits)
         let Some(slot) = ConnectionSlot::take(&open, limits.connections) else {
             // A rejected peer must never hold the accept loop waiting for reads or writes.
             if stream.set_nonblocking(true).is_ok() {
-                send(&mut stream, &Response::status(503));
+                send(&mut stream, Response::status(503));
             }
             continue;
         };
@@ -144,7 +157,7 @@ impl From<Response> for Stop {
 
 fn connection(mut stream: TcpStream, peer: IpAddr, handler: &dyn Handler, limits: &Limits) {
     match respond(&mut stream, peer, handler, limits) {
-        Ok(response) | Err(Stop::Refused(response)) => send(&mut stream, &response),
+        Ok(response) | Err(Stop::Refused(response)) => send(&mut stream, response),
         Err(Stop::Gone) => {}
     }
 }
@@ -236,20 +249,39 @@ fn parse_head(raw: &[u8], peer: IpAddr) -> Option<Head> {
     Some(Head { method: method.into(), path, peer, headers })
 }
 
-fn send(stream: &mut TcpStream, response: &Response) {
-    let mut head = format!(
-        "HTTP/1.1 {} {}\r\nContent-Length: {}\r\nConnection: close\r\n",
-        response.status,
-        reason_phrase(response.status),
-        response.body.len()
-    );
+fn send(stream: &mut TcpStream, response: Response) {
+    let mut head = format!("HTTP/1.1 {} {}\r\nConnection: close\r\n", response.status, reason_phrase(response.status));
+    if response.events.is_none() {
+        head.push_str(&format!("Content-Length: {}\r\n", response.body.len()));
+    }
     for (name, value) in &response.headers {
         head.push_str(&format!("{name}: {value}\r\n"));
     }
     head.push_str("\r\n");
-    stream.write_all(head.as_bytes()).and_then(|()| stream.write_all(response.body.as_bytes())).ok();
+    if stream.write_all(head.as_bytes()).and_then(|()| stream.write_all(response.body.as_bytes())).is_ok()
+        && let Some(events) = response.events
+    {
+        send_events(stream, &events);
+    }
     stream.shutdown(std::net::Shutdown::Write).ok();
     drain(stream);
+}
+
+/// Each message of [events] as one server-sent event, a comment every [KEEP_ALIVE] between them, until the sender
+/// is dropped or a write fails: the client is gone, or let the writes back up past the write timeout. An empty
+/// message sends nothing: it only tells the sender whether the stream is still there.
+fn send_events(stream: &mut TcpStream, events: &Receiver<String>) {
+    loop {
+        let event = match events.recv_timeout(KEEP_ALIVE) {
+            Ok(message) if message.is_empty() => continue,
+            Ok(message) => message.lines().map(|line| format!("data: {line}\n")).collect::<String>() + "\n",
+            Err(RecvTimeoutError::Timeout) => ": keep-alive\n\n".into(),
+            Err(RecvTimeoutError::Disconnected) => return,
+        };
+        if stream.write_all(event.as_bytes()).and_then(|()| stream.flush()).is_err() {
+            return;
+        }
+    }
 }
 
 fn reason_phrase(status: u16) -> &'static str {
@@ -298,12 +330,19 @@ mod tests {
     impl Handler for Echo {
         fn admit(&self, head: &Head) -> Result<usize, Response> {
             match head.path.as_str() {
-                "/open" => Ok(64),
+                "/open" | "/events" => Ok(64),
                 _ => Err(Response::status(401)),
             }
         }
 
         fn answer(&self, head: &Head, body: &str) -> Response {
+            if head.path == "/events" {
+                let (sender, events) = std::sync::mpsc::channel();
+                sender.send("one\ntwo".to_string()).unwrap();
+                sender.send(String::new()).unwrap();
+                sender.send("three".to_string()).unwrap();
+                return Response::events(events);
+            }
             Response::json(200, format!("{} {} {body}", head.method, head.header("x-test").unwrap_or("")))
         }
     }
@@ -369,6 +408,15 @@ mod tests {
         assert!(answer.starts_with("HTTP/1.1 200 OK\r\n"), "{answer}");
         assert!(answer.ends_with("POST yes hello"), "{answer}");
         assert!(exchange(&address, b"GET /closed HTTP/1.1\r\n\r\n").starts_with("HTTP/1.1 401"));
+    }
+
+    #[test]
+    fn events_stream_until_their_sender_is_gone() {
+        let answer = exchange(&server(Limits::default()), b"GET /events HTTP/1.1\r\n\r\n");
+        assert!(answer.starts_with("HTTP/1.1 200 OK\r\n"), "{answer}");
+        assert!(answer.contains("Content-Type: text/event-stream\r\n"), "{answer}");
+        assert!(!answer.contains("Content-Length"), "{answer}");
+        assert!(answer.ends_with("\r\n\r\ndata: one\ndata: two\n\ndata: three\n\n"), "{answer}");
     }
 
     #[test]

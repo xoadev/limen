@@ -524,6 +524,27 @@ suite_join() {
   expect "a body without its length, nothing" "411" status_of -H "Authorization: Bearer $token" -H 'Transfer-Encoding: chunked'
   expect "a hub won't serve with a short LIMEN_TOKEN" "16 characters" \
     docker run --rm -e LIMEN_TOKEN=short limen-e2e-hub:local
+  expect "and no listening without it either" "401" \
+    curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$url/mcp"
+
+  echo "e2e/join: a client listening hears of the scripts a machine starts to offer"
+  curl -sN -H "Authorization: Bearer $token" "$url/mcp" > "$work/events" 2>&1 &
+  local listening=$!
+  script "$nas" /opt/e2e-fresh/fresh 0755 <<'EOF'
+#!/bin/sh
+#: description = "A script the machine offers from now on"
+#: read_only = true
+echo fresh
+EOF
+  docker exec -i "$nas" sh -c 'cat > /etc/limen/limen.toml' <<'EOF'
+[scripts]
+packs = ["/opt/e2e-fresh"]
+EOF
+  # The hub asks the nodes again every minute while a stream is open.
+  expect "the stream announces the change, with no call" "notifications/tools/list_changed" sh -c \
+    "for _ in \$(seq 1 90); do grep -q list_changed '$work/events' && break; sleep 1; done; cat '$work/events'"
+  kill "$listening" 2>/dev/null || true
+  expect "and the new script is a tool" '"name":"fresh"' mcp_http '{"jsonrpc":"2.0","id":5,"method":"tools/list"}'
   expect "forget takes a node off the hub" "removed" hub_exec forget spare
   expect "and it is gone" '"enum":["nas","router"]' mcp_http '{"jsonrpc":"2.0","id":3,"method":"tools/list"}'
 }

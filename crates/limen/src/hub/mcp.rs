@@ -81,6 +81,9 @@ pub struct McpServer {
     client: Arc<dyn NodeClient>,
     /// Sends a notification to the client, where the transport can (stdio).
     notify: Option<Sink>,
+    /// Whether [notify] reaches the one client that would answer a question: stdio's does, HTTP's event streams
+    /// reach every client and carry notifications only.
+    asks: bool,
     log: Sink,
     /// The last `hello` of each node: its catalog decides the scripts' tools.
     known: Mutex<Option<Known>>,
@@ -158,6 +161,7 @@ impl McpServer {
     pub fn new(client: Arc<dyn NodeClient>, notify: Option<Sink>, log: Sink) -> Self {
         McpServer {
             client,
+            asks: notify.is_some(),
             notify,
             log,
             known: Mutex::new(None),
@@ -174,6 +178,12 @@ impl McpServer {
     /// `nodes` reports what [problems] says, under `mqtt_problems`.
     pub fn with_problems(mut self, problems: Box<dyn Fn() -> Vec<String> + Send + Sync>) -> Self {
         self.problems = Some(problems);
+        self
+    }
+
+    /// [notify] announces, and asks nothing: what HTTP's event streams carry (spec §9).
+    pub fn announcing_only(mut self) -> Self {
+        self.asks = false;
         self
     }
 
@@ -289,6 +299,14 @@ impl McpServer {
         self.ask()
     }
 
+    /// Asks the nodes again, as `nodes` does, for a client that keeps listening: a catalog that changed under the
+    /// session —a sync that installed packs— is announced without anyone calling a tool.
+    pub fn recheck(&self) {
+        if let Err(Fault::Internal(why) | Fault::Params(why) | Fault::UnknownMethod(why)) = self.refresh() {
+            (self.log)(&format!("could not ask the nodes for their scripts: {why}"));
+        }
+    }
+
     /// Asks every node now, unless it was asked less than REFRESH_EVERY ago: for `nodes`.
     fn refresh(&self) -> Result<Hellos, Fault> {
         let _one_refresh = self.refreshing.lock().expect("nothing panics while the nodes are asked");
@@ -372,7 +390,7 @@ impl McpServer {
     /// Asks the person at the client whether [call] of [script] may run on [node], and waits up to [timeout]: Ok only
     /// for an explicit yes. The question goes to the client's interface, never to the model.
     fn approved(&self, script: &str, node: &str, call: &NodeCall, timeout: Duration) -> Result<(), String> {
-        let Some(send) = &self.notify else {
+        let Some(send) = self.notify.as_ref().filter(|_| self.asks) else {
             return Err(format!(
                 "{script} needs a person's approval, and over HTTP the hub can't ask one yet; use `limen mcp`, or \
                  take {script} out of [approval] in the hub's limen.toml"
@@ -889,6 +907,18 @@ mod tests {
     }
 
     #[test]
+    fn a_catalog_that_changes_under_a_listening_client_is_announced() {
+        let client = nas_and_router();
+        let (server, sent) = announcing_server(&client);
+        tool_names(&server);
+        server.recheck();
+        assert!(sent.lock().unwrap().is_empty());
+        client.catalogs.lock().unwrap().get_mut("nas").unwrap().scripts.push(script("certs", vec![]));
+        server.recheck();
+        assert_eq!(sent.lock().unwrap().len(), 1);
+    }
+
+    #[test]
     fn a_node_added_or_removed_elsewhere_is_picked_up() {
         // `limen trust` and `limen forget` change the hub's nodes from another process, under a running server.
         let client = nas_and_router();
@@ -1094,6 +1124,13 @@ mod tests {
         let http = mcp_server(&client);
         let result = call_tool(&http, "purge", &json!({"node": "nas"}));
         assert!(text_of(&result).contains("over HTTP"), "{result}");
+        // HTTP's event streams reach every client: a question there could be answered by any of them.
+        let (announcing, sent) = announcing_server(&client);
+        let announcing = announcing.announcing_only();
+        rpc(&announcing, "initialize", &json!({"protocolVersion": "2025-06-18", "capabilities": {"elicitation": {}}}));
+        let result = call_tool(&announcing, "purge", &json!({"node": "nas"}));
+        assert!(text_of(&result).contains("over HTTP"), "{result}");
+        assert!(!sent.lock().unwrap().iter().any(|line| line.contains("elicitation/create")));
         assert_eq!(runs(&client), 0);
     }
 
