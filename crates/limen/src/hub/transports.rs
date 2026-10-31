@@ -70,7 +70,8 @@ pub fn http(hub: Arc<Hub>, live: Arc<LiveHub>, listen: &str, token: String) -> R
     let listeners = Arc::new(Listeners::default());
     let announce = listeners.clone();
     let mut server =
-        McpServer::new(live.clone(), Some(Box::new(move |message| announce.send(message))), Box::new(sys::log));
+        McpServer::new(live.clone(), Some(Box::new(move |message| announce.send(message))), Box::new(sys::log))
+            .announcing_only();
     if let Some(mqtt) = config.mqtt.as_ref().filter(|mqtt| mqtt.enabled) {
         let bridge =
             Bridge::start(live.clone(), entities(live.clone()), mqtt, Broker::of(mqtt, &hub.home)?, Box::new(sys::log));
@@ -124,9 +125,10 @@ fn recheck(server: Arc<McpServer>, listening: impl Fn() -> bool + Send + 'static
 struct Listeners(Mutex<Vec<Sender<String>>>);
 
 impl Listeners {
-    /// A new stream, unless [MAX_STREAMS] are open.
+    /// A new stream, unless [MAX_STREAMS] are open; one whose connection ended frees its place now.
     fn open(&self) -> Option<Receiver<String>> {
         let mut senders = self.senders();
+        senders.retain(|sender| sender.send(String::new()).is_ok());
         if senders.len() >= MAX_STREAMS {
             return None;
         }
@@ -245,4 +247,25 @@ fn bearer_token(head: &Head) -> Option<&str> {
 
 fn join_error(status: u16, message: &str) -> Response {
     Response::json(status, json!({"error": message}).to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn streams_are_capped_and_a_closed_one_frees_its_place() {
+        let listeners = Listeners::default();
+        let mut open: Vec<_> = (0..MAX_STREAMS).map(|_| listeners.open().unwrap()).collect();
+        assert!(listeners.open().is_none());
+        listeners.send("announced");
+        assert_eq!(open[0].try_iter().find(|message| !message.is_empty()).unwrap(), "announced");
+        open.pop();
+        let last = listeners.open();
+        assert!(last.is_some());
+        open.clear();
+        assert!(listeners.any(), "the stream opened last is still open");
+        drop(last);
+        assert!(!listeners.any());
+    }
 }
