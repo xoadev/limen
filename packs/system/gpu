@@ -45,7 +45,11 @@ for load in /sys/devices/platform/gpu.0/load /sys/devices/gpu.0/load; do
   [ -r "$load" ] || continue
   [ "$index" -eq 0 ] || fail "a Jetson has one GPU, 0"
   case $metric in
-    utilization) value "$(awk '{ printf "%d", $1 / 10 + 0.5 }' "$load")" ;;
+    utilization)
+      tenths=$(cat "$load")
+      number "its load" "$tenths"
+      value "$(awk -v tenths="$tenths" 'BEGIN { printf "%d", tenths / 10 + 0.5 }')"
+      ;;
     temperature)
       for zone in /sys/class/thermal/thermal_zone*; do
         case $(cat "$zone/type" 2>/dev/null) in
