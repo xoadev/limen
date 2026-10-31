@@ -340,14 +340,20 @@ user = "root"
 host_key = "ssh-ed25519 AAAA…"
 ```
 
-- The directory holds `limen.toml`, the hub's SSH key, `token` (for HTTP clients, unless `LIMEN_TOKEN` is set),
-  `known_hosts`, which limen writes from the nodes' host keys, and `invites/`.
+- The directory holds `limen.toml`, `nodes.toml`, the hub's SSH key, `token` (for HTTP clients, unless `LIMEN_TOKEN`
+  is set), `known_hosts`, which limen writes from the nodes' host keys, and `invites/`.
+- `limen.toml` is the operator's: limen creates it with `init`, and writes it again only to change a node declared
+  there. What `join`, `trust` and `forget` write goes to `nodes.toml`, which holds `[nodes.<name>]` tables and nothing
+  else, so `limen.toml` can come from the operator's repository and be mounted read-only. A node works the same from
+  either file; a name in both is an error that names both files. A node already in `limen.toml` —from before
+  `nodes.toml`, or written by hand— is replaced or removed there, so that file must be writable for a join, `trust` or
+  `forget` of that node; a new one always goes to `nodes.toml`.
 - `ssh.identity` is the hub's SSH key: a path relative to the hub's directory (`--home`, else `LIMEN_HOME`), or
   absolute. `init` makes it with `ssh-keygen` when it is missing. Its public key is the same path with `.pub`: the
   one `invite` hands out, whose fingerprint `init`, `serve` and the join line show.
-- `limen.toml` is read again whenever it changes: a node that joins is there for the next request. `[http]` and the
-  keys of `[mqtt]` itself are read once, when `serve` starts; `[[mqtt.sensor]]` and `[[mqtt.button]]` with the rest
-  of the file. A broken `limen.toml` makes the MCP answer errors, not stop.
+- `limen.toml` and `nodes.toml` are read again whenever either changes: a node that joins is there for the next request.
+  `[http]` and the keys of `[mqtt]` itself are read once, when `serve` starts; `[[mqtt.sensor]]` and `[[mqtt.button]]`
+  with the rest of the file. A broken `limen.toml` or `nodes.toml` makes the MCP answer errors, not stop.
 - `[http] public_url` (or `LIMEN_PUBLIC_URL`) is where nodes reach the hub to join: an address, not a name,
   because the static binary resolves no names.
 - `http.origins` lists the web pages that may call `/mcp`, each compared whole with the request's `Origin` header:
@@ -586,7 +592,8 @@ hub:   [nodes.nas] with the request's source address, then `hello`  →  {"reach
 - The hub trusts the host key that arrives with a valid code: trust on first use, bound to an invitation a person
   gave out.
 - The node's address is where the `POST` comes from, unless it sends `--address`. The hub edits only that node's
-  table in `limen.toml`, edited as TOML and not as text, and parses the result before writing it.
+  table in `nodes.toml` (§7.2), edited as TOML and not as text, and parses the result with `limen.toml` before
+  writing it.
 - The node writes nothing the hub sends into its configuration: the join adds the hub's key to
   `authorized_keys`, and `limen.toml` stays the operator's.
 - `limen join` talks HTTP to an address, never a name, so a join line means the same wherever it is pasted.
@@ -599,7 +606,7 @@ hub:   [nodes.nas] with the request's source address, then `hello`  →  {"reach
   needs nothing of the machine but the kernel, and runs the same on Debian, Alpine or OpenWrt.
 - Hub image `ghcr.io/xoadev/limen`, one tag for `amd64` and `arm64`: distroless —no shell, no package manager—
   with the binary and OpenSSH's `ssh` and `ssh-keygen`, taken from Alpine with the libraries they load. It runs as
-  distroless's `nonroot` (uid 65532). Volume `/data` holds `limen.toml` and the SSH key.
+  distroless's `nonroot` (uid 65532). Volume `/data` holds `limen.toml`, `nodes.toml` and the SSH key.
 - **Releases** follow the conventional commits: every push to `main` runs `release-draft.yml`, which rewrites a
   draft release with the next `X.Y.Z` and its changes and builds nothing. Publishing is another workflow,
   `release.yml`, run only by hand: once `make check` is green on the draft's commit, it builds the binaries (release
@@ -654,7 +661,8 @@ hub:   [nodes.nas] with the request's source address, then `hello`  →  {"reach
   would not fit a Unix socket; directories of mode `0700` that must be the user's), `-F none`, and no agent or port
   forwarding.
 - TOML: `toml_edit`. Files are read into `#[derive(Deserialize)]` types that refuse unknown keys, so a typo
-  fails with its line; the hub's `limen.toml` is edited as a document, comments kept.
+  fails with its line; the hub's `nodes.toml`, and `limen.toml` for a node declared there, are edited as
+  documents, comments kept.
 
 ## 13. Threat model
 

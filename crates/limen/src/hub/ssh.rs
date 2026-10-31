@@ -160,7 +160,10 @@ fn connection_failure(node: &str, result: &proc::ProcResult) -> NodeResponse {
     let stderr = result.err();
     let stderr = stderr.trim();
     if stderr.contains("Host key verification failed") || stderr.contains("REMOTE HOST IDENTIFICATION HAS CHANGED") {
-        return failure(ErrorCode::HostKeyMismatch, format!("{node}'s host key does not match host_key in limen.toml"));
+        return failure(
+            ErrorCode::HostKeyMismatch,
+            format!("{node}'s host key does not match its host_key in limen.toml or nodes.toml"),
+        );
     }
     let last_line = stderr
         .lines()

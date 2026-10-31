@@ -435,7 +435,11 @@ suite_join() {
   networks+=("$net")
   docker volume create "$data" >/dev/null
   volumes+=("$data")
-  docker run -d --name "$hub" --network "$net" -v "$data:/data" limen-e2e-hub:local >/dev/null
+  # limen.toml from the operator's repository, mounted read-only: what joins goes to nodes.toml.
+  printf '[ssh]\nidentity = "id_ed25519"\n' > "$work/hub-limen.toml"
+  chmod 644 "$work/hub-limen.toml"
+  docker run -d --name "$hub" --network "$net" -v "$data:/data" -v "$work/hub-limen.toml:/data/limen.toml:ro" \
+    limen-e2e-hub:local >/dev/null
   containers+=("$hub")
   hub_ip=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$hub")
   url="http://$hub_ip:7341"
@@ -477,14 +481,15 @@ suite_join() {
   expect "an invitation works once" "was used, or expired" \
     docker exec -e LIMEN_YES=1 -e LIMEN_BINARY=/tmp/limen -e LIMEN_JOIN="$line" "$nas" sh /tmp/install.sh
   expect "the hub reaches it, no restart" '"ok": true' hub_exec call nas hello
-  expect "the hub wrote it into limen.toml" "[nodes.nas]" hub_file limen.toml
+  expect "the hub wrote it into nodes.toml" "[nodes.nas]" hub_file nodes.toml
+  refuse "and left the read-only limen.toml as it was" 'identity = "id_ed25519"' '\[nodes' hub_file limen.toml
 
   echo "e2e/join: OpenWrt joins the same way, with its address given as a host name"
   line=$(join_line router)
   expect "install.sh --join --address under ash" "router is on the hub, at $router" \
     docker exec -e LIMEN_YES=1 -e LIMEN_BINARY=/tmp/limen "$router" sh /tmp/install.sh --join "$line" --address "$router"
-  expect "the hub files the address given, not the request's" "host = \"$router\"" hub_file limen.toml
-  expect "the hub logs into it as root" 'user = "root"' hub_file limen.toml
+  expect "the hub files the address given, not the request's" "host = \"$router\"" hub_file nodes.toml
+  expect "the hub logs into it as root" 'user = "root"' hub_file nodes.toml
   expect "and sees OpenWrt" '"os": "OpenWrt' hub_exec call router hello
 
   echo "e2e/join: without a hub on HTTP, --hub-key and limen trust"
