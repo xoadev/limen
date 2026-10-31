@@ -318,16 +318,18 @@ args = { name = "immich_server" }   # fixed: a press chooses nothing
 ```
 
 - A **sensor** runs its script every `every` (10 s at least) and publishes its output when it changes. Only a
-  script whose header says `read_only = true`; how to write one is in
-  [`docs/scripts.md`](docs/scripts.md#for-home-assistant).
+  script whose header says `read_only = true`, which the machine checks on every read: it needs a limen as recent as
+  the hub's. How to write one is in [`docs/scripts.md`](docs/scripts.md#for-home-assistant).
 - A **button** runs its script once per press, never twice at once. Its result —exit code and output— shows as a
   sensor next to it. A script `[approval]` asks about can't be a button: over MQTT there is nobody to ask.
-- Each machine is a device in Home Assistant, unavailable while it doesn't answer or the hub is down. A sensor or
-  button the machine doesn't offer, or refuses, shows in `nodes`, and in the hub's log.
+- Each machine is a device in Home Assistant, unavailable while the hub can't reach it or is down. A sensor or
+  button the machine doesn't offer, or refuses, turns unavailable and shows in `nodes` and the hub's log; taken out
+  of `limen.toml`, it leaves Home Assistant.
 - Give the hub a broker user whose access covers only its topics (`limen/#` and `homeassistant/+/limen/#`), and
   declare as buttons only what anyone on the broker may press.
 - Polling every minute writes the machine's audit log every minute. `[audit] read_only = "none"` in the machine's
-  `limen.toml` writes only what may change something, or fails.
+  `limen.toml` leaves out what sensors poll —`hello` and read-only scripts that succeed—; files read, and anything
+  that may change something or fails, are still written.
 
 ## Security, in short
 

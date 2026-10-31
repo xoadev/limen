@@ -27,7 +27,7 @@ struct Pending {
     /// The defaults until the configuration is read.
     reporting: Reporting,
     request: Option<NodeRequest>,
-    /// `audit.read_only = "none"` and a request that changes nothing: written only if it fails.
+    /// `audit.read_only = "none"` and `hello` or a read-only script's run: written only if it fails.
     unaudited_if_ok: bool,
 }
 
@@ -133,7 +133,7 @@ pub fn run(config_path: &str) -> i32 {
 
 /// Reads the configuration and the request, takes one of the node's places into [slot], and does what it asks. A
 /// script's run is audited when it starts too: it may change the machine, and never end. With `audit.read_only =
-/// "none"`, a request that changes nothing —a script's only by its header's word— is audited only if it fails.
+/// "none"`, `hello` and a read-only script's run —what a hub's sensors poll— are audited only if they fail.
 fn handle(config_path: &str, slot: &mut Option<std::fs::File>) -> Result<Answer> {
     let node = Node::load(config_path)?;
     update_pending(|pending| pending.reporting = Reporting::of(&node.config));
@@ -142,9 +142,9 @@ fn handle(config_path: &str, slot: &mut Option<std::fs::File>) -> Result<Answer>
     let definition = requests::find(&request.request)
         .ok_or_else(|| bad_request(format!("unknown request '{}'", shortened(&request.request))))?;
     let args = params::validate(&definition.params, &request.args)?;
-    let changes_nothing = definition.name != "run"
-        || scripts::find(&node, args.string("script").unwrap_or_default()).is_ok_and(|(_, spec)| spec.read_only);
-    let unaudited_if_ok = !node.config.audit_read_only && changes_nothing;
+    let script_read_only = definition.name == "run"
+        && scripts::find(&node, args.string("script").unwrap_or_default()).is_ok_and(|(_, spec)| spec.read_only);
+    let unaudited_if_ok = polled_quietly(node.config.audit_read_only, definition.name, script_read_only);
     update_pending(|pending| pending.unaudited_if_ok = unaudited_if_ok);
     *slot = take_slot(node.config.concurrency)?;
     if definition.name == "run" && !unaudited_if_ok {
@@ -153,6 +153,12 @@ fn handle(config_path: &str, slot: &mut Option<std::fs::File>) -> Result<Answer>
         }
     }
     answers::answer(&node, definition.name, &args)
+}
+
+/// Whether a [request] that succeeds goes unaudited: with `audit.read_only = "none"` ([audit_all] false), what a hub's
+/// sensors poll. Files read and the log's own reading are always written: they are what an agent learnt.
+fn polled_quietly(audit_all: bool, request: &str, script_read_only: bool) -> bool {
+    !audit_all && (request == "hello" || (request == "run" && script_read_only))
 }
 
 /// One of `limits.concurrency` places for a request, whatever hub it comes from: a lock on `/run/limen/slot-<n>`,
@@ -255,4 +261,20 @@ fn append_rotating(path: &str, max_bytes: u64, line: &str) -> std::result::Resul
         std::fs::rename(path, format!("{path}.1")).ok();
     }
     fs::append_line(path, line)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::polled_quietly;
+
+    #[test]
+    fn only_what_sensors_poll_goes_unaudited_and_only_when_asked() {
+        assert!(polled_quietly(false, "hello", false));
+        assert!(polled_quietly(false, "run", true));
+        assert!(!polled_quietly(false, "run", false), "a script that may change something");
+        for read in ["read_file", "list_dir", "history"] {
+            assert!(!polled_quietly(false, read, false), "{read}: what an agent learnt");
+        }
+        assert!(!polled_quietly(true, "hello", false), "audit.read_only = \"all\", the default");
+    }
 }

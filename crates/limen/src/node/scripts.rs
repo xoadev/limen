@@ -157,6 +157,10 @@ pub fn find(node: &Node, name: &str) -> Result<(ScriptEntry, ScriptSpec)> {
 /// `run`: the script, its arguments checked against its header; its output redacted, then filtered.
 pub fn run(node: &Node, args: &Args) -> Result<Answer> {
     let (entry, spec) = find(node, args.string("script").unwrap_or_default())?;
+    // The hub's sensors only read: the node checks it on the script as it is now, not as the hub last saw it.
+    if args.bool("read_only") == Some(true) && !spec.read_only {
+        return Err(error(ErrorCode::Denied, format!("{} is not read_only on this node", spec.name)));
+    }
     let env = environment(&entry, &spec, &args.object("args"))?;
     let timeout = Duration::from_secs(spec.timeout_seconds);
     gate::allow(timeout + MARGIN);
@@ -268,6 +272,17 @@ mod tests {
         assert_eq!(catalog.problems.len(), 2, "{:?}", catalog.problems);
         assert!(catalog.problems[0].contains("forgotten is not executable"), "{:?}", catalog.problems);
         assert!(catalog.problems[1].contains("broken: the header has no description"), "{:?}", catalog.problems);
+    }
+
+    #[test]
+    fn a_read_asked_for_runs_only_a_read_only_script() {
+        let reads = "#!/bin/sh\n#: description = \"Reads\"\n#: read_only = true\necho 42\n";
+        let packs = packs(&[("one/say.sh", ECHO), ("one/reads", reads)]);
+        let read = |script: &str| run(&packs.node, &run_args(script, &json!({}), &json!({"read_only": true})));
+        assert_eq!(read("reads").unwrap().data["stdout"], "42");
+        let Err(refused) = read("say") else { panic!("say may change things") };
+        assert_eq!(refused.code, ErrorCode::Denied);
+        assert_eq!(refused.message, "say is not read_only on this node");
     }
 
     #[test]

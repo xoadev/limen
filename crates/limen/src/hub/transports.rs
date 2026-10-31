@@ -76,11 +76,14 @@ pub fn http(hub: Arc<Hub>, live: Arc<LiveHub>, listen: &str, token: String) -> R
     Err(error(ErrorCode::Unavailable, format!("the HTTP server stopped: {stopped}")))
 }
 
-/// The sensors and buttons as `limen.toml` says now: none once `[mqtt]` is gone from it.
+/// The sensors and buttons as `limen.toml` says now. `[mqtt]` taken out or disabled is read once, as its other keys
+/// are: until `serve` restarts, the sensors and buttons stay as they were.
 fn entities(live: Arc<LiveHub>) -> Entities {
     Box::new(move || {
-        let mqtt = live.config()?.mqtt;
-        Ok(mqtt.iter().flat_map(|mqtt| mqtt.entities().map(|(entity, button)| (entity.clone(), button))).collect())
+        let mqtt = live.config()?.mqtt.filter(|mqtt| mqtt.enabled).ok_or_else(|| {
+            error(ErrorCode::Unavailable, "[mqtt] is gone or disabled; it takes effect when serve restarts")
+        })?;
+        Ok(mqtt.entities().map(|(entity, button)| (entity.clone(), button)).collect())
     })
 }
 

@@ -10,7 +10,9 @@ use std::collections::BTreeSet;
 use std::ops::RangeInclusive;
 use std::time::Duration;
 
-/// A topic level of limen's own: `prefix` and `discovery`.
+/// The hub's prefix: without `-`, so `<prefix>-<node>-<id>` reads one way only across hubs.
+pub const PREFIX: &str = "^[a-z0-9][a-z0-9_]{0,31}$";
+/// Home Assistant's discovery prefix.
 pub const LEVEL: &str = "^[a-z0-9][a-z0-9_-]{0,31}$";
 /// A sensor's or button's `id`. Without `-`, so `<node>-<id>` in a discovery topic reads one way only.
 pub const ENTITY_ID: &str = "^[a-z0-9][a-z0-9_]{0,31}$";
@@ -18,8 +20,13 @@ const URL: &str = r"^mqtt://(\d{1,3}(\.\d{1,3}){3}|\[[0-9a-fA-F:]+\])(:\d{1,5})?
 const DEFAULT_PORT: u16 = 1883;
 const EVERY: Duration = Duration::from_secs(60);
 const EVERY_RANGE: RangeInclusive<Duration> = Duration::from_secs(10)..=Duration::from_secs(86_400);
-/// What `discovery` may set: how an entity looks, never a topic, an id or its device.
-const DISCOVERY_KEYS: [&str; 12] = [
+/// What a button's `discovery` may set: Home Assistant refuses a button's whole payload with a sensor's keys in it.
+const BUTTON_KEYS: [&str; 6] =
+    ["name", "icon", "entity_picture", "device_class", "entity_category", "enabled_by_default"];
+/// The longest user and password MQTT carries: a length of two bytes.
+const MAX_CREDENTIAL: usize = u16::MAX as usize;
+/// What a sensor's `discovery` may set: how an entity looks, never a topic, an id or its device.
+const SENSOR_KEYS: [&str; 12] = [
     "name",
     "icon",
     "entity_picture",
@@ -104,8 +111,8 @@ impl Mqtt {
         let has_port = address.rsplit_once(':').is_some_and(|(_, port)| !port.ends_with(']'));
         let address = if has_port { address.to_string() } else { format!("{address}:{DEFAULT_PORT}") };
         let prefix = file.prefix.unwrap_or_else(|| "limen".into());
-        if !is(LEVEL, &prefix) {
-            return fail("mqtt.prefix", format!("must match {LEVEL}"));
+        if !is(PREFIX, &prefix) {
+            return fail("mqtt.prefix", format!("must match {PREFIX}"));
         }
         let discovery = match file.discovery {
             None => Some("homeassistant".to_string()),
@@ -113,8 +120,14 @@ impl Mqtt {
             Some(discovery) if is(LEVEL, &discovery) => Some(discovery),
             Some(_) => return fail("mqtt.discovery", format!("\"\" or a prefix matching {LEVEL}")),
         };
-        if file.user.as_deref().is_some_and(str::is_empty) {
-            return fail("mqtt.user", "leave it out for a broker without users");
+        match file.user.as_deref() {
+            Some(user) if user.is_empty() || user.len() > MAX_CREDENTIAL => {
+                return fail("mqtt.user", "leave it out for a broker without users");
+            }
+            None if file.password_file.is_some() => {
+                return fail("mqtt.password_file", "a password goes with a user: set mqtt.user");
+            }
+            _ => {}
         }
         let sensors = file.sensor.into_iter().map(|sensor| entity("mqtt.sensor", sensor, false));
         let buttons = file.button.into_iter().map(|button| entity("mqtt.button", button, true));
@@ -149,14 +162,12 @@ fn entity(key: &str, file: EntityFile, button: bool) -> ConfigResult<Entity> {
     if !scripts::is_script_name(&file.script) {
         return fail(&key, "script is not a script's name");
     }
+    let keys: &[&str] = if button { &BUTTON_KEYS } else { &SENSOR_KEYS };
     if let Some(bad) = file.discovery.iter().find_map(|(name, value)| {
         let scalar = matches!(value, Value::String(_) | Value::Number(_) | Value::Bool(_));
-        (!DISCOVERY_KEYS.contains(&name.as_str()) || !scalar).then_some(name)
+        (!keys.contains(&name.as_str()) || !scalar).then_some(name)
     }) {
-        return fail(
-            &key,
-            format!("discovery.{bad}: one of {} and a string, number or boolean", DISCOVERY_KEYS.join(", ")),
-        );
+        return fail(&key, format!("discovery.{bad}: one of {} and a string, number or boolean", keys.join(", ")));
     }
     let every = match (button, file.every) {
         (true, Some(_)) => return fail(&key, "a button has no every: it runs when pressed"),
@@ -236,6 +247,8 @@ args = { name = "immich_server" }
         assert!(HubConfig::parse("[mqtt]\nurl = \"mqtt://broker.lan\"").unwrap_err().0.starts_with("mqtt.url: "));
         assert!(HubConfig::parse("[mqtt]\nurl = \"mqtts://10.0.0.1\"").is_err(), "no TLS in this version");
         assert!(refused("prefix = \"a/b\"").starts_with("mqtt.prefix: "));
+        assert!(refused("prefix = \"a-b\"").starts_with("mqtt.prefix: "), "a-b + c and a + b-c would meet");
+        assert!(refused("password_file = \"p\"").starts_with("mqtt.password_file: "));
         assert!(refused("discovery = \"#\"").starts_with("mqtt.discovery: "));
         assert!(refused("colour = 1").contains("unknown field"));
         let sensor =
@@ -259,6 +272,14 @@ args = { name = "immich_server" }
         assert_eq!(
             refused(&format!("{button}id = \"go\"\n{button}id = \"go\"")),
             "mqtt: nas/go: an id is used once within its node"
+        );
+        // Home Assistant drops a button's whole payload with a sensor's key in it.
+        assert!(
+            refused(&format!("{button}id = \"go\"\ndiscovery = {{ unit_of_measurement = \"%\" }}"))
+                .starts_with("mqtt.button nas/go: discovery.unit_of_measurement: one of name, icon,")
+        );
+        assert!(
+            HubConfig::parse(&format!("{BROKER}{button}id = \"go\"\ndiscovery = {{ icon = \"mdi:restart\" }}")).is_ok()
         );
     }
 

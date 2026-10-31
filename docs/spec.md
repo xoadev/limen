@@ -117,6 +117,9 @@ is ignored.
   newline), whatever its `pattern` allows.
 - A script that ran answers `ok` with its exit code, whatever it is: a failure of the script is data, not
   an error of the request.
+- `run` with `read_only: true` is refused, `denied`, unless the script's header says `read_only = true` as the node
+  reads it then: a hub's sensors ask so (§9.1), and a script whose header stopped saying it never runs as one. A node
+  that predates the argument refuses it as unknown.
 - Error codes: `bad_request`, `denied`, `not_found`, `unavailable` (the node is at `limits.concurrency`, or the
   script is refused: not root's, two with its name),
   `timeout`, `unsupported_version`, `internal`. The hub adds `unreachable` and `host_key_mismatch` from
@@ -376,14 +379,19 @@ host_key = "ssh-ed25519 AAAA…"
   TLS (§9.1). `user` is optional; its password is `LIMEN_MQTT_PASSWORD`, else the file `password_file` names (relative
   to the hub's directory, or absolute), never a key of `limen.toml`. `prefix`, `limen` unless given, and
   `discovery`, Home Assistant's discovery prefix, `homeassistant` unless given and `""` for plain topics only, match
-  `^[a-z0-9][a-z0-9_-]{0,31}$`. Two hubs on one broker need two prefixes.
+  `^[a-z0-9][a-z0-9_]{0,31}$` and `^[a-z0-9][a-z0-9_-]{0,31}$`: a prefix without `-`, so `<prefix>-<node>-<id>`
+  reads one way only. Two hubs on one broker need two prefixes. A password needs a `user`, and is at most 65535
+  bytes. Taking `[mqtt]` out, or `enabled = false`, takes effect when `serve` starts again, as its other keys do;
+  until then the sensors and buttons stay as they were.
 - `[[mqtt.sensor]]` and `[[mqtt.button]]` name a `node` of `[nodes]`, an `id` matching `^[a-z0-9][a-z0-9_]{0,31}$`
   and unique within its node among both, a `script` and its `args`, fixed and validated against the script's header
   in the node's catalog. A sensor adds `every`, `10s` to `24h` and `60s` unless given, and both take `discovery`, a
-  table of strings, numbers and booleans merged into the discovery payload (§9.1): `name`, `icon`, `entity_picture`,
-  `device_class`, `state_class`, `unit_of_measurement`, `suggested_display_precision`, `value_template`,
-  `entity_category`, `enabled_by_default`, `expire_after` and `force_update`, so it can't change a topic limen
-  writes. These are checked as the file is read, like any other key; whether a node offers the script and its
+  table of strings, numbers and booleans merged into the discovery payload (§9.1), so it can't change a topic limen
+  writes. A sensor's: `name`, `icon`, `entity_picture`, `device_class`, `state_class`, `unit_of_measurement`,
+  `suggested_display_precision`, `value_template`, `entity_category`, `enabled_by_default`, `expire_after` and
+  `force_update`. A button's: `name`, `icon`, `entity_picture`, `device_class`, `entity_category` and
+  `enabled_by_default`, since Home Assistant drops a button's whole payload with any other. These are checked as
+  the file is read, like any other key; whether a node offers the script and its
   arguments, as the hub runs (§9.1). The node may be missing from `[nodes]`: `limen forget` doesn't break the file.
 - What the hub reads from its environment, where a blank value counts as unset:
 
@@ -406,11 +414,12 @@ host_key = "ssh-ed25519 AAAA…"
   it becomes `audit.jsonl.1`: no logrotate, which OpenWrt doesn't have.
 - A script's run is written when it starts too, with `started` as its result: it may change the machine, and a run
   killed halfway still leaves a trace.
-- `audit.read_only = "none"` leaves out the requests that change nothing and succeed: `hello`, `read_file`,
-  `list_dir`, `history`, and the runs of scripts whose header says `read_only = true` that exit 0. `"all"`, the
-  default, writes every one. Polling a sensor every minute (§9.1) would otherwise rotate an agent's calls out of the
-  log within hours, and write a disk every minute; the node decides it, since it trusts nothing a hub says about a
-  request. Requests that are refused, fail or may change something are always written.
+- `audit.read_only = "none"` leaves out what a hub's sensors poll when it succeeds: `hello`, and the runs of scripts
+  whose header says `read_only = true` that exit 0. `"all"`, the default, writes every one. Polling a sensor every
+  minute (§9.1) would otherwise rotate an agent's calls out of the log within hours, and write a disk every minute;
+  the node decides it, since it trusts nothing a hub says about a request. `read_file`, `list_dir` and `history` are
+  always written —what an agent read is what the log is for—, and so is whatever is refused, fails or may change
+  something.
 - `history` shows it redacted, like everything that leaves the node. Arguments are recorded: a script
   doesn't take secrets as arguments.
 - The hub logs each tool call to stderr (node, tool, result, duration): over stdio, stdout is the
@@ -452,7 +461,8 @@ button is declared in the hub's `limen.toml`. Only `serve`: a hub that lives as 
 | Topic | Retained | What |
 |---|---|---|
 | `<prefix>/status` | yes | `online`, or `offline`: the connection's last will, which the broker publishes when the hub's connection drops |
-| `<prefix>/<node>/status` | yes | `online` while the node answers, `offline` when it is unreachable, refuses the host key or times out |
+| `<prefix>/<node>/status` | yes | `online` while the hub reaches the node, `offline` when ssh can't: unreachable, or a host key that doesn't match. A slow node, or a script that times out, is not down |
+| `<prefix>/<node>/<id>/status` | yes | `online` while the node's catalog accepts the sensor or button, `offline` while it refuses it |
 | `<prefix>/<node>/<id>/state` | yes | A sensor's state |
 | `<prefix>/<node>/<id>/press` | — | A button's command topic: any message but an empty one presses it |
 | `<prefix>/<node>/<id>/result` | yes | A button's last run: the node's answer, as the hub got it (§4) |
@@ -460,7 +470,8 @@ button is declared in the hub's `limen.toml`. Only `serve`: a hub that lives as 
 
 - **Sensors** run only scripts whose header says `read_only = true` on their node, and never one `[approval]` would
   ask about. Every `every` the hub runs the script and, when it exits 0 and its stdout —redacted and bounded by the
-  node— trimmed differs from the last state published, publishes it. A run that fails, exits otherwise or prints
+  node— trimmed differs from the last state published, publishes it. A run that fails, exits otherwise, is cut by
+  the node or prints
   more than 16 KiB publishes nothing and is logged. limen parses nothing it runs: a field out of JSON is Home
   Assistant's `value_template`, in `discovery`; rounding, so a number doesn't change on every read, is the script's
   ([scripts.md](scripts.md#for-home-assistant)).
@@ -473,27 +484,37 @@ button is declared in the hub's `limen.toml`. Only `serve`: a hub that lives as 
   shows it as a sensor of the button's own, under the same `<node>-<id>`, whose state is the exit code, or the
   error's code, and whose attributes are the rest.
 - **Refused.** A sensor or button whose node isn't in `[nodes]`, doesn't offer its script, or offers one these rules
-  or its arguments' header refuse, is refused: named in `nodes` and logged, and nothing of it is published, while the
-  others go on. That is decided on each node's catalog, asked with `hello` when the node's first entity starts and
-  every minute after. Until its node first answers, an entity is neither refused nor published, and what the broker
-  retains of it stays. What the file can say alone —an `id`, an `every`, a key `discovery` may not set— is checked as
+  or its arguments' header refuse, is refused, named in `nodes` and logged, while the others go on. That is decided on
+  each node's catalog, asked with `hello` of every node in `[nodes]` with a sensor or a button, refused or not, when
+  its first one starts and every minute after; a sensor's read is checked by the node itself (§4). Refused by its
+  node, an entity turns unavailable and nothing more of it is published, but what the broker retains of it stays:
+  Home Assistant keeps its name, area and dashboards for when the node offers it again. Taken out of `limen.toml`, or
+  its node out of `[nodes]`, it is emptied. Until its node first answers, an entity is neither refused nor
+  published. What the file can say alone —an `id`, an `every`, a key `discovery` may not set— is checked as
   `limen.toml` is read (§7.2).
 - **Sharing a node with the agent.** All the sensors of a node take one of its `ssh.per_node_concurrency` slots, one
   read at a time, so polling never makes an agent's call wait for more than one read; a sensor whose last read is
   still waiting or running skips its turn. A button's run takes a slot as a tool call does.
 - **Discovery.** One Home Assistant device per node, `<prefix>-<node>`, named after the node; `unique_id` is
-  `<prefix>-<node>-<id>` and `name` the `id`, unless `discovery` names it. An entity is available when both statuses
-  are `online` (`availability_mode: all`). `<node>-<id>` is unambiguous because an `id` has no `-`. With
+  `<prefix>-<node>-<id>` and `name` the `id`, unless `discovery` names it. An entity is available when the hub's,
+  its node's and its own status are `online` (`availability_mode: all`). `<node>-<id>` is unambiguous because an `id`
+  has no `-`. With
   `discovery = ""` nothing goes under a discovery prefix; the other topics stay.
 - **Every connection resends everything**: statuses, discovery and the last states, retained, QoS 0. The hub
   subscribes to `<prefix>/#` and `<discovery>/+/<prefix>/+/config`, so the broker hands it the retained messages it
   left before, and it empties every one it no longer declares. It subscribes again whenever what it declares changes,
-  and the broker hands them over again: a sensor removed from `limen.toml`, or refused, while the hub runs or while it
-  was stopped, leaves Home Assistant.
+  and the broker hands them over again: a sensor removed from `limen.toml`, while the hub runs or while it was
+  stopped, leaves Home Assistant. Every message goes out through one queue, in the order the hub's state changed, so
+  an older state never lands after a newer one; a broker that doesn't take them loses the connection, and gets
+  everything again on the next. The broker's refusal of a subscription is logged: through it, no press arrives and
+  nothing stale is emptied.
 - **Its own MQTT 3.1.1 client**, as limen has for MCP and HTTP: CONNECT with a will and a 60-second keep-alive,
   PUBLISH and SUBSCRIBE at QoS 0, PINGREQ, over `std::net`, with reconnection and a backoff up to a minute. The client
-  id is `limen-<prefix>`. A packet from the broker over 64 KiB closes the connection. No TLS: the broker is on the
+  id is `limen-<prefix>`. A packet from the broker over 64 KiB is read past and never kept; retained, it is
+  emptied and everything told again, so nobody can leave one that ends every connection. No TLS: the broker is on the
   LAN or a VPN, and its password crosses it in clear.
+- **What the broker's clients send for nothing** —a press of no button, of one still running, a message too large— is
+  logged at most once a minute, with how much more came: they can send it all day.
 
 ## 10. CLI
 
@@ -644,7 +665,7 @@ hub:   [nodes.nas] with the request's source address, then `hello`  →  {"reach
 | A compromised MCP client | Answers yes to its own approval questions. Approval guards against the model, not against the client, nor the hub that asks |
 | Whoever can change a pack, or where a script fetches packs from | Runs code as root on the node. The agent must not be able to write there (§6) |
 | A compromised node | Answers what it likes about itself. Its catalog can't name tools or arguments beyond plain, bounded text, nor reach other nodes. Calling its own scripts `read_only` makes no other node's script look read-only: a tool is read-only only when every node that offers it says so |
-| Whoever can publish to the hub's MQTT broker | Presses the declared buttons, with their fixed arguments, and never one `[approval]` would ask about: a second door to those scripts, beside the MCP token. Reads the sensors' states and can forge them, or the statuses, for Home Assistant. Can't reach any other script, argument or node. Give the hub a broker user whose ACL covers only its prefix and its discovery topics, and declare as buttons only what anyone on the broker may press. A node can't tell the hub's clients apart, so this is the hub's control, not a node's limit |
+| Whoever can publish to the hub's MQTT broker | Presses the declared buttons, with their fixed arguments, and never one `[approval]` would ask about: a second door to those scripts, beside the MCP token. Reads the sensors' states and can forge them, or the statuses, for Home Assistant. Can't reach any other script, argument or node. Can't keep the hub off the broker: a message too large is emptied, and a flood of presses is logged once a minute. Give the hub a broker user whose ACL covers only its prefix and its discovery topics, and declare as buttons only what anyone on the broker may press. A node can't tell the hub's clients apart, so this is the hub's control, not a node's limit |
 | Someone on the path to the MQTT broker | Reads the broker's password and every message: there is no TLS. A LAN or a VPN |
 | Someone who reaches the HTTP port without the token | Gets `401` before any body is read. Connections, heads and bodies are bounded; a flood denies service, it doesn't stop the hub |
 | Argument injection | Arguments are typed, validated on the node, reach the script as environment variables and never a shell |

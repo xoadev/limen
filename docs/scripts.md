@@ -128,7 +128,8 @@ A hub with `[mqtt]` publishes a script's output as a sensor ([spec §9.1](spec.m
 trimmed, is the state, published when it changes. The packs' scripts print text for an agent; a sensor's script
 prints a value.
 
-- **`read_only = true`**, or the hub refuses it as a sensor. A button's script needs no such word.
+- **`read_only = true`**, or the hub refuses it as a sensor, and the node refuses each read. A button's script needs
+  no such word.
 - **One value**: `87`, `on`, `running`; or one line of JSON, from which the sensor's `discovery.value_template`
   takes a field. Home Assistant keeps 255 characters of a state.
 - **Rounded where it should be**: `87`, not `87.31`. A value that changes on every read is published on every read.

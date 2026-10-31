@@ -31,7 +31,16 @@ pub enum Incoming {
         payload: Vec<u8>,
         retained: bool,
     },
-    /// SUBACK, PINGRESP and anything else the hub only needs to know arrived.
+    /// A PUBLISH over [MAX_PACKET], read past: its topic, to empty it, if the topic itself fit.
+    Oversized {
+        topic: Option<String>,
+        retained: bool,
+    },
+    /// Which filters the broker granted, in the order they were asked: 0x80 is a refusal.
+    SubAck {
+        codes: Vec<u8>,
+    },
+    /// PINGRESP and anything else the hub only needs to know arrived.
     Other,
 }
 
@@ -96,7 +105,8 @@ pub fn connack_refusal(code: u8) -> String {
     }
 }
 
-/// The next packet from [reader]; one over [MAX_PACKET] is an error, and so the end of the connection.
+/// The next packet from [reader]. One over [MAX_PACKET] is read past, never kept: a retained one would otherwise come
+/// back on every connection and end each of them.
 pub fn read_packet(reader: &mut impl Read) -> io::Result<Incoming> {
     let mut first = [0u8; 1];
     reader.read_exact(&mut first)?;
@@ -110,12 +120,26 @@ pub fn read_packet(reader: &mut impl Read) -> io::Result<Incoming> {
         }
     }
     if length > MAX_PACKET {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, format!("a packet of {length} bytes from the broker")));
+        return oversized(reader, first[0], length);
     }
     let mut body = vec![0u8; length];
     reader.read_exact(&mut body)?;
     parse(first[0], &body)
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "a malformed packet from the broker"))
+}
+
+fn oversized(reader: &mut impl Read, first: u8, length: usize) -> io::Result<Incoming> {
+    let mut topic_length = [0u8; 2];
+    reader.read_exact(&mut topic_length)?;
+    let topic_length = usize::from(u16::from_be_bytes(topic_length));
+    let mut topic = vec![0u8; topic_length.min(length - 2)];
+    reader.read_exact(&mut topic)?;
+    let rest = (length - 2 - topic.len()) as u64;
+    if io::copy(&mut reader.take(rest), &mut io::sink())? != rest {
+        return Err(io::ErrorKind::UnexpectedEof.into());
+    }
+    let topic = (first >> 4 == 3).then(|| String::from_utf8(topic).ok()).flatten();
+    Ok(Incoming::Oversized { topic, retained: first & 0x01 == 1 })
 }
 
 fn parse(first: u8, body: &[u8]) -> Option<Incoming> {
@@ -129,6 +153,7 @@ fn parse(first: u8, body: &[u8]) -> Option<Incoming> {
             let payload = body.get(2 + topic_length + id_length..)?.to_vec();
             Some(Incoming::Publish { topic, payload, retained: first & 0x01 == 1 })
         }
+        9 => Some(Incoming::SubAck { codes: body.get(2..)?.to_vec() }),
         _ => Some(Incoming::Other),
     }
 }
@@ -171,6 +196,11 @@ impl Topics {
 
     pub fn node_status(&self, node: &str) -> String {
         format!("{}/{node}/status", self.prefix)
+    }
+
+    /// Whether the node's catalog accepts [entity]: `offline` while it refuses it, and Home Assistant keeps it.
+    pub fn entity_status(&self, entity: &Entity) -> String {
+        self.of_entity(entity, "status")
     }
 
     pub fn state(&self, entity: &Entity) -> String {
@@ -238,7 +268,11 @@ impl Topics {
             "unique_id": unique_id,
             "name": name,
             "device": {"identifiers": [format!("{}-{}", self.prefix, entity.node)], "name": entity.node},
-            "availability": [{"topic": self.hub_status()}, {"topic": self.node_status(&entity.node)}],
+            "availability": [
+                {"topic": self.hub_status()},
+                {"topic": self.node_status(&entity.node)},
+                {"topic": self.entity_status(entity)},
+            ],
             "availability_mode": "all",
         })
         .as_object()
@@ -273,12 +307,15 @@ pub fn refusal(
     params::validate(&spec.params, &entity.args).err().map(|refused| format!("args: {}", refused.message))
 }
 
-/// A sensor's state out of its script's run: its trimmed stdout, if it ran and exited 0; else why not.
+/// A sensor's state out of its script's run: its trimmed stdout, if it ran, exited 0 and was not cut; else why not.
 pub fn sensor_state(response: &NodeResponse) -> Result<String, String> {
     if let Some(failure) = &response.error {
         return Err(failure.summary());
     }
     let data = response.data.as_ref().ok_or("no answer")?;
+    if response.truncated {
+        return Err("the node cut its output at one of its limits".into());
+    }
     match data.get("exit").and_then(Value::as_i64) {
         Some(0) => {}
         exit => return Err(format!("exit {}", exit.map_or("unknown".into(), |exit| exit.to_string()))),
@@ -305,12 +342,13 @@ pub fn result_payload(response: &NodeResponse) -> String {
     serde_json::to_string(&cut).expect("an answer serializes")
 }
 
-/// Whether [response] came from the node: anything but ssh's failure to reach it, or no answer in time.
+/// Whether the hub reached the node: anything but ssh's failure to connect. A timeout is not one: the node's own, of
+/// a slow script, carries the same code as the hub's, and a node that is reached and slow is not down.
 pub fn answered(response: &NodeResponse) -> bool {
     !response
         .error
         .as_ref()
-        .is_some_and(|failure| ["unreachable", "host_key_mismatch", "timeout"].contains(&failure.code.as_str()))
+        .is_some_and(|failure| ["unreachable", "host_key_mismatch"].contains(&failure.code.as_str()))
 }
 
 #[cfg(test)]
@@ -374,7 +412,14 @@ args = { name = "immich" }
             Incoming::Publish { topic: "t".into(), payload: vec![], retained: false }
         );
         assert_eq!(read(&[0xD0, 0]).unwrap(), Incoming::Other);
-        assert!(read(&[0x30, 0xFF, 0xFF, 0x04]).is_err(), "over MAX_PACKET");
+        let mut huge = vec![0x31, 0x86, 0x80, 0x04, 0, 1, b't'];
+        huge.extend(vec![b'x'; 65536 + 3]);
+        huge.extend([0xD0, 0]);
+        let mut stream = &huge[..];
+        assert_eq!(read_packet(&mut stream).unwrap(), Incoming::Oversized { topic: Some("t".into()), retained: true });
+        assert_eq!(read_packet(&mut stream).unwrap(), Incoming::Other, "read past, and the next packet follows");
+        assert!(read(&[0x30, 0xFF, 0xFF, 0x04, 0, 1]).is_err(), "cut short");
+        assert_eq!(read(&[0x90, 4, 0, 1, 0, 0x80]).unwrap(), Incoming::SubAck { codes: vec![0, 0x80] });
         assert!(read(&[0x30, 3, 0, 9, b't']).is_err(), "a topic longer than its packet");
         assert!(read(&[0x30, 5, 0]).is_err(), "cut short");
     }
@@ -395,6 +440,7 @@ args = { name = "immich" }
         assert_eq!((config["name"].as_str(), config["unit_of_measurement"].as_str()), (Some("Disk"), Some("%")));
         assert_eq!(config["device"]["identifiers"][0], "limen-nas-2");
         assert_eq!(config["availability"][1]["topic"], "limen/nas-2/status");
+        assert_eq!(config["availability"][2]["topic"], "limen/nas-2/disk_used/status");
         let [(button_topic, pressing), (result_topic, result)] =
             topics.discovery_payloads(button, true).try_into().unwrap();
         assert_eq!(button_topic, "homeassistant/button/limen/nas-2-restart/config");
@@ -455,6 +501,9 @@ args = { name = "immich" }
         assert_eq!(sensor_state(&down).unwrap_err(), "unreachable: nas: no route");
         assert!(!answered(&down));
         assert!(answered(&NodeResponse::failure(&error(ErrorCode::NotFound, "no script"))));
+        assert!(answered(&NodeResponse::failure(&error(ErrorCode::Timeout, "slow did not finish in 1s"))));
+        let cut = NodeResponse { truncated: true, ..ran(0, "42") };
+        assert!(sensor_state(&cut).is_err(), "a state cut short is not the state");
         assert_eq!(result_payload(&ran(0, "done")), serde_json::to_string(&ran(0, "done")).unwrap());
         let long: Value = serde_json::from_str(&result_payload(&ran(3, &"x".repeat(MAX_PAYLOAD)))).unwrap();
         assert_eq!((long["data"]["exit"].as_i64(), long["truncated"].as_bool()), (Some(3), Some(true)));

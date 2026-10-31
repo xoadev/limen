@@ -557,9 +557,14 @@ EOF
 #: read_only = true
 date +%s%N
 EOF
+  script "$node" "$pack/broken" 0755 <<'EOF'
+#!/bin/sh
+#: description = "A read that fails"
+#: read_only = true
+exit 3
+EOF
   host_key=$(docker exec "$node" cat /etc/ssh/ssh_host_ed25519_key.pub | cut -d' ' -f1,2)
   hub_config mqtt "$port" limen "$host_key"
-  cp "$work/hub.pub" "$home/hub.pub"
   cp "$work/hub.pub" "$home/hub.pub"
   printf 'e2e-secret\n' > "$home/mqtt-password"
   cat >> "$home/limen.toml" <<EOF
@@ -587,6 +592,12 @@ every = "10s"
 node = "mqtt"
 id = "sneaky"
 script = "mark"
+
+[[mqtt.sensor]]
+node = "mqtt"
+id = "broken"
+script = "broken"
+every = "10s"
 
 [[mqtt.button]]
 node = "mqtt"
@@ -627,6 +638,12 @@ EOF
     mqtt_sub 5 -C 1 -t limen/mqtt/marker/press
   refuse "the node's audit has the button's run, not the sensors'" '"word":"button"' '"script":"(value|clock)"' \
     docker exec "$node" cat /var/log/limen/audit.jsonl
+  expect "but a read that fails is written" '"script":"broken"' docker exec "$node" cat /var/log/limen/audit.jsonl
+  # A new broker on the same port, with nothing retained: `docker restart` would publish it on another port.
+  docker rm -f "$broker" >/dev/null
+  docker run -d --name "$broker" -p "127.0.0.1:$broker_port:1883" limen-e2e-broker >/dev/null
+  expect "a broker that restarts gets everything again" "limen/mqtt/value/state 42" \
+    mqtt_sub 40 -C 1 -t limen/mqtt/value/state
   sed -i '/^\[\[mqtt.sensor\]\]$/{N;N;/id = "clock"/{N;N;d}}' "$home/limen.toml"
   sleep 3
   refuse "a sensor taken out of limen.toml leaves Home Assistant" "mqtt-value/config" "mqtt-clock" \
