@@ -28,6 +28,10 @@ todo = "warn"
 [workspace.metadata.typos.default]
 extend-ignore-re = ["(?Rm)^.*(#|//)\\s*typos: ignore-line$"]
 
+# Names that aren't misspellings: Eclipse's MQTT broker, which `make e2e` runs.
+[workspace.metadata.typos.default.extend-words]
+mosquitto = "mosquitto"
+
 # One small static binary per architecture (spec §11): what a router's flash has room for.
 [profile.release]
 opt-level = "z"

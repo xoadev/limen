@@ -1,0 +1,13 @@
+#!/bin/sh
+#: description = "Percent of memory in use, what is not available to start new programs, as a whole number: a value for a sensor"
+#: read_only = true
+set -eu
+
+# Old kernels have no MemAvailable: free, buffers and cache are what it would be.
+awk '
+  { kib[$1] = $2 }
+  END {
+    available = ("MemAvailable:" in kib) ? kib["MemAvailable:"] : kib["MemFree:"] + kib["Buffers:"] + kib["Cached:"]
+    printf "%d\n", (kib["MemTotal:"] - available) * 100 / kib["MemTotal:"] + 0.5
+  }
+' /proc/meminfo

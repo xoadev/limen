@@ -172,8 +172,8 @@ only grow.
 | `Cargo.toml`, `rust-toolchain.toml` | The workspace and the Rust version it is built with, targets included; `.cargo/config.toml` links the musl targets with `rust-lld` |
 | `rustfmt.toml`, `clippy.toml`, `[workspace.lints]`, `.rumdl.toml`, `[workspace.metadata.typos]` | The layout and the lints `make lint` applies (see [Rust code](#rust-code)) |
 | `.claude/settings.json` | Claude Code's hooks for this repository: an edited Rust file is formatted at once |
-| `crates/limen-core/` | Pure rules: protocol, request schemas, argument validation, configuration, TOML reading, script headers, path policy, redaction, the join's formats. No processes, files or network |
-| `crates/limen/` | The `limen` binary: `os/` (processes, files, the system, `join`'s HTTP client), `node/` (gate, requests, files, scripts, lint, install, join), `hub/` (SSH client, MCP server, HTTP server, transports, the hub's directory) |
+| `crates/limen-core/` | Pure rules: protocol, request schemas, argument validation, configuration, TOML reading, script headers, path policy, redaction, the join's formats, MQTT's packets, topics and discovery. No processes, files or network |
+| `crates/limen/` | The `limen` binary: `os/` (processes, files, the system, `join`'s HTTP client), `node/` (gate, requests, files, scripts, lint, install, join), `hub/` (SSH client, MCP server, HTTP server, MQTT bridge, transports, the hub's directory) |
 | `install.sh` | The installer a user pipes into `sh` on a new machine. POSIX `sh` (OpenWrt has no bash); `make e2e` runs it under dash and ash |
 | `tools/` | Scripts the `Makefile` calls: `cargo.sh` builds, `lint.sh`, `lint-updates.sh`, `e2e.sh`, `docker.sh`, `pack.sh`, `local-install.sh`, `hooks-install.sh` (installs `pre-push.sh`), `workflow.sh` runs a draft or release workflow on `main`; `format-edited.sh` is Claude Code's hook |
 | `etc/` | `Dockerfile` of the hub image; `e2e/` the Debian node image of `make e2e` (OpenWrt's is the official one) |
@@ -209,6 +209,7 @@ Each one had an alternative. Changing one is changing this table and the spec's 
 | Request | One JSON line on stdin | No word splitting; `sudo` keeps stdin and drops `SSH_ORIGINAL_COMMAND` |
 | Language | Rust | One small static binary per architecture, no runtime, and memory safety in a program that runs as root at a security boundary. Kotlin/Native was the first implementation; docs/openwrt.md says what it cost |
 | Child processes | `std::process::Command`, argument arrays, own process group | A timeout reaches what a script started; never a shell |
+| MQTT | Our own 3.1.1 client over `std::net`, only in `serve` and off unless configured | CONNECT, PUBLISH, SUBSCRIBE and PINGREQ at QoS 0 are a few hundred lines; the client crates bring an async runtime or TLS stacks to a binary that goes on routers |
 | MCP | Our own JSON-RPC 2.0, no SDK | A few hundred lines, fully under control; the SDKs bring an async runtime |
 | TOML | `toml_edit`: `#[derive(Deserialize)]` with `deny_unknown_fields` to read, `DocumentMut` to edit | A typo is an error with its line; editing a document keeps the operator's comments, and a value can't become a table |
 | CLI | `clap` (derive) | Help and usage from the definitions |
@@ -287,7 +288,7 @@ calls a script in `tools/`.
 | `make build` / `make test` | Every crate, tests included, for this machine |
 | `make cli` | Only the static binary. `VARIANT=release` for the optimised one; `ARCH="x86_64 aarch64"` for both architectures |
 | `make pack` | One pack as it is released, in `dist/`: `PACK=<pack>`, `VERSION=X.Y.Z` (else `dev`). Reproducible from the commit |
-| `make e2e` | Containers with a real SSH server —Debian with OpenSSH, OpenWrt's image with dropbear—, `limen install` inside, packs of scripts, the hub against them with its key. `SUITE=debian`, `openwrt` or `join` for one. Needs Docker. Not in `make check` |
+| `make e2e` | Containers with a real SSH server —Debian with OpenSSH, OpenWrt's image with dropbear—, `limen install` inside, packs of scripts, the hub against them with its key. `SUITE=debian`, `openwrt`, `join` or `mqtt` (with Mosquitto) for one. Needs Docker. Not in `make check` |
 | `make docker` | The hub image, `limen:local` (or `IMAGE=…`, `TAGS=…`, `LABELS=…`), from the binaries of `make cli` (or `BINARY_AMD64=…`, `BINARY_ARM64=…`). `PLATFORMS=linux/amd64,linux/arm64 PUSH=1` pushes both under one tag (after `make cli ARCH="x86_64 aarch64"`); `OCI=<file>` writes both to an OCI archive instead, as the release does; without `PUSH` or `OCI`, one platform, because Docker loads one per tag. The release goes through this same target |
 | `make pack-drafts` | `packs-draft.yml` run on `main`: every pack's draft rewritten, as a push to `packs/` would. Needs `gh` |
 | `make pack-release` | `packs.yml` run on `main` for `PACK=<pack>`, followed to the end: its draft built, the tarball left as the run's artifact. Published and attested only with `PUBLISH=1` |
@@ -314,8 +315,8 @@ release is being built waits instead of moving the draft under it.
 | `packs-draft.yml` | Every push to `main` that touches `packs/`; by hand (`make pack-drafts`) | convco-version reads, for each pack, the commits that touched `packs/<pack>/` and rewrites that pack's draft, `pack-<pack>-vX.Y.Z`; nothing is published |
 | `packs.yml` | By hand only, with a pack's name, to publish it | **Run by hand** (or `make pack-release`), it publishes that pack's draft: waits for `check.yml` green on its commit, `make pack`, attests the tarball, attaches it and `SHA256SUMS`, and publishes it **never as the latest release** —that is limen's, which `install.sh`, `limen_version` and `limen_update` ask for |
 | `cli.yml` | Label `cli` on a PR, or by hand | Both binaries (debug) as an artifact, with the link commented on the PR: for trying a change on a real node |
-| `e2e.yml` | Every PR that touches code (`crates/`, `Cargo.*`, `rust-toolchain.toml`, `.cargo/`, `tools/`, `etc/`, `install.sh`, `packs/`, `Makefile`, the workflow itself); weekly; by hand | `make e2e`, every suite. Weekly because OpenWrt's image moves upstream; Debian's is pinned by digest in `etc/e2e/node.Dockerfile`, and follows upstream through Dependabot's weekly pull request, which this workflow tests |
-| `dependabot.yml` | Weekly, versions a week old | Pull requests that update the pinned actions (SHA and version comment together), the crates (pinned `=X.Y.Z` in the `Cargo.toml` files, each pull request moves the requirement and `Cargo.lock` together), the Rust version of `rust-toolchain.toml` and the base images of `etc/Dockerfile` and `etc/e2e/node.Dockerfile` |
+| `e2e.yml` | Every PR that touches code (`crates/`, `Cargo.*`, `rust-toolchain.toml`, `.cargo/`, `tools/`, `etc/`, `install.sh`, `packs/`, `Makefile`, the workflow itself); weekly; by hand | `make e2e`, every suite. Weekly because OpenWrt's image moves upstream; Debian's and Mosquitto's are pinned by digest in `etc/e2e/node.Dockerfile` and `broker.Dockerfile`, and follow upstream through Dependabot's weekly pull request, which this workflow tests |
+| `dependabot.yml` | Weekly, versions a week old | Pull requests that update the pinned actions (SHA and version comment together), the crates (pinned `=X.Y.Z` in the `Cargo.toml` files, each pull request moves the requirement and `Cargo.lock` together), the Rust version of `rust-toolchain.toml` and the base images of `etc/Dockerfile` and `etc/e2e/` |
 | `lint-updates.yml` | Weekly; by hand | `make lint-updates`: the linters of `tools/lint.sh`, which Dependabot cannot see. When one is behind, it opens (or comments) the `lint-updates` issue |
 
 The version is never written in the code: the commits decide it, and it only exists once a release is published.

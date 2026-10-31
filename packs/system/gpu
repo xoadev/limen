@@ -1,0 +1,47 @@
+#!/bin/sh
+#: description = "One GPU's use, temperature in °C or memory in use, percent or degrees as a whole number: NVIDIA through nvidia-smi, AMD through the kernel. A value for a sensor"
+#: read_only = true
+#: timeout = "20s"
+#: [args.metric]
+#: type = "enum"
+#: values = ["utilization", "temperature", "memory_used"]
+#: default = "utilization"
+#: description = "utilization: percent busy; temperature: °C; memory_used: percent of its memory"
+#: [args.index]
+#: type = "int"
+#: default = 0
+#: range = [0, 15]
+#: description = "Which GPU, from 0, in the order nvidia-smi or the kernel lists them"
+set -eu
+
+metric=$LIMEN_ARG_METRIC
+index=$LIMEN_ARG_INDEX
+
+if command -v nvidia-smi >/dev/null 2>&1; then
+  # Without units or a header: "37, 52, 1234, 8192".
+  nvidia-smi --id="$index" --format=csv,noheader,nounits \
+    --query-gpu=utilization.gpu,temperature.gpu,memory.used,memory.total | awk -F', *' -v metric="$metric" '
+      metric == "utilization" { print $1 }
+      metric == "temperature" { print $2 }
+      metric == "memory_used" { printf "%d\n", $3 * 100 / $4 + 0.5 }
+    '
+  exit 0
+fi
+
+# amdgpu: the cards that say how busy they are, in the kernel's order.
+found=0
+for card in /sys/class/drm/card[0-9]*/device; do
+  [ -r "$card/gpu_busy_percent" ] || continue
+  if [ "$found" -eq "$index" ]; then
+    case $metric in
+      utilization) cat "$card/gpu_busy_percent" ;;
+      temperature) awk '{ printf "%d\n", $1 / 1000 + 0.5; exit }' "$card"/hwmon/hwmon*/temp1_input ;;
+      memory_used) awk 'NR == FNR { used = $1; next } { printf "%d\n", used * 100 / $1 + 0.5 }' \
+        "$card/mem_info_vram_used" "$card/mem_info_vram_total" ;;
+    esac
+    exit 0
+  fi
+  found=$((found + 1))
+done
+echo "no GPU $index this script can read: it reads NVIDIA's through nvidia-smi and AMD's through amdgpu" >&2
+exit 1

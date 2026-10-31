@@ -1,0 +1,11 @@
+#!/bin/sh
+#: description = "Percent used of the file system that holds a path, as a whole number, as df rounds it: a value for a sensor"
+#: read_only = true
+#: [args.path]
+#: type = "string"
+#: default = "/"
+#: pattern = '^/[A-Za-z0-9/._-]{0,255}$'
+#: description = "A path on the file system, / unless given"
+set -eu
+
+df -P -- "$LIMEN_ARG_PATH" | awk 'NR == 2 { sub(/%/, "", $5); print $5 }'

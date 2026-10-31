@@ -6,7 +6,8 @@
 #   SUITE=debian    OpenSSH, sudo, the user limen, packs of scripts
 #   SUITE=openwrt   OpenWrt's own image: dropbear, root with forced commands, busybox, musl
 #   SUITE=join      the hub's image in a container; machines join it with `limen invite` and install.sh
-#   (default: all three)
+#   SUITE=mqtt      the hub serving sensors and buttons through Mosquitto, as Home Assistant sees them
+#   (default: all four)
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 command -v docker >/dev/null || { echo "e2e: needs Docker; skipped" >&2; exit 0; }
@@ -18,10 +19,12 @@ work=$(mktemp -d /tmp/le.XXXXXX)
 containers=()
 networks=()
 volumes=()
+processes=()
 cleanup() {
   for c in "${containers[@]}"; do docker rm -f "$c" >/dev/null 2>&1 || true; done
   for n in "${networks[@]}"; do docker network rm "$n" >/dev/null 2>&1 || true; done
   for v in "${volumes[@]}"; do docker volume rm "$v" >/dev/null 2>&1 || true; done
+  for p in "${processes[@]}"; do kill -KILL "$p" 2>/dev/null || true; done
   rm -rf "$work"
 }
 trap cleanup EXIT
@@ -520,16 +523,163 @@ suite_join() {
   expect "and it is gone" '"enum":["nas","router"]' mcp_http '{"jsonrpc":"2.0","id":3,"method":"tools/list"}'
 }
 
+suite_mqtt() {
+  local node=limen-e2e-mqtt-$$ broker=limen-e2e-broker-$$ port broker_port host_key serve_pid pack=/opt/state/packs/e2e
+  local home="$work/mqtt"
+  echo "e2e/mqtt: a node, a broker with a user, and a hub serving both"
+  docker build -q -t limen-e2e-node -f "$ROOT/etc/e2e/node.Dockerfile" "$ROOT/etc/e2e" >/dev/null
+  docker build -q -t limen-e2e-broker -f "$ROOT/etc/e2e/broker.Dockerfile" "$ROOT/etc/e2e" >/dev/null
+  docker run -d --name "$node" -p 127.0.0.1::22 limen-e2e-node >/dev/null
+  docker run -d --name "$broker" -p 127.0.0.1::1883 limen-e2e-broker >/dev/null
+  containers+=("$node" "$broker")
+  port=$(docker port "$node" 22/tcp | head -1 | sed 's/.*://')
+  broker_port=$(docker port "$broker" 1883/tcp | head -1 | sed 's/.*://')
+  docker cp "$binary" "$node:/usr/local/bin/limen"
+  docker exec "$node" limen install --hub-key "$(cat "$work/hub.pub")" >/dev/null
+  # The scenes' pack, and the system pack's sensors as they are released.
+  docker exec "$node" mkdir -p /opt/state
+  docker cp "$ROOT/packs" "$node:/opt/state/"
+  docker exec "$node" sh -c 'chown -R root:root /opt/state && chmod -R go-w /opt/state'
+  # Sensors poll: the node writes only the runs that may change something, or fail.
+  docker exec -i "$node" sh -c 'cat > /etc/limen/limen.toml' <<EOF
+[scripts]
+packs = ["$pack", "/opt/state/packs/system"]
+
+[audit]
+read_only = "none"
+EOF
+  e2e_pack "$node" "$pack"
+  script "$node" "$pack/value" 0755 <<'EOF'
+#!/bin/sh
+#: description = "A number that changes when the scenes say"
+#: read_only = true
+cat /tmp/value 2>/dev/null || echo 41
+EOF
+  script "$node" "$pack/clock" 0755 <<'EOF'
+#!/bin/sh
+#: description = "Something new on every read"
+#: read_only = true
+date +%s%N
+EOF
+  script "$node" "$pack/broken" 0755 <<'EOF'
+#!/bin/sh
+#: description = "A read that fails"
+#: read_only = true
+exit 3
+EOF
+  host_key=$(docker exec "$node" cat /etc/ssh/ssh_host_ed25519_key.pub | cut -d' ' -f1,2)
+  hub_config mqtt "$port" limen "$host_key"
+  cp "$work/hub.pub" "$home/hub.pub"
+  printf 'e2e-secret\n' > "$home/mqtt-password"
+  cat >> "$home/limen.toml" <<EOF
+
+[mqtt]
+enabled = true
+url = "mqtt://127.0.0.1:$broker_port"
+user = "limen"
+password_file = "mqtt-password"
+
+[[mqtt.sensor]]
+node = "mqtt"
+id = "value"
+script = "value"
+every = "10s"
+discovery = { unit_of_measurement = "%" }
+
+[[mqtt.sensor]]
+node = "mqtt"
+id = "clock"
+script = "clock"
+every = "10s"
+
+[[mqtt.sensor]]
+node = "mqtt"
+id = "sneaky"
+script = "mark"
+
+[[mqtt.sensor]]
+node = "mqtt"
+id = "broken"
+script = "broken"
+every = "10s"
+
+[[mqtt.sensor]]
+node = "mqtt"
+id = "memory"
+script = "memory_used"
+discovery = { unit_of_measurement = "%" }
+
+[[mqtt.button]]
+node = "mqtt"
+id = "marker"
+script = "mark"
+args = { word = "button" }
+EOF
+  "$binary" init --serve --home "$home" >/dev/null
+  "$binary" serve --listen 127.0.0.1:0 --home "$home" 2> "$work/serve.log" &
+  serve_pid=$!
+  processes+=("$serve_pid")
+  disown "$serve_pid"
+  # mqtt_sub <seconds> <options…>: what a client of the broker sees, with the hub's user.
+  mqtt_sub() {
+    local seconds=$1
+    shift
+    docker exec "$broker" mosquitto_sub -u limen -P e2e-secret -v -W "$seconds" "$@"
+  }
+
+  expect "a sensor's state arrives, retained" "limen/mqtt/value/state 41" mqtt_sub 30 -C 1 -t limen/mqtt/value/state
+  expect "the system pack's memory_used is a sensor: one number" "a percent" \
+    sh -c "docker exec $broker mosquitto_sub -u limen -P e2e-secret -v -W 30 -C 1 -t limen/mqtt/memory/state \
+      | grep -Eq '^limen/mqtt/memory/state [0-9]{1,3}\$' && echo 'a percent'"
+  expect "Home Assistant finds it by discovery" '"unit_of_measurement":"%"' \
+    mqtt_sub 10 -C 1 -t homeassistant/sensor/limen/mqtt-value/config
+  expect "the node and the hub say they are online" "limen/mqtt/status online" mqtt_sub 10 -C 1 -t limen/mqtt/status
+  refuse "an unchanged output publishes nothing" "limen/mqtt/clock/state" "limen/mqtt/value/state" \
+    mqtt_sub 15 -R -t 'limen/mqtt/+/state'
+  expect "a change does" "limen/mqtt/value/state 42" \
+    sh -c "docker exec $node sh -c 'echo 42 > /tmp/value' && docker exec $broker mosquitto_sub -u limen -P e2e-secret -v -W 20 -R -C 1 -t limen/mqtt/value/state"
+  expect "a sensor on a script that changes things is refused" "refused sensor mqtt/sneaky: mark is not read_only" \
+    cat "$work/serve.log"
+  refuse "and nothing of it is published" "mqtt-value/config" "sneaky" \
+    mqtt_sub 5 -t 'homeassistant/+/limen/+/config'
+  docker exec "$broker" mosquitto_pub -u limen -P e2e-secret -t limen/mqtt/marker/press -m PRESS
+  expect "a button runs its script, and its result is retained" '"stdout":"marked button"' \
+    mqtt_sub 20 -C 1 -t limen/mqtt/marker/result
+  docker exec "$broker" mosquitto_pub -u limen -P e2e-secret -r -t limen/mqtt/marker/press -m PRESS
+  sleep 2
+  expect "a press published retained is emptied: it won't run again" "Timed out" \
+    mqtt_sub 5 -C 1 -t limen/mqtt/marker/press
+  refuse "the node's audit has the button's run, not the sensors'" '"word":"button"' '"script":"(value|clock)"' \
+    docker exec "$node" cat /var/log/limen/audit.jsonl
+  expect "but a read that fails is written" '"script":"broken"' docker exec "$node" cat /var/log/limen/audit.jsonl
+  # A new broker on the same port, with nothing retained: `docker restart` would publish it on another port.
+  docker rm -f "$broker" >/dev/null
+  docker run -d --name "$broker" -p "127.0.0.1:$broker_port:1883" limen-e2e-broker >/dev/null
+  expect "a broker that restarts gets everything again" "limen/mqtt/value/state 42" \
+    mqtt_sub 40 -C 1 -t limen/mqtt/value/state
+  sed -i '/^\[\[mqtt.sensor\]\]$/{N;N;/id = "clock"/{N;N;d}}' "$home/limen.toml"
+  sleep 3
+  refuse "a sensor taken out of limen.toml leaves Home Assistant" "mqtt-value/config" "mqtt-clock" \
+    mqtt_sub 5 -t 'homeassistant/+/limen/+/config'
+  sed -i "s/^port = $port\$/port = 1/" "$home/limen.toml"
+  expect "a node that doesn't answer turns offline" "limen/mqtt/status offline" \
+    mqtt_sub 30 -R -C 1 -t limen/mqtt/status
+  kill -KILL "$serve_pid"
+  expect "a hub that stops turns offline: its will" "limen/status offline" mqtt_sub 10 -C 1 -t limen/status
+}
+
 case "$SUITE" in
   debian) suite_debian ;;
   openwrt) suite_openwrt ;;
   join) suite_join ;;
+  mqtt) suite_mqtt ;;
   all)
     suite_debian
     suite_openwrt
     suite_join
+    suite_mqtt
     ;;
-  *) echo "e2e: SUITE is debian, openwrt, join or all" >&2; exit 64 ;;
+  *) echo "e2e: SUITE is debian, openwrt, join, mqtt or all" >&2; exit 64 ;;
 esac
 
 echo

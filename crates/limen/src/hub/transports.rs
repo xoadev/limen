@@ -2,6 +2,7 @@
 
 use super::dir::{Hub, LiveHub};
 use super::mcp::{self, McpServer};
+use super::mqtt::{Bridge, Broker, Declared, Entities};
 use super::server::{self, Handler, Head, Limits, Response};
 use super::{NodeClient, constant_time_eq};
 use crate::os::sys;
@@ -57,7 +58,12 @@ fn answer(server: &McpServer, line: &str) {
 /// No token there: the one-time code is the authorisation, and all it allows is adding the node it names.
 pub fn http(hub: Arc<Hub>, live: Arc<LiveHub>, listen: &str, token: String) -> Result<()> {
     let config = live.config()?;
-    let server = McpServer::new(live.clone(), None, Box::new(sys::log));
+    let mut server = McpServer::new(live.clone(), None, Box::new(sys::log));
+    if let Some(mqtt) = config.mqtt.as_ref().filter(|mqtt| mqtt.enabled) {
+        let bridge =
+            Bridge::start(live.clone(), entities(live.clone()), mqtt, Broker::of(mqtt, &hub.home)?, Box::new(sys::log));
+        server = server.with_problems(Box::new(move || bridge.refusals()));
+    }
     let listener = TcpListener::bind(listen)
         .map_err(|cause| error(ErrorCode::Unavailable, format!("cannot listen on {listen}: {cause}")))?;
     let node_count = live.nodes().map_or(0, |nodes| nodes.len());
@@ -68,6 +74,22 @@ pub fn http(hub: Arc<Hub>, live: Arc<LiveHub>, listen: &str, token: String) -> R
     let stopped = server::serve(&listener, &routes, Limits::default());
     // A server that stops is a hub that is down: exit with an error, so a restart policy brings it back.
     Err(error(ErrorCode::Unavailable, format!("the HTTP server stopped: {stopped}")))
+}
+
+/// The sensors and buttons as `limen.toml` says now. `[mqtt]` taken out or disabled is read once, as its other keys
+/// are: until `serve` restarts, the sensors and buttons stay as they were.
+fn entities(live: Arc<LiveHub>) -> Entities {
+    Box::new(move || {
+        let config = live.config()?;
+        let mqtt = config.mqtt.as_ref().filter(|mqtt| mqtt.enabled).ok_or_else(|| {
+            error(ErrorCode::Unavailable, "[mqtt] is gone or disabled; it takes effect when serve restarts")
+        })?;
+        Ok(Declared {
+            entities: mqtt.entities().map(|(entity, button)| (entity.clone(), button)).collect(),
+            nodes: config.nodes.iter().map(|node| node.name.clone()).collect(),
+            approval: config.approval.clone(),
+        })
+    })
 }
 
 struct Routes {

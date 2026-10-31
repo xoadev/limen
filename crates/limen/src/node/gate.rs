@@ -4,7 +4,7 @@
 use super::{Answer, Node, requests as answers};
 use crate::os::{fs, proc, sys};
 use limen_core::config::node::NodeConfig;
-use limen_core::params;
+use limen_core::params::{self, ArgsExt};
 use limen_core::protocol::{ErrorCode, NodeRequest, NodeResponse, PROTOCOL_VERSIONS, Result, bad_request, error};
 use limen_core::requests;
 use limen_core::time::iso;
@@ -27,6 +27,8 @@ struct Pending {
     /// The defaults until the configuration is read.
     reporting: Reporting,
     request: Option<NodeRequest>,
+    /// `audit.read_only = "none"` and `hello` or a sensor's read: written only if it fails.
+    unaudited_if_ok: bool,
 }
 
 /// Where a request's audit record goes and how large its answer may be.
@@ -99,7 +101,7 @@ pub fn run(config_path: &str) -> i32 {
     sys::umask_022();
     let started = Instant::now();
     let reporting = Reporting::of(&NodeConfig::default());
-    *lock_pending() = Some(Pending { started, reporting, request: None });
+    *lock_pending() = Some(Pending { started, reporting, request: None, unaudited_if_ok: false });
     *lock_deadline() = Some(started + STDIN_TIMEOUT + REQUEST_TIME);
     watchdog();
     // Held until the answer is written.
@@ -115,8 +117,12 @@ pub fn run(config_path: &str) -> i32 {
     match outcome {
         Ok(answer) => {
             let exit = answer.data.get("exit").and_then(Value::as_i64);
-            send(max_response, &NodeResponse::success(answer.data, answer.truncated));
-            audit(&pending, "ok", exit);
+            let truncated = answer.truncated;
+            let whole = send(max_response, &NodeResponse::success(answer.data, truncated)) && !truncated;
+            // A read cut short, or replaced as too large, is one the hub takes as failed: written.
+            if !(pending.unaudited_if_ok && whole && exit.unwrap_or(0) == 0) {
+                audit(&pending, "ok", exit);
+            }
         }
         Err(failure) => {
             send(max_response, &NodeResponse::failure(&failure));
@@ -128,7 +134,8 @@ pub fn run(config_path: &str) -> i32 {
 }
 
 /// Reads the configuration and the request, takes one of the node's places into [slot], and does what it asks. A
-/// script's run is audited when it starts too: it may change the machine, and never end.
+/// script's run is audited when it starts too: it may change the machine, and never end. With `audit.read_only =
+/// "none"`, `hello` and a sensor's read —what a hub's sensors poll— are audited only if they fail.
 fn handle(config_path: &str, slot: &mut Option<std::fs::File>) -> Result<Answer> {
     let node = Node::load(config_path)?;
     update_pending(|pending| pending.reporting = Reporting::of(&node.config));
@@ -137,13 +144,24 @@ fn handle(config_path: &str, slot: &mut Option<std::fs::File>) -> Result<Answer>
     let definition = requests::find(&request.request)
         .ok_or_else(|| bad_request(format!("unknown request '{}'", shortened(&request.request))))?;
     let args = params::validate(&definition.params, &request.args)?;
+    // A sensor's read says so, and is refused, and written, unless the script's header says read_only (scripts::run).
+    let sensor_read = definition.name == "run" && args.bool("read_only") == Some(true);
+    let unaudited_if_ok = polled_quietly(node.config.audit_read_only, definition.name, sensor_read);
+    update_pending(|pending| pending.unaudited_if_ok = unaudited_if_ok);
     *slot = take_slot(node.config.concurrency)?;
-    if definition.name == "run" {
+    if definition.name == "run" && !unaudited_if_ok {
         if let Some(pending) = lock_pending().as_ref() {
             audit(pending, "started", None);
         }
     }
     answers::answer(&node, definition.name, &args)
+}
+
+/// Whether a [request] that succeeds goes unaudited: with `audit.read_only = "none"` ([audit_all] false), what a hub's
+/// sensors poll, `hello` and a [sensor_read]. What an agent read or ran —files, the log, any script it called— is
+/// always written: it is what the log is for.
+fn polled_quietly(audit_all: bool, request: &str, sensor_read: bool) -> bool {
+    !audit_all && (request == "hello" || (request == "run" && sensor_read))
 }
 
 /// One of `limits.concurrency` places for a request, whatever hub it comes from: a lock on `/run/limen/slot-<n>`,
@@ -187,10 +205,11 @@ fn parse(bytes: std::result::Result<Vec<u8>, String>) -> Result<NodeRequest> {
     Ok(request)
 }
 
-/// Writes the answer on stdout; one over [max_response] becomes an error that says so.
-fn send(max_response: usize, response: &NodeResponse) {
+/// Writes the answer on stdout; one over [max_response] becomes an error that says so. Whether it went whole.
+fn send(max_response: usize, response: &NodeResponse) -> bool {
     let mut text = serde_json::to_string(response).unwrap_or_default();
-    if text.len() > max_response {
+    let whole = text.len() <= max_response;
+    if !whole {
         let too_large = bad_request(format!(
             "the answer is {} bytes, over limits.max_response ({max_response}); narrow the request",
             text.len()
@@ -198,6 +217,7 @@ fn send(max_response: usize, response: &NodeResponse) {
         text = serde_json::to_string(&NodeResponse::failure(&too_large)).unwrap_or_default();
     }
     sys::say(&text);
+    whole
 }
 
 /// A request's name as the client sent it, up to a length.
@@ -246,4 +266,20 @@ fn append_rotating(path: &str, max_bytes: u64, line: &str) -> std::result::Resul
         std::fs::rename(path, format!("{path}.1")).ok();
     }
     fs::append_line(path, line)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::polled_quietly;
+
+    #[test]
+    fn only_what_sensors_poll_goes_unaudited_and_only_when_asked() {
+        assert!(polled_quietly(false, "hello", false));
+        assert!(polled_quietly(false, "run", true), "a sensor's read");
+        assert!(!polled_quietly(false, "run", false), "an agent's run, read-only script or not");
+        for read in ["read_file", "list_dir", "history"] {
+            assert!(!polled_quietly(false, read, false), "{read}: what an agent learnt");
+        }
+        assert!(!polled_quietly(true, "hello", false), "audit.read_only = \"all\", the default");
+    }
 }

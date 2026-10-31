@@ -16,6 +16,7 @@ Needs limen 0.1.3 or later: its headers use `read_only`, which older versions re
 | `restart_container` | Restarts one container as it is | **yes** |
 | `compose_update` | Pulls the newest images of one Compose project and recreates what changed, then shows its state. Only the projects the operator lists | **yes** |
 | `purge` | Deletes stopped containers, unused networks, dangling images and build cache; with `images`, every unused image. Never volumes | **yes** |
+| `container_state` | One container's state in a word —`running`, `healthy`, `unhealthy`, `exited`, `missing`…—: a value for a Home Assistant sensor | no |
 
 Needs the `docker` CLI and daemon; `compose_update`, the `docker compose` plugin.
 

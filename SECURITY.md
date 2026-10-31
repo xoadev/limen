@@ -23,6 +23,8 @@ this is a small project, so please allow a few days.
 - The MCP server over HTTP answering without the token.
 - A script that `[approval]` names running without a person's yes, other than by the MCP client answering for
   them.
+- An MQTT message running a script the hub's `limen.toml` doesn't declare as a button, with other arguments than
+  it declares, or one `[approval]` names; or a sensor running a script whose header doesn't say `read_only`.
 - A join invitation used more than once, after it expires, or to add a node other than the one it names.
 - A secret leaving a node through something limen masks (redaction) in a way the documentation says it doesn't.
 - Altering a release's files, the image or `install.sh` without write access to this repository, or a workflow
@@ -36,6 +38,8 @@ These are limits of the design, documented in the [threat model](docs/spec.md#13
 - The agent running a script it was led to by text in a log or a file: every script on offer is the operator's
   choice, and `[approval]` is how to have a person confirm the ones that change things.
 - An MCP client, or the hub, compromised: either can answer yes to its own approval questions.
+- Whoever can publish to the hub's MQTT broker pressing the buttons declared, or forging the states Home Assistant
+  shows; or reading the broker's password on the network: there is no TLS.
 - Secrets in files the operator allowed: masking is a safety net, not the protection.
 - Whatever the node allows to be read reaching the model provider the hub talks to.
 - Whoever can change a node's packs, or push where one of its scripts fetches them from, running code on it as root.

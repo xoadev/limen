@@ -1,5 +1,6 @@
-//! `$LIMEN_HOME/limen.toml` (spec §7.2): how the hub reaches its nodes and how it listens.
+//! `$LIMEN_HOME/limen.toml` (spec §7.2): how the hub reaches its nodes, how it listens, and its MQTT broker.
 
+use super::mqtt::{Mqtt, MqttFile};
 use super::{ConfigResult, fail};
 use crate::durations;
 use crate::own_regex;
@@ -48,6 +49,7 @@ pub struct HubConfig {
     pub public_url: Option<String>,
     pub nodes: Vec<NodeEntry>,
     pub approval: Approval,
+    pub mqtt: Option<Mqtt>,
 }
 
 /// Which scripts a person approves before each run, and how long a call waits for the answer (spec §5).
@@ -109,6 +111,7 @@ impl Default for HubConfig {
             public_url: None,
             nodes: vec![],
             approval: Approval::default(),
+            mqtt: None,
         }
     }
 }
@@ -119,6 +122,7 @@ struct File {
     ssh: Ssh,
     http: Http,
     approval: ApprovalFile,
+    mqtt: Option<MqttFile>,
     nodes: IndexMap<String, Node>,
 }
 
@@ -219,6 +223,7 @@ impl HubConfig {
             public_url,
             nodes,
             approval: approval(file.approval)?,
+            mqtt: file.mqtt.map(Mqtt::parse).transpose()?,
         })
     }
 }
