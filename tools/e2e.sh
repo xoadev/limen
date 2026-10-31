@@ -280,6 +280,21 @@ EOF
   expect "an example pack runs: system's processes" 'sshd' limen call debian processes
   expect "system's network: the default route" 'default route: via' limen call debian network
   expect "system's filesystems: space and inodes" 'MOUNT' limen call debian filesystems
+  # gpu against a fake nvidia-smi that answers what /tmp/nvidia-smi holds, or fails when it holds "fail".
+  script "$node" /usr/local/bin/nvidia-smi 0755 <<'EOF'
+#!/bin/sh
+answer=$(cat /tmp/nvidia-smi)
+[ "$answer" = fail ] && { echo "NVIDIA-SMI has failed" >&2; exit 9; }
+echo "$answer"
+EOF
+  gpu() { docker exec "$node" sh -c "echo '$1' > /tmp/nvidia-smi; limen run gpu --arg metric=$2; echo \"exit \$?\""; }
+  expect "system's gpu: nvidia-smi's use" $'37\nexit 0' gpu "37, 52, 1234, 8192" utilization
+  expect "and its memory in use, in percent" $'15\nexit 0' gpu "37, 52, 1234, 8192" memory_used
+  expect "[N/A] is no value: it fails" "reported '[N/A]' for utilization" gpu "[N/A], 52, [N/A], [N/A]" utilization
+  expect "and so does it for memory" "exit 1" gpu "[N/A], 52, [N/A], [N/A]" memory_used
+  expect "a value out of range fails" "more than 100" gpu "250, 52, 1, 2" utilization
+  expect "a failing nvidia-smi fails it too" "nvidia-smi failed" gpu fail temperature
+  docker exec "$node" rm -f /usr/local/bin/nvidia-smi /tmp/nvidia-smi
   expect "system's time: the clock and its zone" 'time zone' limen call debian time
   expect "system's reach: a port that listens" 'port 22: open' limen call debian reach --arg host=127.0.0.1 --arg port=22
   expect "and one that doesn't" 'port 9: closed' limen call debian reach --arg host=127.0.0.1 --arg port=9

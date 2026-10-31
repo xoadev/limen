@@ -1,5 +1,5 @@
 #!/bin/sh
-#: description = "One GPU's use, temperature in °C or memory in use, percent or degrees as a whole number: NVIDIA through nvidia-smi, AMD through the kernel. A value for a sensor"
+#: description = "One GPU's use, temperature in °C or memory in use, percent or degrees as a whole number: NVIDIA Jetson through the kernel, other NVIDIA through nvidia-smi, AMD through the kernel. A value for a sensor"
 #: read_only = true
 #: timeout = "20s"
 #: [args.metric]
@@ -17,14 +17,65 @@ set -eu
 metric=$LIMEN_ARG_METRIC
 index=$LIMEN_ARG_INDEX
 
+# fail <why>: no value, so a sensor keeps its last state.
+fail() {
+  echo "$1" >&2
+  exit 1
+}
+
+# number <what> <text>: fails unless <text>, which the GPU reported for <what>, is a whole number.
+number() {
+  case $2 in
+    '' | *[!0-9]*) fail "the GPU reported '$2' for $1, not a number" ;;
+  esac
+}
+
+# value <number>: prints it if it is a whole number a GPU can report for $metric, else fails saying what came.
+value() {
+  number "$metric" "$1"
+  max=100
+  [ "$metric" = temperature ] && max=150
+  [ "$1" -le "$max" ] || fail "the GPU reported $1 for $metric, more than $max"
+  echo "$1"
+}
+
+# Jetson: one GPU in the SoC, whose load the kernel gives in tenths of a percent. Before nvidia-smi: JetPack ships
+# one that answers [N/A] for use and memory.
+for load in /sys/devices/platform/gpu.0/load /sys/devices/gpu.0/load; do
+  [ -r "$load" ] || continue
+  [ "$index" -eq 0 ] || fail "a Jetson has one GPU, 0"
+  case $metric in
+    utilization) value "$(awk '{ printf "%d", $1 / 10 + 0.5 }' "$load")" ;;
+    temperature)
+      for zone in /sys/class/thermal/thermal_zone*; do
+        case $(cat "$zone/type" 2>/dev/null) in
+          gpu-thermal | GPU-therm) value "$(awk '{ printf "%d", $1 / 1000 + 0.5 }' "$zone/temp")"; exit 0 ;;
+        esac
+      done
+      fail "no gpu-thermal zone in /sys/class/thermal"
+      ;;
+    memory_used) fail "a Jetson's GPU shares the system's memory: memory_used of this pack measures it" ;;
+  esac
+  exit 0
+done
+
 if command -v nvidia-smi >/dev/null 2>&1; then
-  # Without units or a header: "37, 52, 1234, 8192".
-  nvidia-smi --id="$index" --format=csv,noheader,nounits \
-    --query-gpu=utilization.gpu,temperature.gpu,memory.used,memory.total | awk -F', *' -v metric="$metric" '
-      metric == "utilization" { print $1 }
-      metric == "temperature" { print $2 }
-      metric == "memory_used" { printf "%d\n", $3 * 100 / $4 + 0.5 }
-    '
+  # Without units or a header: "37, 52, 1234, 8192". Read whole first: a pipe would hide that nvidia-smi failed.
+  answer=$(nvidia-smi --id="$index" --format=csv,noheader,nounits \
+    --query-gpu=utilization.gpu,temperature.gpu,memory.used,memory.total) || fail "nvidia-smi failed for GPU $index"
+  IFS=', ' read -r utilization temperature used total <<EOF
+$answer
+EOF
+  case $metric in
+    utilization) value "$utilization" ;;
+    temperature) value "$temperature" ;;
+    memory_used)
+      number "its memory in use" "$used"
+      number "its total memory" "$total"
+      [ "$total" -gt 0 ] || fail "the GPU reported 0 for its total memory"
+      value "$(awk -v used="$used" -v total="$total" 'BEGIN { printf "%d", used * 100 / total + 0.5 }')"
+      ;;
+  esac
   exit 0
 fi
 
@@ -34,14 +85,13 @@ for card in /sys/class/drm/card[0-9]*/device; do
   [ -r "$card/gpu_busy_percent" ] || continue
   if [ "$found" -eq "$index" ]; then
     case $metric in
-      utilization) cat "$card/gpu_busy_percent" ;;
-      temperature) awk '{ printf "%d\n", $1 / 1000 + 0.5; exit }' "$card"/hwmon/hwmon*/temp1_input ;;
-      memory_used) awk 'NR == FNR { used = $1; next } { printf "%d\n", used * 100 / $1 + 0.5 }' \
-        "$card/mem_info_vram_used" "$card/mem_info_vram_total" ;;
+      utilization) value "$(cat "$card/gpu_busy_percent")" ;;
+      temperature) value "$(awk '{ printf "%d", $1 / 1000 + 0.5; exit }' "$card"/hwmon/hwmon*/temp1_input)" ;;
+      memory_used) value "$(awk 'NR == FNR { used = $1; next } { printf "%d", used * 100 / $1 + 0.5 }' \
+        "$card/mem_info_vram_used" "$card/mem_info_vram_total")" ;;
     esac
     exit 0
   fi
   found=$((found + 1))
 done
-echo "no GPU $index this script can read: it reads NVIDIA's through nvidia-smi and AMD's through amdgpu" >&2
-exit 1
+fail "no GPU $index this script can read: it reads Jetson's through the kernel, other NVIDIA through nvidia-smi and AMD's through amdgpu"

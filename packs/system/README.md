@@ -35,8 +35,11 @@ which can only list addresses. With procps, `ps` sorts the processes; with busyb
 - `kernel_log` reads what the kernel keeps in memory, so only since boot; `journal` (systemd) keeps earlier boots.
 - `temperature` reads `/sys/class/thermal` and `/sys/class/hwmon`; a machine with neither, a VM most often, has none,
   and the script fails instead of printing a 0.
-- `gpu` reads NVIDIA's through `nvidia-smi` and AMD's through the kernel's `amdgpu`; Intel's integrated GPUs say
-  nothing a script can read without `intel_gpu_top`.
+- `gpu` reads an NVIDIA Jetson's through the kernel (its load and the `gpu-thermal` zone; its memory is the system's,
+  so `memory_used` fails there), other NVIDIA through `nvidia-smi` and AMD's through the kernel's `amdgpu`. A value
+  that isn't one —`[N/A]`, a number out of range, an `nvidia-smi` that fails— fails the script instead of printing
+  it, so a sensor keeps its last state. Intel's integrated GPUs say nothing a script can read without
+  `intel_gpu_top`.
 
 ## For Home Assistant
 
