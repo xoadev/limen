@@ -29,7 +29,7 @@ limen/
   crates/limen-core/    # pure rules: protocol, schemas, configuration, script headers, policy, redaction
   crates/limen/         # the binary: node side, hub, SSH, MCP, HTTP
   etc/Dockerfile        # the hub image
-  etc/e2e/              # the Debian node image of `make e2e`
+  etc/e2e/              # the Debian node image and the MQTT broker of `make e2e`
   tools/                # scripts called by the Makefile
   .github/              # CI, releases, issue and pull request templates
   Makefile              # `make check` is what CI runs
@@ -414,12 +414,12 @@ host_key = "ssh-ed25519 AAAA…"
   it becomes `audit.jsonl.1`: no logrotate, which OpenWrt doesn't have.
 - A script's run is written when it starts too, with `started` as its result: it may change the machine, and a run
   killed halfway still leaves a trace.
-- `audit.read_only = "none"` leaves out what a hub's sensors poll when it succeeds: `hello`, and the runs of scripts
-  whose header says `read_only = true` that exit 0. `"all"`, the default, writes every one. Polling a sensor every
-  minute (§9.1) would otherwise rotate an agent's calls out of the log within hours, and write a disk every minute;
-  the node decides it, since it trusts nothing a hub says about a request. `read_file`, `list_dir` and `history` are
-  always written —what an agent read is what the log is for—, and so is whatever is refused, fails or may change
-  something.
+- `audit.read_only = "none"` leaves out what a hub's sensors poll when it succeeds: `hello`, and a sensor's read, a
+  `run` with `read_only: true` (§4) that exits 0 with its whole answer. `"all"`, the default, writes every one.
+  Polling a sensor every minute (§9.1) would otherwise rotate an agent's calls out of the log within hours, and write
+  a disk every minute. The node checks the read is one: a script whose header doesn't say `read_only` is refused, and
+  written. What an agent read or ran —`read_file`, `list_dir`, `history`, any script it called, read-only or not— is
+  always written, since that is what the log is for, and so is whatever is refused, fails or is cut.
 - `history` shows it redacted, like everything that leaves the node. Arguments are recorded: a script
   doesn't take secrets as arguments.
 - The hub logs each tool call to stderr (node, tool, result, duration): over stdio, stdout is the
@@ -639,8 +639,8 @@ hub:   [nodes.nas] with the request's source address, then `hello`  →  {"reach
   toolchain's own `rust-lld`: no C compiler, and no cross compiler for arm64.
 - Crates:
   - `limen-core`: protocol types, request schemas, configuration, script headers, path policy,
-    redaction and the join's formats. Pure, tested without a machine.
-  - `limen`: the binary — processes, files, SSH, MCP and HTTP.
+    redaction, the join's formats, MQTT's packets and topics. Pure, tested without a machine.
+  - `limen`: the binary — processes, files, SSH, MCP, HTTP and MQTT.
 - MCP: its own JSON-RPC 2.0 implementation, no SDK. HTTP: its own bounded HTTP/1.1 server for the hub (§9);
   `join`'s two requests over `std::net`. MQTT: its own 3.1.1 client over `std::net` (§9.1). None has TLS. JSON:
   `serde_json`. CLI: `clap`. System calls: `rustix`; no `unsafe` code.

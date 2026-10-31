@@ -60,13 +60,13 @@ limen turns it around: **the machine decides.**
   per request and exits.
 - **Home Assistant, if you want it.** Scripts' output as sensors and scripts as buttons, through MQTT, each one
   declared on the hub.
-- **A record of everything asked.** Every request and every script run —or only what may change something, if you
-  say so—, with its arguments, client and exit code, in each machine's audit log, readable with the `history` tool.
+- **A record of everything asked.** Every request and every script run —sensors' polling aside, if you say so—, with
+  its arguments, client and exit code, in each machine's audit log, readable with the `history` tool.
 
 ## How it works
 
 ```text
-MCP client ──stdio or HTTP──▶ hub: limen mcp | limen serve
+MCP client ──stdio or HTTP──▶ hub: limen mcp | limen serve ◀──MQTT──▶ broker ◀──▶ Home Assistant
 (Claude Code…)                  │  ssh limen@node   (one JSON request on stdin)
                                 ▼
 node:  sshd ──forced command──▶ sudo limen gate ──▶ allowed files, the packs' scripts
@@ -81,7 +81,7 @@ The hub talks to each machine (each *node*) with the system's `ssh`; nothing lis
 
 | Tool | What it answers |
 |---|---|
-| `nodes` | The machines, whether they answer, their OS, limen version and the scripts each one offers |
+| `nodes` | The machines, whether they answer, their OS, limen version and the scripts each one offers; the [MQTT](#home-assistant-over-mqtt) sensors and buttons refused |
 | `read_file`, `list_dir` | Files the machine allows, and the directories that lead to them: a range of lines, the last ones (`tail`), or those holding a text (`grep`) |
 | `history` | The machine's audit log |
 | *each script* | One tool per script in the machines' packs, with its own typed arguments, plus `grep` and `tail` to narrow its output |
@@ -289,18 +289,25 @@ The question appears in the MCP client's own window (MCP elicitation), with the 
 arguments: the model can't see it or answer it. Only a yes runs the script, once. A no, no answer, or a client that
 can't ask means nothing runs. Over HTTP (`limen serve`) the hub can't ask yet, so those scripts are refused there.
 
-### Home Assistant
+## Home Assistant, over MQTT
 
 `limen serve` can publish scripts' output to an MQTT broker as Home Assistant sensors, and run scripts as buttons
-pressed there, through Home Assistant's MQTT discovery: nothing to install in Home Assistant or on the machines.
-Each one is declared in the hub's `limen.toml`; a machine offering a script never makes it reachable over MQTT.
+pressed there. Home Assistant finds them through its MQTT discovery: nothing to install in it or on the machines, and
+nothing changes on them: every read and every press is a run of one of their scripts over SSH, as the agent's are.
+Each sensor and button is declared in the hub's `limen.toml`; a machine offering a script never makes it reachable
+over MQTT.
+
+You need a broker Home Assistant uses —its Mosquitto add-on, or your own— reachable from the hub by address, and
+the hub as `limen serve` (the image): `limen mcp` lives as long as its MCP client, and never connects.
 
 ```toml
 [mqtt]
 enabled = true
 url = "mqtt://192.168.1.229:1883"   # an address, not a name; no TLS: a LAN or a VPN
 user = "limen"
-password_file = "mqtt-password"     # in the hub's directory; or LIMEN_MQTT_PASSWORD
+password_file = "mqtt-password"     # in the hub's directory (/data in the image); or LIMEN_MQTT_PASSWORD
+# prefix = "limen"                  # the hub's topics; two hubs on one broker need two
+# discovery = "homeassistant"       # Home Assistant's discovery prefix; "" for plain topics only
 
 [[mqtt.sensor]]
 node = "nas"
@@ -308,28 +315,58 @@ id = "disk_used"
 script = "disk_used_percent"
 args = { path = "/srv" }
 every = "60s"
-discovery = { unit_of_measurement = "%" }
+discovery = { unit_of_measurement = "%", state_class = "measurement" }
 
 [[mqtt.button]]
 node = "nas"
 id = "restart_immich"
 script = "restart_container"
 args = { name = "immich_server" }   # fixed: a press chooses nothing
+discovery = { icon = "mdi:restart" }
 ```
 
-- A **sensor** runs its script every `every` (10 s at least) and publishes its output when it changes. Only a
-  script whose header says `read_only = true`, which the machine checks on every read: it needs a limen as recent as
-  the hub's. How to write one is in [`docs/scripts.md`](docs/scripts.md#for-home-assistant).
+`[mqtt]` is read when `serve` starts; the sensors and buttons, whenever the file changes. In Home Assistant each
+machine is a device, with its sensors and buttons:
+
+- A **sensor** runs its script every `every` (10 s at least) and publishes its output, trimmed, when it changes. Only
+  a script whose header says `read_only = true`, which the machine checks on every read: it needs a limen as recent
+  as the hub's. The packs' scripts print text for an agent; a sensor's prints a value —how, in
+  [`docs/scripts.md`](docs/scripts.md#for-home-assistant)—, and `discovery.value_template` can take a field of JSON.
 - A **button** runs its script once per press, never twice at once. Its result —exit code and output— shows as a
   sensor next to it. A script `[approval]` asks about can't be a button: over MQTT there is nobody to ask.
-- Each machine is a device in Home Assistant, unavailable while the hub can't reach it or is down. A sensor or
-  button the machine doesn't offer, or refuses, turns unavailable and shows in `nodes` and the hub's log; taken out
-  of `limen.toml`, it leaves Home Assistant.
-- Give the hub a broker user whose access covers only its topics (`limen/#` and `homeassistant/+/limen/#`), and
-  declare as buttons only what anyone on the broker may press.
-- Polling every minute writes the machine's audit log every minute. `[audit] read_only = "none"` in the machine's
-  `limen.toml` leaves out what sensors poll —`hello` and read-only scripts that succeed—; files read, and anything
-  that may change something or fails, are still written.
+- **Available** while the hub runs, reaches the machine, and the machine offers what it declares. A sensor or button
+  the machine doesn't offer, or refuses, turns unavailable, keeping its name and dashboards; taken out of
+  `limen.toml`, it leaves Home Assistant.
+- `discovery` sets how an entity looks: `name`, `icon`, `device_class`, `unit_of_measurement`… never a topic. The
+  list is in [`docs/spec.md`](docs/spec.md#72-hub-limen_homelimentoml).
+
+The topics, under the hub's prefix (`limen`):
+
+| Topic | What |
+|---|---|
+| `limen/status` | The hub: `online`, or `offline` the moment its connection drops |
+| `limen/<node>/status` | Whether the hub reaches the machine |
+| `limen/<node>/<id>/state` | A sensor's value |
+| `limen/<node>/<id>/press` | A button: any message but an empty one presses it |
+| `limen/<node>/<id>/result` | A button's last run |
+| `limen/<node>/<id>/status` | Whether the machine offers that sensor or button |
+
+**Anyone who can publish to the broker can press your buttons.** Declare as buttons only what anyone on the broker
+may press, and give the hub a user of its own whose access covers only its topics; with Mosquitto's `acl_file`:
+
+```text
+user limen
+topic readwrite limen/#
+topic readwrite homeassistant/+/limen/#
+```
+
+Polling every minute writes the machine's audit log every minute. `[audit] read_only = "none"` in the machine's
+`limen.toml` leaves out what sensors poll, when it succeeds; whatever the agent reads or runs, and anything that
+fails, is still written.
+
+When something doesn't show: `nodes` lists the sensors and buttons refused and why (`mqtt_problems`), and the hub's
+log (`docker compose logs limen`) says when it connects, when a machine goes down or comes back, and when a sensor
+starts failing.
 
 ## Security, in short
 
@@ -340,7 +377,7 @@ args = { name = "immich_server" }   # fixed: a press chooses nothing
 | Arguments are crafted to escape | They are typed, validated on the machine, and reach the script as variables, never a shell |
 | A symlink points from an allowed path to a secret | Paths are walked as the kernel does before they are checked |
 | Someone can change a pack, or push where a script fetches packs from | **They are root on the machine.** Keep the agent out of it, and protect the branch |
-| Someone can publish to the hub's MQTT broker | Presses the [buttons you declared](#home-assistant), with their fixed arguments, and forges what Home Assistant shows. Nothing else reaches the machines |
+| Someone can publish to the hub's MQTT broker | Presses the [buttons you declared](#home-assistant-over-mqtt), with their fixed arguments, and forges what Home Assistant shows. Nothing else reaches the machines |
 | A script is malicious or prints secrets | Not covered: scripts belong to root, and limen trusts them. Masking catches the usual shapes |
 
 The HTTP hub bounds connections and request sizes and deadlines. Excess connections are rejected without waiting
@@ -361,8 +398,8 @@ What is readable or printed reaches the model provider, by design. The full thre
 
 | | |
 |---|---|
-| [`docs/spec.md`](docs/spec.md) | The design and the reference: access, protocol, tools, packs, configuration, CLI, joining, threat model, decisions |
-| [`docs/scripts.md`](docs/scripts.md) | Writing scripts and packs, and a machine set up from a Git repository |
+| [`docs/spec.md`](docs/spec.md) | The design and the reference: access, protocol, tools, packs, configuration, MQTT, CLI, joining, threat model, decisions |
+| [`docs/scripts.md`](docs/scripts.md) | Writing scripts and packs, scripts for Home Assistant, and a machine set up from a Git repository |
 | [`docs/openwrt.md`](docs/openwrt.md) | OpenWrt as a node, and one binary for every Linux |
 | [Our machines, through pull requests](https://xoa.dev/notes/machines-through-pull-requests/) | How we run our own machines: the agent proposes scripts and permissions as pull requests |
 | [Immutable releases with convco-version](https://xoa.dev/notes/immutable-releases-with-convco-version/) | How limen is released, and why its releases can't change |
@@ -377,7 +414,7 @@ Releases and their notes are on [GitHub](https://github.com/xoadev/limen/release
 ```sh
 make check   # lint, build and every test: what CI runs
 make cli     # the static binary, in target/<arch>-unknown-linux-musl/debug/limen
-make e2e     # Debian and OpenWrt containers with a real SSH server, the installer and the hub (SUITE=debian|openwrt|join)
+make e2e     # Debian and OpenWrt containers with a real SSH server, the installer and the hub (SUITE=debian|openwrt|join|mqtt)
 make help    # the rest
 ```
 

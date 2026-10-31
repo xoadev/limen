@@ -650,7 +650,7 @@ patterns = []
 # Every request, appended; never readable through limen.
 # path = "/var/log/limen/audit.jsonl"   # an absolute path
 # max_bytes = 5242880                   # bytes before it becomes audit.jsonl.1; 1024 at least
-# read_only = "all"                     # "none": hello and read-only scripts that succeed, a hub's sensors, unwritten
+# read_only = "all"                     # "none": what a hub's sensors poll is written only when it fails
 "#;
 
 #[cfg(test)]

@@ -18,7 +18,7 @@ use limen_core::scripts::{Catalog, ScriptSpec};
 use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::io::Write;
-use std::net::{Shutdown, TcpStream, ToSocketAddrs};
+use std::net::{Shutdown, SocketAddr, TcpStream};
 use std::sync::mpsc::{self, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
@@ -36,8 +36,15 @@ const MAX_QUEUED: usize = 4096;
 /// How often the log says what a broker's clients sent the hub for nothing: they can send it all day.
 const QUIET_FOR: Duration = Duration::from_secs(60);
 
-/// The sensors and buttons as `limen.toml` says now, each with whether it is a button.
-pub type Entities = Box<dyn Fn() -> Result<Vec<(Entity, bool)>> + Send + Sync>;
+/// What `limen.toml` declares now, read once a tick: the sensors and buttons, each with whether it is a button, the
+/// nodes in `[nodes]`, and `[approval]`.
+pub struct Declared {
+    pub entities: Vec<(Entity, bool)>,
+    pub nodes: Vec<String>,
+    pub approval: Approval,
+}
+
+pub type Entities = Box<dyn Fn() -> Result<Declared> + Send + Sync>;
 
 /// How the hub reaches its broker: read once, when `serve` starts.
 pub struct Broker {
@@ -241,14 +248,11 @@ impl Bridge {
 
     /// Reads `limen.toml` again and decides what is refused; a file that doesn't read leaves things as they were.
     fn refresh(&self) {
-        let (Ok(entities), Ok(nodes), Ok(approval)) = ((self.entities)(), self.client.nodes(), self.client.approval())
-        else {
-            return;
-        };
+        let Ok(declared) = (self.entities)() else { return };
         let mut state = self.state();
-        state.entities = entities;
-        state.nodes = nodes;
-        state.approval = approval;
+        state.entities = declared.entities;
+        state.nodes = declared.nodes;
+        state.approval = declared.approval;
         self.judge(&mut state);
     }
 
@@ -393,12 +397,13 @@ impl Bridge {
             return;
         };
         let pressing = self.topics.press(&button);
-        // A press published retained reaches the hub as any other, and would press again on the next connection.
-        self.publish(&pressing, b"");
         if !state.busy.insert(pressing.clone()) {
             self.say_now_and_then(&mut state, &format!("a press of {} while it runs, ignored", label(&button, true)));
             return;
         }
+        // A press published retained reaches the hub as any other, and would press again on the next connection. Once
+        // per run: a flood of presses fills no queue.
+        self.publish(&pressing, b"");
         drop(state);
         let bridge = self.clone();
         std::thread::spawn(move || {
@@ -444,11 +449,14 @@ impl Bridge {
                 }
             }
             Incoming::Oversized { topic: Some(topic), retained: true } => {
-                // Its own are small: someone else's, under its topics. Emptied, and everything told again on the next
-                // tick, should the topic be one of the hub's.
+                // Its own are small: someone else's, under its topics. Emptied, and, on one of the hub's own topics,
+                // everything told again on the next tick. On any other, once: a broker that lets the hub read it but
+                // not write it would hand it over again on every subscription.
                 let mut state = self.state();
                 self.publish(&topic, b"");
-                state.declared = None;
+                if state.declared.as_ref().is_some_and(|declared| declared.contains_key(&topic)) {
+                    state.declared = None;
+                }
                 self.say_now_and_then(&mut state, &format!("a message of over 64 KiB retained on {topic}, emptied"));
             }
             Incoming::SubAck { codes } => {
@@ -572,8 +580,8 @@ impl Bridge {
 
 /// A connection to [broker] that it accepted, or why there is none.
 fn connected(broker: &Broker) -> std::result::Result<TcpStream, String> {
-    let address = broker.address.to_socket_addrs().ok().and_then(|mut addresses| addresses.next());
-    let address = address.ok_or_else(|| format!("{} is not an address", broker.address))?;
+    // Parsed, never resolved: `to_socket_addrs` would ask libc for a name.
+    let address: SocketAddr = broker.address.parse().map_err(|_| format!("{} is not an address", broker.address))?;
     let mut stream = TcpStream::connect_timeout(&address, CONNECT_TIMEOUT)
         .map_err(|cause| format!("cannot reach the broker at {}: {cause}", broker.address))?;
     let timeouts = [stream.set_read_timeout(Some(CONNECT_TIMEOUT)), stream.set_write_timeout(Some(CONNECT_TIMEOUT))];
@@ -640,6 +648,9 @@ mod tests {
                 }
                 return NodeResponse::success(json!({"catalog": Catalog { scripts, problems: vec![] }}), false);
             }
+            if args["script"] == "disk" && args.get("read_only") != Some(&json!(true)) {
+                return NodeResponse::failure(&error(ErrorCode::Denied, "a sensor's read must ask for read_only"));
+            }
             let stdout = if args["script"] == "disk" { "42\n" } else { "restarted" };
             if args["script"] == "restart" {
                 self.restarts.fetch_add(1, Ordering::SeqCst);
@@ -681,7 +692,9 @@ script = "restart"
             user: None,
             password: None,
         };
-        let entities = Box::new(move || Ok(entities.clone()));
+        let entities = Box::new(move || {
+            Ok(Declared { entities: entities.clone(), nodes: vec!["nas".into()], approval: Approval::default() })
+        });
         let bridge = Arc::new(Bridge::new(client, entities, &mqtt, Box::new(|_| {}), catalog_every));
         bridge.clone().launch(broker);
         bridge
@@ -727,6 +740,8 @@ script = "restart"
         let last =
             |seen: &BTreeMap<String, Vec<String>>, topic: &str| seen.get(topic).and_then(|all| all.last()).cloned();
         let mut pressed = false;
+        // The hub pings and resends on its own, so a read never times out: a broken promise must end the test.
+        let started = Instant::now();
         while !(last(&seen, "limen/nas/restart/result").is_some_and(|result| result.contains("restarted"))
             && ["homeassistant/sensor/limen/nas-disk/config", "limen/old/gone/state"]
                 .iter()
@@ -736,6 +751,7 @@ script = "restart"
                 all.iter().any(String::is_empty) && all.last().is_some_and(|status| status == "online")
             }))
         {
+            assert!(started.elapsed() < Duration::from_secs(30), "not everything arrived: {seen:?}");
             let (first, body) = next_packet(&mut hub);
             match first >> 4 {
                 // Subscribed: the broker hands over what it retains. One topic nobody declares any more, one the hub
@@ -768,9 +784,31 @@ script = "restart"
         assert_eq!(last(&seen, "limen/nas/restart/press").unwrap(), "", "the retained press emptied");
         assert_eq!(nas.restarts.load(Ordering::SeqCst), 1, "a retained press doesn't run, the live one does");
         assert!(seen.contains_key("homeassistant/button/limen/nas-restart/config"));
-        assert!(!seen.keys().any(|topic| topic.contains("sneaky/") && topic.ends_with("config")), "{seen:?}");
+        assert!(
+            !seen.contains_key("homeassistant/sensor/limen/nas-sneaky/config"),
+            "nothing of a sensor its node refuses is published"
+        );
         assert_eq!(last(&seen, "limen/nas/sneaky/status").unwrap(), "offline", "refused: unavailable");
         assert_eq!(bridge.refusals(), ["sensor nas/sneaky: restart is not read_only on nas: a sensor only reads"]);
+    }
+
+    #[test]
+    fn what_a_node_refuses_stays_declared_and_what_is_taken_out_goes() {
+        let mqtt = HubConfig::parse(ENTITIES).unwrap().mqtt.unwrap();
+        let topics = Topics::of(&mqtt);
+        let mut state = State {
+            entities: mqtt.entities().map(|(entity, button)| (entity.clone(), button)).collect(),
+            nodes: vec!["nas".into()],
+            ..State::default()
+        };
+        state.refused.insert("sensor nas/sneaky".into(), "not read_only".into());
+        let declared = state.declaration(&topics);
+        // Declared without a payload: the hub neither publishes it nor empties what the broker keeps of it, so Home
+        // Assistant keeps the entity, unavailable, for when the node offers it again.
+        assert_eq!(declared.get("homeassistant/sensor/limen/nas-sneaky/config").map(String::as_str), Some(""));
+        assert!(declared.contains_key("limen/nas/sneaky/status"));
+        state.nodes.clear();
+        assert!(!state.declaration(&topics).keys().any(|topic| topic.contains("nas")), "forgotten: emptied");
     }
 
     #[test]

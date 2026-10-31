@@ -310,6 +310,9 @@ pub fn refusal(
 /// A sensor's state out of its script's run: its trimmed stdout, if it ran, exited 0 and was not cut; else why not.
 pub fn sensor_state(response: &NodeResponse) -> Result<String, String> {
     if let Some(failure) = &response.error {
+        if failure.message == "unknown argument 'read_only'" {
+            return Err("the node's limen predates sensors, which it checks read-only: update limen there".into());
+        }
         return Err(failure.summary());
     }
     let data = response.data.as_ref().ok_or("no answer")?;
@@ -499,6 +502,8 @@ args = { name = "immich" }
         assert!(sensor_state(&ran(0, &"x".repeat(MAX_PAYLOAD + 1))).is_err());
         let down = NodeResponse::failure(&error(ErrorCode::Unreachable, "nas: no route"));
         assert_eq!(sensor_state(&down).unwrap_err(), "unreachable: nas: no route");
+        let old = NodeResponse::failure(&error(ErrorCode::BadRequest, "unknown argument 'read_only'"));
+        assert!(sensor_state(&old).unwrap_err().ends_with("update limen there"));
         assert!(!answered(&down));
         assert!(answered(&NodeResponse::failure(&error(ErrorCode::NotFound, "no script"))));
         assert!(answered(&NodeResponse::failure(&error(ErrorCode::Timeout, "slow did not finish in 1s"))));

@@ -20,7 +20,7 @@ You need Linux (x86-64 or arm64), [rustup](https://rustup.rs), `make`, and Docke
 ```sh
 make check   # lint, build and every test: what CI runs, and what must be green
 make cli     # the static binary: target/<arch>-unknown-linux-musl/debug/limen
-make e2e     # Debian and OpenWrt containers with a real SSH server (SUITE=debian|openwrt|join for one)
+make e2e     # Debian and OpenWrt containers with a real SSH server, and Mosquitto (SUITE=debian|openwrt|join|mqtt for one)
 make help    # the rest
 ```
 

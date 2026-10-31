@@ -110,6 +110,9 @@ impl Mqtt {
         let address = url.trim_start_matches("mqtt://");
         let has_port = address.rsplit_once(':').is_some_and(|(_, port)| !port.ends_with(']'));
         let address = if has_port { address.to_string() } else { format!("{address}:{DEFAULT_PORT}") };
+        if address.parse::<std::net::SocketAddr>().is_err() {
+            return fail("mqtt.url", format!("{address} is not an address and a port"));
+        }
         let prefix = file.prefix.unwrap_or_else(|| "limen".into());
         if !is(PREFIX, &prefix) {
             return fail("mqtt.prefix", format!("must match {PREFIX}"));
@@ -246,6 +249,10 @@ args = { name = "immich_server" }
     fn what_the_file_says_alone_is_checked_as_it_is_read() {
         assert!(HubConfig::parse("[mqtt]\nurl = \"mqtt://broker.lan\"").unwrap_err().0.starts_with("mqtt.url: "));
         assert!(HubConfig::parse("[mqtt]\nurl = \"mqtts://10.0.0.1\"").is_err(), "no TLS in this version");
+        for not_an_address in ["mqtt://999.1.1.1", "mqtt://10.0.0.1:99999"] {
+            let error = HubConfig::parse(&format!("[mqtt]\nurl = \"{not_an_address}\"")).unwrap_err();
+            assert!(error.0.ends_with("is not an address and a port"), "{error}");
+        }
         assert!(refused("prefix = \"a/b\"").starts_with("mqtt.prefix: "));
         assert!(refused("prefix = \"a-b\"").starts_with("mqtt.prefix: "), "a-b + c and a + b-c would meet");
         assert!(refused("password_file = \"p\"").starts_with("mqtt.password_file: "));

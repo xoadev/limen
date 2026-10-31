@@ -2,7 +2,7 @@
 
 use super::dir::{Hub, LiveHub};
 use super::mcp::{self, McpServer};
-use super::mqtt::{Bridge, Broker, Entities};
+use super::mqtt::{Bridge, Broker, Declared, Entities};
 use super::server::{self, Handler, Head, Limits, Response};
 use super::{NodeClient, constant_time_eq};
 use crate::os::sys;
@@ -80,10 +80,15 @@ pub fn http(hub: Arc<Hub>, live: Arc<LiveHub>, listen: &str, token: String) -> R
 /// are: until `serve` restarts, the sensors and buttons stay as they were.
 fn entities(live: Arc<LiveHub>) -> Entities {
     Box::new(move || {
-        let mqtt = live.config()?.mqtt.filter(|mqtt| mqtt.enabled).ok_or_else(|| {
+        let config = live.config()?;
+        let mqtt = config.mqtt.as_ref().filter(|mqtt| mqtt.enabled).ok_or_else(|| {
             error(ErrorCode::Unavailable, "[mqtt] is gone or disabled; it takes effect when serve restarts")
         })?;
-        Ok(mqtt.entities().map(|(entity, button)| (entity.clone(), button)).collect())
+        Ok(Declared {
+            entities: mqtt.entities().map(|(entity, button)| (entity.clone(), button)).collect(),
+            nodes: config.nodes.iter().map(|node| node.name.clone()).collect(),
+            approval: config.approval.clone(),
+        })
     })
 }
 

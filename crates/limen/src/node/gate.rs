@@ -1,7 +1,7 @@
 //! `limen gate`: the forced command (spec §3, §4). Reads one JSON request from stdin, answers it and exits. It always
 //! answers JSON on stdout, even when the configuration is broken.
 
-use super::{Answer, Node, requests as answers, scripts};
+use super::{Answer, Node, requests as answers};
 use crate::os::{fs, proc, sys};
 use limen_core::config::node::NodeConfig;
 use limen_core::params::{self, ArgsExt};
@@ -27,7 +27,7 @@ struct Pending {
     /// The defaults until the configuration is read.
     reporting: Reporting,
     request: Option<NodeRequest>,
-    /// `audit.read_only = "none"` and `hello` or a read-only script's run: written only if it fails.
+    /// `audit.read_only = "none"` and `hello` or a sensor's read: written only if it fails.
     unaudited_if_ok: bool,
 }
 
@@ -117,8 +117,10 @@ pub fn run(config_path: &str) -> i32 {
     match outcome {
         Ok(answer) => {
             let exit = answer.data.get("exit").and_then(Value::as_i64);
-            send(max_response, &NodeResponse::success(answer.data, answer.truncated));
-            if !(pending.unaudited_if_ok && exit.unwrap_or(0) == 0) {
+            let truncated = answer.truncated;
+            let whole = send(max_response, &NodeResponse::success(answer.data, truncated)) && !truncated;
+            // A read cut short, or replaced as too large, is one the hub takes as failed: written.
+            if !(pending.unaudited_if_ok && whole && exit.unwrap_or(0) == 0) {
                 audit(&pending, "ok", exit);
             }
         }
@@ -133,7 +135,7 @@ pub fn run(config_path: &str) -> i32 {
 
 /// Reads the configuration and the request, takes one of the node's places into [slot], and does what it asks. A
 /// script's run is audited when it starts too: it may change the machine, and never end. With `audit.read_only =
-/// "none"`, `hello` and a read-only script's run —what a hub's sensors poll— are audited only if they fail.
+/// "none"`, `hello` and a sensor's read —what a hub's sensors poll— are audited only if they fail.
 fn handle(config_path: &str, slot: &mut Option<std::fs::File>) -> Result<Answer> {
     let node = Node::load(config_path)?;
     update_pending(|pending| pending.reporting = Reporting::of(&node.config));
@@ -142,9 +144,9 @@ fn handle(config_path: &str, slot: &mut Option<std::fs::File>) -> Result<Answer>
     let definition = requests::find(&request.request)
         .ok_or_else(|| bad_request(format!("unknown request '{}'", shortened(&request.request))))?;
     let args = params::validate(&definition.params, &request.args)?;
-    let script_read_only = definition.name == "run"
-        && scripts::find(&node, args.string("script").unwrap_or_default()).is_ok_and(|(_, spec)| spec.read_only);
-    let unaudited_if_ok = polled_quietly(node.config.audit_read_only, definition.name, script_read_only);
+    // A sensor's read says so, and is refused, and written, unless the script's header says read_only (scripts::run).
+    let sensor_read = definition.name == "run" && args.bool("read_only") == Some(true);
+    let unaudited_if_ok = polled_quietly(node.config.audit_read_only, definition.name, sensor_read);
     update_pending(|pending| pending.unaudited_if_ok = unaudited_if_ok);
     *slot = take_slot(node.config.concurrency)?;
     if definition.name == "run" && !unaudited_if_ok {
@@ -156,9 +158,10 @@ fn handle(config_path: &str, slot: &mut Option<std::fs::File>) -> Result<Answer>
 }
 
 /// Whether a [request] that succeeds goes unaudited: with `audit.read_only = "none"` ([audit_all] false), what a hub's
-/// sensors poll. Files read and the log's own reading are always written: they are what an agent learnt.
-fn polled_quietly(audit_all: bool, request: &str, script_read_only: bool) -> bool {
-    !audit_all && (request == "hello" || (request == "run" && script_read_only))
+/// sensors poll, `hello` and a [sensor_read]. What an agent read or ran —files, the log, any script it called— is
+/// always written: it is what the log is for.
+fn polled_quietly(audit_all: bool, request: &str, sensor_read: bool) -> bool {
+    !audit_all && (request == "hello" || (request == "run" && sensor_read))
 }
 
 /// One of `limits.concurrency` places for a request, whatever hub it comes from: a lock on `/run/limen/slot-<n>`,
@@ -202,10 +205,11 @@ fn parse(bytes: std::result::Result<Vec<u8>, String>) -> Result<NodeRequest> {
     Ok(request)
 }
 
-/// Writes the answer on stdout; one over [max_response] becomes an error that says so.
-fn send(max_response: usize, response: &NodeResponse) {
+/// Writes the answer on stdout; one over [max_response] becomes an error that says so. Whether it went whole.
+fn send(max_response: usize, response: &NodeResponse) -> bool {
     let mut text = serde_json::to_string(response).unwrap_or_default();
-    if text.len() > max_response {
+    let whole = text.len() <= max_response;
+    if !whole {
         let too_large = bad_request(format!(
             "the answer is {} bytes, over limits.max_response ({max_response}); narrow the request",
             text.len()
@@ -213,6 +217,7 @@ fn send(max_response: usize, response: &NodeResponse) {
         text = serde_json::to_string(&NodeResponse::failure(&too_large)).unwrap_or_default();
     }
     sys::say(&text);
+    whole
 }
 
 /// A request's name as the client sent it, up to a length.
@@ -270,8 +275,8 @@ mod tests {
     #[test]
     fn only_what_sensors_poll_goes_unaudited_and_only_when_asked() {
         assert!(polled_quietly(false, "hello", false));
-        assert!(polled_quietly(false, "run", true));
-        assert!(!polled_quietly(false, "run", false), "a script that may change something");
+        assert!(polled_quietly(false, "run", true), "a sensor's read");
+        assert!(!polled_quietly(false, "run", false), "an agent's run, read-only script or not");
         for read in ["read_file", "list_dir", "history"] {
             assert!(!polled_quietly(false, read, false), "{read}: what an agent learnt");
         }
