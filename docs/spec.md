@@ -380,9 +380,12 @@ host_key = "ssh-ed25519 AAAA…"
 - `[[mqtt.sensor]]` and `[[mqtt.button]]` name a `node` of `[nodes]`, an `id` matching `^[a-z0-9][a-z0-9_]{0,31}$`
   and unique within its node among both, a `script` and its `args`, fixed and validated against the script's header
   in the node's catalog. A sensor adds `every`, `10s` to `24h` and `60s` unless given, and both take `discovery`, a
-  table of strings, numbers and booleans merged into the discovery payload (§9.1), which can't set the keys limen
-  writes there. A sensor or button that breaks one of these rules, or of §9.1's, is refused, and named in `nodes` and
-  in the hub's log; the others go on. from its environment, where a blank value counts as unset:
+  table of strings, numbers and booleans merged into the discovery payload (§9.1): `name`, `icon`, `entity_picture`,
+  `device_class`, `state_class`, `unit_of_measurement`, `suggested_display_precision`, `value_template`,
+  `entity_category`, `enabled_by_default`, `expire_after` and `force_update`, so it can't change a topic limen
+  writes. These are checked as the file is read, like any other key; whether a node offers the script and its
+  arguments, as the hub runs (§9.1). The node may be missing from `[nodes]`: `limen forget` doesn't break the file.
+- What the hub reads from its environment, where a blank value counts as unset:
 
   | Variable | |
   |---|---|
@@ -395,8 +398,9 @@ host_key = "ssh-ed25519 AAAA…"
 
 ## 8. Audit
 
-- Every request `gate` receives is appended to `/var/log/limen/audit.jsonl` (root, `0600`): time, request,
-  script and arguments, client address (`SSH_CONNECTION`), result code, the script's exit code and duration.
+- Every request `gate` receives, unless `audit.read_only` leaves it out (below), is appended to
+  `/var/log/limen/audit.jsonl` (root, `0600`): time, request, script and arguments, client address
+  (`SSH_CONNECTION`), result code, the script's exit code and duration.
   That includes malformed ones, those of an unknown version, and those that come while the configuration is
   broken (to the default path then). Arguments over 4 KiB are replaced by their size. Past `audit.max_bytes`
   it becomes `audit.jsonl.1`: no logrotate, which OpenWrt doesn't have.
@@ -410,8 +414,8 @@ host_key = "ssh-ed25519 AAAA…"
 - `history` shows it redacted, like everything that leaves the node. Arguments are recorded: a script
   doesn't take secrets as arguments.
 - The hub logs each tool call to stderr (node, tool, result, duration): over stdio, stdout is the
-  protocol; in the image, stderr is the container's log. A button's press is logged as a tool call; a sensor only
-  when a read fails, and a node or the broker connection when it goes down or comes back.
+  protocol; in the image, stderr is the container's log. A button's press is logged as a tool call; a sensor when
+  its reads start failing, and a node or the broker connection when it goes down or comes back.
 
 ## 9. Transports
 
@@ -447,22 +451,33 @@ button is declared in the hub's `limen.toml`. Only `serve`: a hub that lives as 
 
 | Topic | Retained | What |
 |---|---|---|
-| `<prefix>/status` | yes | `online`, or `offline`: the connection's last will, and what a hub that stops publishes before it disconnects |
+| `<prefix>/status` | yes | `online`, or `offline`: the connection's last will, which the broker publishes when the hub's connection drops |
 | `<prefix>/<node>/status` | yes | `online` while the node answers, `offline` when it is unreachable, refuses the host key or times out |
 | `<prefix>/<node>/<id>/state` | yes | A sensor's state |
-| `<prefix>/<node>/<id>/press` | — | A button's command topic: any message presses it |
-| `<prefix>/<node>/<id>/result` | no | A button's run: the node's answer, as the hub got it (§4) |
+| `<prefix>/<node>/<id>/press` | — | A button's command topic: any message but an empty one presses it |
+| `<prefix>/<node>/<id>/result` | yes | A button's last run: the node's answer, as the hub got it (§4) |
 | `<discovery>/sensor/<prefix>/<node>-<id>/config`, `<discovery>/button/…` | yes | Home Assistant's discovery payload |
 
 - **Sensors** run only scripts whose header says `read_only = true` on their node, and never one `[approval]` would
   ask about. Every `every` the hub runs the script and, when it exits 0 and its stdout —redacted and bounded by the
   node— trimmed differs from the last state published, publishes it. A run that fails, exits otherwise or prints
   more than 16 KiB publishes nothing and is logged. limen parses nothing it runs: a field out of JSON is Home
-  Assistant's `value_template`, in `discovery`; rounding, so a number doesn't change on every read, is the script's ([scripts.md](scripts.md)).
+  Assistant's `value_template`, in `discovery`; rounding, so a number doesn't change on every read, is the script's
+  ([scripts.md](scripts.md#for-home-assistant)).
 - **Buttons** run their script, with their fixed arguments, once per message on their command topic: a message
-  presses the button, it chooses nothing. The hub subscribes only to its own prefix. A retained message is ignored,
-  or it would press the button on every connection, and so is a press while the button's last run hasn't finished.
-  Never a script `[approval]` would ask about: over MQTT there is nobody to ask.
+  presses the button, it chooses nothing. The hub subscribes only to its own prefix. An empty message presses
+  nothing, and neither does a press while the button's last run hasn't finished. After each press the hub empties
+  the command topic, and a message the broker hands over as retained is ignored: a press published retained runs
+  once, not again on every connection. Never a script `[approval]` would ask about: over MQTT there is nobody to
+  ask. Its result is retained, and over 16 KiB loses its `stdout` and `stderr` and says `truncated`; Home Assistant
+  shows it as a sensor of the button's own, under the same `<node>-<id>`, whose state is the exit code, or the
+  error's code, and whose attributes are the rest.
+- **Refused.** A sensor or button whose node isn't in `[nodes]`, doesn't offer its script, or offers one these rules
+  or its arguments' header refuse, is refused: named in `nodes` and logged, and nothing of it is published, while the
+  others go on. That is decided on each node's catalog, asked with `hello` when the node's first entity starts and
+  every minute after. Until its node first answers, an entity is neither refused nor published, and what the broker
+  retains of it stays. What the file can say alone —an `id`, an `every`, a key `discovery` may not set— is checked as
+  `limen.toml` is read (§7.2).
 - **Sharing a node with the agent.** All the sensors of a node take one of its `ssh.per_node_concurrency` slots, one
   read at a time, so polling never makes an agent's call wait for more than one read; a sensor whose last read is
   still waiting or running skips its turn. A button's run takes a slot as a tool call does.
@@ -471,9 +486,10 @@ button is declared in the hub's `limen.toml`. Only `serve`: a hub that lives as 
   are `online` (`availability_mode: all`). `<node>-<id>` is unambiguous because an `id` has no `-`. With
   `discovery = ""` nothing goes under a discovery prefix; the other topics stay.
 - **Every connection resends everything**: statuses, discovery and the last states, retained, QoS 0. The hub
-  subscribes to `<prefix>/#` and `<discovery>/+/<prefix>/+/config`, so it receives the retained messages it left
-  before, and empties every one its configuration no longer declares: a sensor removed from `limen.toml`, while the
-  hub runs or while it was stopped, leaves Home Assistant.
+  subscribes to `<prefix>/#` and `<discovery>/+/<prefix>/+/config`, so the broker hands it the retained messages it
+  left before, and it empties every one it no longer declares. It subscribes again whenever what it declares changes,
+  and the broker hands them over again: a sensor removed from `limen.toml`, or refused, while the hub runs or while it
+  was stopped, leaves Home Assistant.
 - **Its own MQTT 3.1.1 client**, as limen has for MCP and HTTP: CONNECT with a will and a 60-second keep-alive,
   PUBLISH and SUBSCRIBE at QoS 0, PINGREQ, over `std::net`, with reconnection and a backoff up to a minute. The client
   id is `limen-<prefix>`. A packet from the broker over 64 KiB closes the connection. No TLS: the broker is on the

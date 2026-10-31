@@ -122,6 +122,28 @@ passes; one made with a looser umask, or by another user, doesn't.
 - **A script that can update itself** —a `sync` that pulls the repository it lives in— puts its body in a
   function called on the last line, `main "$@"`, so the shell has read it whole before the file changes.
 
+## For Home Assistant
+
+A hub with `[mqtt]` publishes a script's output as a sensor ([spec §9.1](spec.md#91-mqtt)): its whole stdout,
+trimmed, is the state, published when it changes. The packs' scripts print text for an agent; a sensor's script
+prints a value.
+
+- **`read_only = true`**, or the hub refuses it as a sensor. A button's script needs no such word.
+- **One value**: `87`, `on`, `running`; or one line of JSON, from which the sensor's `discovery.value_template`
+  takes a field. Home Assistant keeps 255 characters of a state.
+- **Rounded where it should be**: `87`, not `87.31`. A value that changes on every read is published on every read.
+- **Exit 0 when the value is good.** Any other exit publishes nothing and keeps the last state.
+
+```sh
+#!/bin/sh
+#: description = "Percent used of a file system"
+#: read_only = true
+#: [args.path]
+#: type = "string"
+#: pattern = '^/[A-Za-z0-9/._-]{0,127}$'
+df -P -- "$LIMEN_ARG_PATH" | awk 'NR == 2 { print $5 + 0 }'
+```
+
 ## Released packs
 
 Each pack in limen's `packs/` is released on its own as `pack-<pack>-vX.Y.Z`: a tarball of its folder and

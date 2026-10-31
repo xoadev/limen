@@ -1,10 +1,10 @@
 //! `limen gate`: the forced command (spec §3, §4). Reads one JSON request from stdin, answers it and exits. It always
 //! answers JSON on stdout, even when the configuration is broken.
 
-use super::{Answer, Node, requests as answers};
+use super::{Answer, Node, requests as answers, scripts};
 use crate::os::{fs, proc, sys};
 use limen_core::config::node::NodeConfig;
-use limen_core::params;
+use limen_core::params::{self, ArgsExt};
 use limen_core::protocol::{ErrorCode, NodeRequest, NodeResponse, PROTOCOL_VERSIONS, Result, bad_request, error};
 use limen_core::requests;
 use limen_core::time::iso;
@@ -27,6 +27,8 @@ struct Pending {
     /// The defaults until the configuration is read.
     reporting: Reporting,
     request: Option<NodeRequest>,
+    /// `audit.read_only = "none"` and a request that changes nothing: written only if it fails.
+    unaudited_if_ok: bool,
 }
 
 /// Where a request's audit record goes and how large its answer may be.
@@ -99,7 +101,7 @@ pub fn run(config_path: &str) -> i32 {
     sys::umask_022();
     let started = Instant::now();
     let reporting = Reporting::of(&NodeConfig::default());
-    *lock_pending() = Some(Pending { started, reporting, request: None });
+    *lock_pending() = Some(Pending { started, reporting, request: None, unaudited_if_ok: false });
     *lock_deadline() = Some(started + STDIN_TIMEOUT + REQUEST_TIME);
     watchdog();
     // Held until the answer is written.
@@ -116,7 +118,9 @@ pub fn run(config_path: &str) -> i32 {
         Ok(answer) => {
             let exit = answer.data.get("exit").and_then(Value::as_i64);
             send(max_response, &NodeResponse::success(answer.data, answer.truncated));
-            audit(&pending, "ok", exit);
+            if !(pending.unaudited_if_ok && exit.unwrap_or(0) == 0) {
+                audit(&pending, "ok", exit);
+            }
         }
         Err(failure) => {
             send(max_response, &NodeResponse::failure(&failure));
@@ -128,7 +132,8 @@ pub fn run(config_path: &str) -> i32 {
 }
 
 /// Reads the configuration and the request, takes one of the node's places into [slot], and does what it asks. A
-/// script's run is audited when it starts too: it may change the machine, and never end.
+/// script's run is audited when it starts too: it may change the machine, and never end. With `audit.read_only =
+/// "none"`, a request that changes nothing —a script's only by its header's word— is audited only if it fails.
 fn handle(config_path: &str, slot: &mut Option<std::fs::File>) -> Result<Answer> {
     let node = Node::load(config_path)?;
     update_pending(|pending| pending.reporting = Reporting::of(&node.config));
@@ -137,8 +142,12 @@ fn handle(config_path: &str, slot: &mut Option<std::fs::File>) -> Result<Answer>
     let definition = requests::find(&request.request)
         .ok_or_else(|| bad_request(format!("unknown request '{}'", shortened(&request.request))))?;
     let args = params::validate(&definition.params, &request.args)?;
+    let changes_nothing = definition.name != "run"
+        || scripts::find(&node, args.string("script").unwrap_or_default()).is_ok_and(|(_, spec)| spec.read_only);
+    let unaudited_if_ok = !node.config.audit_read_only && changes_nothing;
+    update_pending(|pending| pending.unaudited_if_ok = unaudited_if_ok);
     *slot = take_slot(node.config.concurrency)?;
-    if definition.name == "run" {
+    if definition.name == "run" && !unaudited_if_ok {
         if let Some(pending) = lock_pending().as_ref() {
             audit(pending, "started", None);
         }

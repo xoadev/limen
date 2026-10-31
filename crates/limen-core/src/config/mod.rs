@@ -2,6 +2,7 @@
 //! `deny_unknown_fields`, so a typo fails instead of being ignored.
 
 pub mod hub;
+pub mod mqtt;
 pub mod node;
 
 use serde::de::DeserializeOwned;

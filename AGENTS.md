@@ -288,7 +288,7 @@ calls a script in `tools/`.
 | `make build` / `make test` | Every crate, tests included, for this machine |
 | `make cli` | Only the static binary. `VARIANT=release` for the optimised one; `ARCH="x86_64 aarch64"` for both architectures |
 | `make pack` | One pack as it is released, in `dist/`: `PACK=<pack>`, `VERSION=X.Y.Z` (else `dev`). Reproducible from the commit |
-| `make e2e` | Containers with a real SSH server —Debian with OpenSSH, OpenWrt's image with dropbear—, `limen install` inside, packs of scripts, the hub against them with its key. `SUITE=debian`, `openwrt` or `join` for one. Needs Docker. Not in `make check` |
+| `make e2e` | Containers with a real SSH server —Debian with OpenSSH, OpenWrt's image with dropbear—, `limen install` inside, packs of scripts, the hub against them with its key. `SUITE=debian`, `openwrt`, `join` or `mqtt` (with Mosquitto) for one. Needs Docker. Not in `make check` |
 | `make docker` | The hub image, `limen:local` (or `IMAGE=…`, `TAGS=…`, `LABELS=…`), from the binaries of `make cli` (or `BINARY_AMD64=…`, `BINARY_ARM64=…`). `PLATFORMS=linux/amd64,linux/arm64 PUSH=1` pushes both under one tag (after `make cli ARCH="x86_64 aarch64"`); `OCI=<file>` writes both to an OCI archive instead, as the release does; without `PUSH` or `OCI`, one platform, because Docker loads one per tag. The release goes through this same target |
 | `make pack-drafts` | `packs-draft.yml` run on `main`: every pack's draft rewritten, as a push to `packs/` would. Needs `gh` |
 | `make pack-release` | `packs.yml` run on `main` for `PACK=<pack>`, followed to the end: its draft built, the tarball left as the run's artifact. Published and attested only with `PUBLISH=1` |

@@ -58,8 +58,10 @@ limen turns it around: **the machine decides.**
 - **Every machine alike.** One static binary per architecture runs on Debian, Ubuntu and OpenWrt, x86-64 and arm64.
 - **Nothing extra to run on the machines.** No daemon, no open port: `sshd` is already there, and `limen` starts
   per request and exits.
-- **A record of everything asked.** Every request and every script run, with its arguments, client and exit code,
-  in each machine's audit log, readable with the `history` tool.
+- **Home Assistant, if you want it.** Scripts' output as sensors and scripts as buttons, through MQTT, each one
+  declared on the hub.
+- **A record of everything asked.** Every request and every script run —or only what may change something, if you
+  say so—, with its arguments, client and exit code, in each machine's audit log, readable with the `history` tool.
 
 ## How it works
 
@@ -287,6 +289,46 @@ The question appears in the MCP client's own window (MCP elicitation), with the 
 arguments: the model can't see it or answer it. Only a yes runs the script, once. A no, no answer, or a client that
 can't ask means nothing runs. Over HTTP (`limen serve`) the hub can't ask yet, so those scripts are refused there.
 
+### Home Assistant
+
+`limen serve` can publish scripts' output to an MQTT broker as Home Assistant sensors, and run scripts as buttons
+pressed there, through Home Assistant's MQTT discovery: nothing to install in Home Assistant or on the machines.
+Each one is declared in the hub's `limen.toml`; a machine offering a script never makes it reachable over MQTT.
+
+```toml
+[mqtt]
+enabled = true
+url = "mqtt://192.168.1.229:1883"   # an address, not a name; no TLS: a LAN or a VPN
+user = "limen"
+password_file = "mqtt-password"     # in the hub's directory; or LIMEN_MQTT_PASSWORD
+
+[[mqtt.sensor]]
+node = "nas"
+id = "disk_used"
+script = "disk_used_percent"
+args = { path = "/srv" }
+every = "60s"
+discovery = { unit_of_measurement = "%" }
+
+[[mqtt.button]]
+node = "nas"
+id = "restart_immich"
+script = "restart_container"
+args = { name = "immich_server" }   # fixed: a press chooses nothing
+```
+
+- A **sensor** runs its script every `every` (10 s at least) and publishes its output when it changes. Only a
+  script whose header says `read_only = true`; how to write one is in
+  [`docs/scripts.md`](docs/scripts.md#for-home-assistant).
+- A **button** runs its script once per press, never twice at once. Its result —exit code and output— shows as a
+  sensor next to it. A script `[approval]` asks about can't be a button: over MQTT there is nobody to ask.
+- Each machine is a device in Home Assistant, unavailable while it doesn't answer or the hub is down. A sensor or
+  button the machine doesn't offer, or refuses, shows in `nodes`, and in the hub's log.
+- Give the hub a broker user whose access covers only its topics (`limen/#` and `homeassistant/+/limen/#`), and
+  declare as buttons only what anyone on the broker may press.
+- Polling every minute writes the machine's audit log every minute. `[audit] read_only = "none"` in the machine's
+  `limen.toml` writes only what may change something, or fails.
+
 ## Security, in short
 
 | If this happens | Then |
@@ -296,6 +338,7 @@ can't ask means nothing runs. Over HTTP (`limen serve`) the hub can't ask yet, s
 | Arguments are crafted to escape | They are typed, validated on the machine, and reach the script as variables, never a shell |
 | A symlink points from an allowed path to a secret | Paths are walked as the kernel does before they are checked |
 | Someone can change a pack, or push where a script fetches packs from | **They are root on the machine.** Keep the agent out of it, and protect the branch |
+| Someone can publish to the hub's MQTT broker | Presses the [buttons you declared](#home-assistant), with their fixed arguments, and forges what Home Assistant shows. Nothing else reaches the machines |
 | A script is malicious or prints secrets | Not covered: scripts belong to root, and limen trusts them. Masking catches the usual shapes |
 
 The HTTP hub bounds connections and request sizes and deadlines. Excess connections are rejected without waiting

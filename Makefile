@@ -40,7 +40,7 @@ local-install: cli ## Install the binary in ~/.local/bin (or PREFIX)
 docker: cli ## Build the hub image (limen:local, or IMAGE=…) from the binary of `make cli`
 	@VARIANT=$(VARIANT) tools/docker.sh
 
-e2e: cli ## End to end in containers, Debian and OpenWrt (SUITE=debian|openwrt|join for one). Not part of `make check`
+e2e: cli ## End to end in containers, Debian and OpenWrt (SUITE=debian|openwrt|join|mqtt for one). Not part of `make check`
 	@VARIANT=$(VARIANT) tools/e2e.sh
 
 pack: ## One pack as it is released, in dist/: PACK=<pack> (VERSION=X.Y.Z, else dev)

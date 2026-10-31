@@ -27,7 +27,7 @@ pub const INVALID_PARAMS: i64 = -32602;
 pub const INTERNAL_ERROR: i64 = -32603;
 
 /// ssh and the node's own work on top of a script's timeout.
-const SCRIPT_MARGIN: Duration = Duration::from_secs(45);
+pub const SCRIPT_MARGIN: Duration = Duration::from_secs(45);
 /// How often the nodes are asked for their catalogs at most, whatever clients ask: one session can't make the hub
 /// flood every node.
 const REFRESH_EVERY: Duration = Duration::from_secs(10);
@@ -94,6 +94,8 @@ pub struct McpServer {
     unanswerable: AtomicBool,
     asked: AtomicU64,
     refresh_every: Duration,
+    /// What else `nodes` reports: the MQTT sensors and buttons refused (spec §9.1).
+    problems: Option<Box<dyn Fn() -> Vec<String> + Send + Sync>>,
 }
 
 /// The nodes' `hello`s, when they were asked, and whether a new session wants them asked again.
@@ -165,7 +167,14 @@ impl McpServer {
             unanswerable: AtomicBool::new(false),
             asked: AtomicU64::new(0),
             refresh_every: REFRESH_EVERY,
+            problems: None,
         }
+    }
+
+    /// `nodes` reports what [problems] says, under `mqtt_problems`.
+    pub fn with_problems(mut self, problems: Box<dyn Fn() -> Vec<String> + Send + Sync>) -> Self {
+        self.problems = Some(problems);
+        self
     }
 
     /// How often the nodes may be asked for their catalogs: tests ask on every call.
@@ -442,6 +451,10 @@ impl McpServer {
         if !unknown.is_empty() {
             body.insert("approval_problems".into(), json!(unknown));
         }
+        let mqtt_problems = self.problems.as_ref().map(|problems| problems()).unwrap_or_default();
+        if !mqtt_problems.is_empty() {
+            body.insert("mqtt_problems".into(), json!(mqtt_problems));
+        }
         Ok(tool_text(&pretty(&body)))
     }
 }
@@ -487,13 +500,13 @@ fn listed(specs: &[ScriptSpec]) -> Vec<String> {
 }
 
 fn catalogs(hellos: &Hellos) -> BTreeMap<String, Catalog> {
-    hellos
-        .iter()
-        .filter_map(|(node, hello)| {
-            let catalog: Catalog = serde_json::from_value(hello.data.as_ref()?.get("catalog")?.clone()).ok()?;
-            Some((node.clone(), sane(catalog)))
-        })
-        .collect()
+    hellos.iter().filter_map(|(node, hello)| Some((node.clone(), catalog_of(hello)?))).collect()
+}
+
+/// The catalog in a node's answer to `hello`, as far as the hub takes it.
+pub fn catalog_of(hello: &NodeResponse) -> Option<Catalog> {
+    let catalog: Catalog = serde_json::from_value(hello.data.as_ref()?.get("catalog")?.clone()).ok()?;
+    Some(sane(catalog))
 }
 
 /// A catalog as a node sent it, which the hub doesn't take on trust: a spec that is not what limen itself would write

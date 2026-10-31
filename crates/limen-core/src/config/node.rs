@@ -26,6 +26,8 @@ pub struct NodeConfig {
     pub concurrency: usize,
     pub audit: String,
     pub audit_max_bytes: u64,
+    /// `audit.read_only = "all"`: whether requests that change nothing and succeed are written too.
+    pub audit_read_only: bool,
 }
 
 impl Default for NodeConfig {
@@ -43,6 +45,7 @@ impl Default for NodeConfig {
             concurrency: 8,
             audit: "/var/log/limen/audit.jsonl".into(),
             audit_max_bytes: 5 * 1024 * 1024,
+            audit_read_only: true,
         }
     }
 }
@@ -93,6 +96,7 @@ struct Limits {
 struct Audit {
     path: Option<String>,
     max_bytes: Option<i64>,
+    read_only: Option<String>,
 }
 
 impl NodeConfig {
@@ -109,6 +113,11 @@ impl NodeConfig {
         let audit_max_bytes = match file.audit.max_bytes {
             Some(bytes) if bytes < 1024 => return fail("audit.max_bytes", "at least 1024"),
             bytes => bytes.map_or(defaults.audit_max_bytes, |bytes| bytes as u64),
+        };
+        let audit_read_only = match file.audit.read_only.as_deref() {
+            None | Some("all") => true,
+            Some("none") => false,
+            Some(_) => return fail("audit.read_only", "\"all\" or \"none\""),
         };
         let packs = file
             .scripts
@@ -129,6 +138,7 @@ impl NodeConfig {
             redact_patterns: file.redact.patterns,
             audit: absolute("audit.path", file.audit.path)?.unwrap_or(defaults.audit),
             audit_max_bytes,
+            audit_read_only,
         })
     }
 }
@@ -170,6 +180,8 @@ mod tests {
         assert_eq!(config.max_lines, 10);
         assert_eq!(config.packs, ["/opt/state/packs/docker"]);
         assert_eq!(config.redact_names, ["DB_PASSWORD"]);
+        assert!(config.audit_read_only, "every request is audited unless the operator says otherwise");
+        assert!(!NodeConfig::parse("[audit]\nread_only = \"none\"").unwrap().audit_read_only);
     }
 
     #[test]
@@ -183,6 +195,7 @@ mod tests {
             ("[redact]\npatterns = [\"(\"]", "redact.patterns: bad regex"),
             ("[redact]\nnames = [\"A B\"]", "redact.names: 'A B' is not a name"),
             ("[limits]\nmax_lines = 0", "limits.max_lines: must be positive"),
+            ("[audit]\nread_only = \"some\"", "audit.read_only: \"all\" or \"none\""),
         ] {
             let error = NodeConfig::parse(text).unwrap_err();
             assert!(error.0.starts_with(expected), "{error} should start with {expected}");

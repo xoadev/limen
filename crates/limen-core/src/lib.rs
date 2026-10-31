@@ -8,6 +8,7 @@ pub mod durations;
 pub mod etc;
 pub mod glob;
 pub mod join;
+pub mod mqtt;
 pub mod params;
 pub mod path_policy;
 pub mod protocol;
