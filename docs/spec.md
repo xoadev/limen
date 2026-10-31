@@ -143,15 +143,15 @@ Every tool but `nodes` takes a `node` argument.
   header says `read_only = true` on every node that offers it: an MCP client may run those without asking. Every
   other script is annotated `readOnlyHint: false` and `destructiveHint: true`. `read_only` is the operator's word,
   as a description is: limen doesn't check what a script does.
-- **Approval.** `[approval]` in the hub's `limen.toml` (§7.2) names the scripts a person approves before each
-  run. The hub validates the call, then asks the person in the MCP client's own window, through MCP elicitation
-  (`elicitation/create`): the node, the script and its arguments as they would run, and a yes or a no. Only a yes
-  runs it, once, as asked. A no, a dismissed question, no answer within `approval.timeout`, a client that doesn't
-  declare elicitation, or a transport that can't ask (HTTP, until it has SSE) answers `not approved`, and nothing
-  reaches the node. The question goes to the client's interface, not to the model, which can neither see nor
-  answer it. The hub logs each question and its answer. The description of a script's tool says when a person
-  approves each run, so the model can say so before calling it. `nodes` names every script `[approval]` lists that
-  no node offers: a misspelt name would otherwise let the script it meant run without asking.
+- **Approval.** `[approval]` in the hub's `limen.toml` (§7.2) names the scripts a person approves before each run. The
+  hub validates the call, then asks the person in the MCP client's own window, through MCP elicitation
+  (`elicitation/create`): the node, the script and its arguments as they would run, and a yes or a no. Only a yes runs
+  it, once, as asked. A no, a dismissed question, no answer within `approval.timeout`, a client that doesn't declare
+  elicitation, or a transport that can't ask (HTTP: its event stream carries notifications only) answers `not approved`,
+  and nothing reaches the node. The question goes to the client's interface, not to the model, which can neither see nor
+  answer it. The hub logs each question and its answer. The description of a script's tool says when a person approves
+  each run, so the model can say so before calling it. `nodes` names every script `[approval]` lists that no node
+  offers: a misspelt name would otherwise let the script it meant run without asking.
 - `grep` is a fixed string, case-insensitive, matched against the redacted text —never the raw one, or a
   guess at a secret would be told apart by whether a line comes back— and filters before `tail` applies:
   the answer is the last N matching lines. A script never sees `grep` or `tail`, and can't declare
@@ -431,9 +431,12 @@ host_key = "ssh-ed25519 AAAA…"
 - **stdio** — `limen mcp`: newline-delimited JSON-RPC 2.0, one client. For a hub that is the
   operator's own machine. Each `tools/call` runs in a thread of its own, so a call waiting for a person's approval
   holds up no other; the client's answers to the hub's questions come back on stdin, matched by their id.
-- **HTTP** — `limen serve`: MCP Streamable HTTP on `POST /mcp`, JSON responses, no SSE (every call
-  is a request and a response). The hub can't ask the client anything there, so a script that needs approval
-  (§5) is not run.
+- **HTTP** — `limen serve`: MCP Streamable HTTP. `POST /mcp` answers each call with JSON; `GET /mcp` opens a stream
+  of server-sent events that carries the hub's notifications and nothing else. No sessions: a notification goes to
+  every stream open. The hub can't ask the client anything there, so a script that needs approval (§5) is not run.
+  - At most 8 streams at once, each holding one of the 64 connections for as long as it lasts; one more gets
+    `503`. A stream with nothing to say sends a comment every 30 seconds, so the stream of a client that is gone
+    ends at the first one that can't be written. The token and `Origin` are checked as for `POST`.
   - Requires a bearer token, compared in constant time. `serve` creates one on its first start, or takes
     `LIMEN_TOKEN`, which must have 16 characters or more.
   - Its own small HTTP/1.1 server, one request per connection: at most 64 connections, 16 KiB of head
@@ -445,9 +448,11 @@ host_key = "ssh-ed25519 AAAA…"
   - Listens on `127.0.0.1:7341` unless told otherwise (§7.2). The image listens on every interface;
     whoever publishes the port decides who gets in.
 - `GET /join/<code>` and `POST /join/<code>` (§10.1) need no token: the one-time code is the authorisation.
-- Catalogs are fetched when the set of nodes changes, and when a session starts (`initialize`) or `nodes`
-  is called, at most once every ten seconds. A change is announced with `notifications/tools/list_changed` over
-  stdio; over HTTP without SSE it shows up in the next session.
+- Catalogs are fetched when the set of nodes changes, when a session starts (`initialize`) or `nodes` is called, at
+  most once every ten seconds, and every minute while a client listens: for as long as `limen mcp` runs, and while
+  an event stream is open on `serve`. A change is announced with `notifications/tools/list_changed` over stdio and
+  on every event stream: a sync that installs packs reaches a running session within a minute. A client over HTTP
+  without a stream sees it in its next session.
 
 ### 9.1 MQTT
 

@@ -289,6 +289,14 @@ impl McpServer {
         self.ask()
     }
 
+    /// Asks the nodes again, as `nodes` does, for a client that keeps listening: a catalog that changed under the
+    /// session —a sync that installed packs— is announced without anyone calling a tool.
+    pub fn recheck(&self) {
+        if let Err(Fault::Internal(why) | Fault::Params(why) | Fault::UnknownMethod(why)) = self.refresh() {
+            (self.log)(&format!("could not ask the nodes for their scripts: {why}"));
+        }
+    }
+
     /// Asks every node now, unless it was asked less than REFRESH_EVERY ago: for `nodes`.
     fn refresh(&self) -> Result<Hellos, Fault> {
         let _one_refresh = self.refreshing.lock().expect("nothing panics while the nodes are asked");
@@ -886,6 +894,18 @@ mod tests {
         call_tool(&server, "nodes", &json!({}));
         assert_eq!(sent.lock().unwrap().len(), 1);
         assert!(sent.lock().unwrap()[0].contains("notifications/tools/list_changed"));
+    }
+
+    #[test]
+    fn a_catalog_that_changes_under_a_listening_client_is_announced() {
+        let client = nas_and_router();
+        let (server, sent) = announcing_server(&client);
+        tool_names(&server);
+        server.recheck();
+        assert!(sent.lock().unwrap().is_empty());
+        client.catalogs.lock().unwrap().get_mut("nas").unwrap().scripts.push(script("certs", vec![]));
+        server.recheck();
+        assert_eq!(sent.lock().unwrap().len(), 1);
     }
 
     #[test]
