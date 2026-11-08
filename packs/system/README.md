@@ -10,7 +10,7 @@ Needs limen 0.1.3 or later: its headers use `read_only`, which older versions re
 | `status` | Uptime, load, memory, disk use of each real filesystem, whether a reboot is pending | no |
 | `processes` | The processes using the most CPU or memory, by name: never their command lines | no |
 | `ports` | Listening TCP and UDP sockets and their processes | no |
-| `memory` | `/proc/meminfo` in MiB, swap use, memory pressure (PSI), and the kills for lack of memory since boot | no |
+| `memory` | `/proc/meminfo` in MiB, swap and zram, memory pressure (PSI), the kills for lack of memory since boot, the processes with the most in swap and the unit or container each runs in | no |
 | `dns_lookup` | Resolves a name, with the machine's resolver or a DNS server you give | no |
 | `network` | The default route, each interface with its state and addresses, the routes, the DNS servers in use | no |
 | `reach` | Whether a host answers: a TCP connection to a port, or ping without one | no |
@@ -33,6 +33,7 @@ which can only list addresses. With procps, `ps` sorts the processes; with busyb
 - `disks` needs `smartctl` (smartmontools) for health; without it, it lists the disks only. It never prints serial
   numbers.
 - `kernel_log` reads what the kernel keeps in memory, so only since boot; `journal` (systemd) keeps earlier boots.
+- `memory` names a container only where Docker answers; elsewhere, by its cgroup.
 - `temperature` reads `/sys/class/thermal` and `/sys/class/hwmon`; a machine with neither, a VM most often, has none,
   and the script fails instead of printing a 0.
 - `gpu` reads a SoC's GPU, a Jetson's, through the kernel (its load and the `gpu-thermal` zone), NVIDIA through

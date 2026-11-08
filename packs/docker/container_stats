@@ -1,10 +1,28 @@
 #!/bin/sh
-#: description = "What each running container uses right now: CPU, memory against its limit, and processes, the hungriest for memory first"
+#: description = "What each running container uses right now: CPU, memory against its limit, what it has in swap, and processes, the hungriest for memory first"
 #: read_only = true
 #: timeout = "30s"
 set -eu
 
 stats=$(docker stats --no-stream --format '{{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.MemPerc}}\t{{.PIDs}}')
 [ -n "$stats" ] || { echo "no running containers"; exit 0; }
-printf 'NAME\tCPU\tMEMORY\tMEM%%\tPIDS\n'
-printf '%s\n' "$stats" | sort -t "$(printf '\t')" -k4 -rn
+ids=$(docker ps --no-trunc --format '{{.Names}}\t{{.ID}}')
+tab=$(printf '\t')
+
+# swap_of <name>: what the container has in swap, from its cgroup v2 (systemd's cgroup driver, then cgroupfs'); a dash
+# when the kernel doesn't say. docker stats leaves swap out of its memory.
+swap_of() {
+  id=$(printf '%s\n' "$ids" | awk -F '\t' -v name="$1" '$1 == name { print $2; exit }')
+  for dir in "/sys/fs/cgroup/system.slice/docker-$id.scope" "/sys/fs/cgroup/docker/$id"; do
+    if [ -n "$id" ] && [ -r "$dir/memory.swap.current" ]; then
+      awk '{ printf "%.0fMiB\n", $1 / 1048576 }' "$dir/memory.swap.current"
+      return
+    fi
+  done
+  echo -
+}
+
+printf 'NAME\tCPU\tMEMORY\tSWAP\tMEM%%\tPIDS\n'
+printf '%s\n' "$stats" | while IFS="$tab" read -r name cpu memory percent pids; do
+  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$name" "$cpu" "$memory" "$(swap_of "$name")" "$percent" "$pids"
+done | sort -t "$tab" -k5 -rn
