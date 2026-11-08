@@ -6,9 +6,9 @@ Needs limen 0.1.3 or later: its headers use `read_only`, which older versions re
 
 | Script | Answers | Changes the machine |
 |---|---|---|
-| `containers` | Every container with its image, state and health | no |
+| `containers` | Every container with its image, the version the image declares, state and health | no |
 | `container` | One container: image, state, health, restarts, mounts, ports, networks, labels | no |
-| `container_stats` | What each running container uses right now: CPU, memory and processes, the hungriest for memory first | no |
+| `container_stats` | What each running container uses right now: CPU, memory, swap and processes, the hungriest for memory first | no |
 | `container_logs` | One container's log over a period, stdout and stderr together | no |
 | `images` | Every image with its size and age, and whether a container uses it: in use, unused or dangling | no |
 | `disk_usage` | What images, containers, volumes and build cache take, what could be freed, and each volume's size | no |

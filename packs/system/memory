@@ -1,5 +1,5 @@
 #!/bin/sh
-#: description = "Where the memory goes and whether it is short: /proc/meminfo in MiB, swap use, memory pressure (PSI), and the processes the kernel has killed for lack of memory since boot"
+#: description = "Where the memory goes and whether it is short: /proc/meminfo in MiB, swap and zram, memory pressure (PSI), the kills for lack of memory since boot, the processes with the most in swap and the unit or container each runs in"
 #: read_only = true
 set -eu
 
@@ -27,4 +27,50 @@ awk '$1 ~ /^(oom_kill|pswpin|pswpout|pgmajfault)$/ { printf "%-11s %s\n", $1, $2
 if [ -r /proc/swaps ] && [ "$(wc -l < /proc/swaps)" -gt 1 ]; then
   echo
   cat /proc/swaps
+fi
+
+# zram is swap kept compressed in memory: what it holds is not what it costs.
+for stat in /sys/block/zram*/mm_stat; do
+  [ -r "$stat" ] || continue
+  device=${stat%/mm_stat}
+  # mm_stat starts with what it holds, that compressed, and the memory it takes in all, in bytes.
+  awk -v device="${device##*/}" \
+    '{ printf "%s holds %.0f MiB, compressed to %.0f MiB, and takes %.0f MiB of memory\n", device, $1 / 1048576, $2 / 1048576, $3 / 1048576 }' \
+    "$stat"
+done
+
+# cgroup_of <pid>: the cgroup the process runs in, by its last part: a systemd unit, or a container by its name.
+cgroup_of() {
+  cgroup=$(sed -n 's/^0:://p' "/proc/$1/cgroup" 2>/dev/null)
+  cgroup=${cgroup##*/}
+  case $cgroup in
+    docker-*.scope)
+      id=${cgroup#docker-}
+      id=${id%.scope}
+      name=$(printf '%s\n' "$containers" | awk -v id="$id" '$1 == id { print $2; exit }')
+      echo "${name:-docker ${id%"${id#????????????}"}}"
+      ;;
+    *) echo "${cgroup:--}" ;;
+  esac
+}
+
+containers=$(docker ps --no-trunc --format '{{.ID}} {{.Names}}' 2>/dev/null || true)
+echo
+echo "the processes with the most in swap, in MiB:"
+heaviest=$(
+  for status in /proc/[0-9]*/status; do
+    pid=${status#/proc/}
+    awk -v pid="${pid%/status}" '
+      /^Name:/ { sub(/^Name:[ \t]*/, ""); name = $0 } /^VmRSS:/ { rss = $2 } /^VmSwap:/ { swap = $2 }
+      END { if (swap >= 1024) printf "%d\t%d\t%s\t%s\n", swap / 1024, rss / 1024, pid, name }
+    ' "$status" 2>/dev/null || true
+  done | sort -rn | head -n 15
+)
+if [ -z "$heaviest" ]; then
+  echo "none has 1 MiB or more"
+else
+  printf 'SWAP\tRAM\tPID\tNAME\tCGROUP\n'
+  printf '%s\n' "$heaviest" | while IFS="$(printf '\t')" read -r swap rss pid name; do
+    printf '%s\t%s\t%s\t%s\t%s\n' "$swap" "$rss" "$pid" "$name" "$(cgroup_of "$pid")"
+  done
 fi

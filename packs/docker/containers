@@ -1,11 +1,12 @@
 #!/bin/sh
-#: description = "Every Docker container, running or not: name, image, state, and status with health"
+#: description = "Every Docker container, running or not: name, image, the version its image declares (the org.opencontainers.image.version label), state, and status with health"
 #: read_only = true
 set -eu
 
-list=$(docker ps --all --format '{{.Names}}\t{{.Image}}\t{{.State}}\t{{.Status}}')
+list=$(docker ps --all \
+  --format '{{.Names}}\t{{.Image}}\t{{.Label "org.opencontainers.image.version"}}\t{{.State}}\t{{.Status}}')
 printf '%s\n' "$list" | awk -F '\t' '
-  NF { total++; count[$3]++ } $4 ~ /\(unhealthy\)/ { unhealthy++ }
+  NF { total++; count[$4]++ } $5 ~ /\(unhealthy\)/ { unhealthy++ }
   END {
     printf "%d container(s)", total
     for (state in count) printf ", %d %s", count[state], state
@@ -14,5 +15,6 @@ printf '%s\n' "$list" | awk -F '\t' '
   }
 '
 [ -n "$list" ] || exit 0
-printf 'NAME\tIMAGE\tSTATE\tSTATUS\n'
-printf '%s\n' "$list" | sort
+printf 'NAME\tIMAGE\tVERSION\tSTATE\tSTATUS\n'
+# An image without the label says nothing of its version: a dash, so the columns stay in place.
+printf '%s\n' "$list" | sort | awk -F '\t' -v OFS='\t' '$3 == "" { $3 = "-" } { print }'

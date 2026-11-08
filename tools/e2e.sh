@@ -280,6 +280,7 @@ EOF
   expect "an example pack runs: system's processes" 'sshd' limen call debian processes
   expect "system's network: the default route" 'default route: via' limen call debian network
   expect "system's filesystems: space and inodes" 'MOUNT' limen call debian filesystems
+  expect "system's memory: who has the most in swap" 'the processes with the most in swap' limen call debian memory
   # gpu against a fake nvidia-smi that answers what /tmp/nvidia-smi holds, or fails when it holds "fail".
   script "$node" /usr/local/bin/nvidia-smi 0755 <<'EOF'
 #!/bin/sh
