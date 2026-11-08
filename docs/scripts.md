@@ -70,11 +70,15 @@ The catalog reaches every MCP session as text, and the hub doesn't take it on tr
 
 - named as one of its own tools or the node's requests: `nodes`, `hello`, `read_file`, `list_dir`, `history`, `run`;
 - whose description, or an argument's, runs past 300 characters or holds a control character;
-- declared with different arguments on another node, until they agree;
 - with a `pattern` over 512 bytes, or that compiles to more than 1 MiB. A bounded repetition unrolls: `\w{1,300}`
   —Unicode's `\w`, hundreds of ranges, 300 times— is too big; `[A-Za-z0-9_]{1,300}` is not.
 
 The hub only counts these in `nodes`; `limen lint` on the node says which and why.
+
+A script declared with different arguments on different nodes is not left out: while a change to it rolls out,
+its one tool reaches every node that has it, and each call is checked against what that node declares. Adding an
+optional argument is seamless —the tool shows it, and says which nodes don't take it yet—; any other change shows
+what most nodes declare, and `nodes` lists it under `script_conflicts` until the nodes agree (spec §5).
 
 ## How it runs
 

@@ -8,7 +8,7 @@ use limen_core::config::hub::Approval;
 use limen_core::params::{self, Param, ParamType};
 use limen_core::protocol::{LimenError, NodeError, NodeResponse, pretty};
 use limen_core::requests::{self, RequestDef};
-use limen_core::scripts::{self, Catalog, ScriptSpec};
+use limen_core::scripts::{self, Catalog, ScriptSpec, ScriptTool};
 use limen_core::version::VERSION;
 use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -47,8 +47,8 @@ pub const INSTRUCTIONS: &str = "Access to Linux machines through limen. Every to
 
 /// Each node's last answer to `hello`.
 type Hellos = BTreeMap<String, NodeResponse>;
-/// Script name → its spec and the nodes that offer it.
-type ScriptTools = BTreeMap<String, (ScriptSpec, Vec<String>)>;
+/// Script name → the tool the nodes that offer it make of it.
+type ScriptTools = BTreeMap<String, ScriptTool>;
 /// Where the server writes a line: a notification to the client, or its log.
 pub type Sink = Box<dyn Fn(&str) + Send + Sync>;
 
@@ -118,7 +118,7 @@ impl Known {
 /// A tool a client can call: a request as it is, or a script that some nodes offer.
 enum Tool {
     Request(&'static RequestDef),
-    Script { name: String, spec: ScriptSpec, nodes: Vec<String> },
+    Script { name: String, tool: ScriptTool },
 }
 
 /// What a tool call becomes on a node.
@@ -136,10 +136,10 @@ impl Tool {
                 params::validate(&request.params, &args).map_err(|error| error.message)?;
                 Ok(NodeCall { request: request.name.into(), args, timeout: None })
             }
-            Tool::Script { name, spec, nodes } => {
-                if !nodes.iter().any(|offering| offering == node) {
-                    return Err(format!("{node} has no script {name}; it is on {}", nodes.join(", ")));
-                }
+            Tool::Script { name, tool } => {
+                let Some(spec) = tool.declaration(node) else {
+                    return Err(format!("{node} has no script {name}; it is on {}", tool.nodes().join(", ")));
+                };
                 let mut run_args = Map::new();
                 for filter in ["grep", "tail"] {
                     if let Some(value) = args.shift_remove(filter) {
@@ -147,7 +147,14 @@ impl Tool {
                     }
                 }
                 params::validate(&requests::filters(), &run_args).map_err(|error| error.message)?;
-                params::validate(&spec.params, &args).map_err(|error| error.message)?;
+                // Against what this node declares, which differs from what the tool shows while a change rolls out.
+                params::validate(&spec.params, &args).map_err(|error| {
+                    if spec.params == tool.shown.params {
+                        error.message
+                    } else {
+                        format!("{}; on {node}, {name} takes {}", error.message, scripts::arguments_text(&spec.params))
+                    }
+                })?;
                 run_args.insert("script".into(), json!(name));
                 run_args.insert("args".into(), Value::Object(args));
                 let timeout = Duration::from_secs(spec.timeout_seconds).saturating_add(SCRIPT_MARGIN);
@@ -255,19 +262,26 @@ impl McpServer {
             let schema = params::input_schema(&request.params, &[(node.clone(), true)]);
             tools.push(read_only_tool(request.name, request.description, &schema));
         }
-        for (name, (spec, nodes)) in self.script_tools()? {
+        for (name, tool) in self.script_tools()? {
+            let spec = &tool.shown;
             let approved = if approval.needed(&name, spec.read_only) {
                 " A person approves each run before it starts."
             } else {
                 ""
             };
+            let differing = tool.differing();
+            let differ = if differing.is_empty() {
+                String::new()
+            } else {
+                format!(" Its arguments differ by node: {}.", scripts::declarations_text(&differing))
+            };
             let description = format!(
-                "{}{approved} Answers its exit code, stdout and stderr; `grep` and `tail` narrow stdout.",
+                "{}{approved}{differ} Answers its exit code, stdout and stderr; `grep` and `tail` narrow stdout.",
                 spec.description
             );
             let mut script_params = spec.params.clone();
             script_params.extend(requests::filters());
-            let schema = params::input_schema(&script_params, &[(node_param(&nodes), true)]);
+            let schema = params::input_schema(&script_params, &[(node_param(&tool.nodes()), true)]);
             tools.push(json!({
                 "name": name,
                 "description": description,
@@ -279,7 +293,7 @@ impl McpServer {
     }
 
     fn script_tools(&self) -> Result<ScriptTools, Fault> {
-        Ok(consistent_scripts(&self.current()?))
+        Ok(merged_scripts(&catalogs(&self.current()?)))
     }
 
     /// The nodes' `hello`s, asked again when the set of nodes changed, or when a new session asked for them and the
@@ -320,11 +334,11 @@ impl McpServer {
 
     fn ask(&self) -> Result<Hellos, Fault> {
         // From what was known, not through current(): with the nodes changed, that would refresh again, and again.
-        let before = self.known().as_ref().map(|known| consistent_scripts(&known.hellos));
+        let before = self.known().as_ref().map(|known| merged_scripts(&catalogs(&known.hellos)));
         let fresh = self.hello_every_node(&self.client.nodes()?);
         *self.known() = Some(Known { hellos: fresh.clone(), asked_at: Instant::now(), stale: false });
         if let (Some(before), Some(notify)) = (before, &self.notify) {
-            if before != consistent_scripts(&fresh) {
+            if before != merged_scripts(&catalogs(&fresh)) {
                 notify(&json!({"jsonrpc": "2.0", "method": "notifications/tools/list_changed"}).to_string());
             }
         }
@@ -367,7 +381,7 @@ impl McpServer {
         }
         let tool = self.find_tool(name)?;
         let approval = self.client.approval()?;
-        let needs_approval = matches!(&tool, Tool::Script { spec, .. } if approval.needed(name, spec.read_only));
+        let needs_approval = matches!(&tool, Tool::Script { tool, .. } if approval.needed(name, tool.shown.read_only));
         let Some(node) = args.get("node").and_then(Value::as_str).map(String::from) else {
             return Ok(tool_error("missing argument 'node'"));
         };
@@ -440,9 +454,10 @@ impl McpServer {
         if let Some(request) = requests::find(name).filter(|request| request.tool) {
             return Ok(Tool::Request(request));
         }
-        let (spec, nodes) =
-            self.script_tools()?.remove(name).ok_or_else(|| Fault::Params(format!("unknown tool {name}")))?;
-        Ok(Tool::Script { name: name.into(), spec, nodes })
+        let tool = self.script_tools()?.remove(name).ok_or_else(|| {
+            Fault::Params(format!("unknown tool {name}: no node offers a script by that name (`nodes` lists them)"))
+        })?;
+        Ok(Tool::Script { name: name.into(), tool })
     }
 
     /// Sends [call] to [node], and logs the tool, the node, how it went and how long it took.
@@ -559,33 +574,32 @@ fn scripts_by_name(catalogs: &BTreeMap<String, Catalog>) -> BTreeMap<&str, Vec<(
     by_name
 }
 
-fn declared_alike(declarations: &[(&str, &ScriptSpec)]) -> bool {
-    declarations.iter().all(|(_, spec)| spec.params == declarations[0].1.params)
-}
-
-/// The scripts that become tools, nodes in order. A name declared with different arguments is left out. A tool is
-/// read-only only when every node that offers it says so: one node can't make another's script look harmless.
-fn consistent_scripts(hellos: &Hellos) -> ScriptTools {
-    scripts_by_name(&catalogs(hellos))
+/// The scripts that become tools: one per name, whatever the nodes that offer it declare ([ScriptTool]).
+fn merged_scripts(catalogs: &BTreeMap<String, Catalog>) -> ScriptTools {
+    scripts_by_name(catalogs)
         .into_iter()
-        .filter(|(_, declarations)| declared_alike(declarations))
-        .map(|(name, declarations)| {
-            let nodes = declarations.iter().map(|(node, _)| node.to_string()).collect();
-            let spec = ScriptSpec {
-                read_only: declarations.iter().all(|(_, spec)| spec.read_only),
-                ..declarations[0].1.clone()
-            };
-            (name.to_string(), (spec, nodes))
+        .filter_map(|(name, declarations)| {
+            let declarations = declarations.into_iter().map(|(node, spec)| (node.to_string(), spec.clone())).collect();
+            Some((name.to_string(), ScriptTool::merge(declarations)?))
         })
         .collect()
 }
 
-/// What `nodes` says of the scripts [consistent_scripts] leaves out.
+/// What `nodes` says of the scripts whose nodes declare arguments that are not just optional additions: each
+/// declaration with its nodes, and which one the tool shows.
 fn script_conflicts(catalogs: &BTreeMap<String, Catalog>) -> Vec<Value> {
-    scripts_by_name(catalogs)
+    merged_scripts(catalogs)
         .into_iter()
-        .filter(|(_, declarations)| !declared_alike(declarations))
-        .map(|(name, _)| json!(format!("{name}: declared with different arguments on different nodes")))
+        .filter(|(_, tool)| !tool.compatible)
+        .map(|(name, tool)| {
+            let shown = tool.declared().into_iter().find(|(_, params)| *params == tool.shown.params.as_slice());
+            let shown_on = shown.map(|(nodes, _)| nodes.join(", ")).unwrap_or_default();
+            json!(format!(
+                "{name}: declared with different arguments on different nodes: {}. Its tool shows the arguments on \
+                 {shown_on}, and checks each call against its node's own",
+                scripts::declarations_text(&tool.declared())
+            ))
+        })
         .collect()
 }
 
@@ -766,7 +780,11 @@ mod tests {
         Catalog { scripts, ..Default::default() }
     }
 
-    /// `nas`, with a `backups` script without arguments, and `router`, whose `backups` takes one.
+    fn since() -> Param {
+        Param::new("since", ParamType::String, "").required()
+    }
+
+    /// `nas`, with a `backups` script without arguments, and `router`, whose `backups` requires one.
     fn nas_and_router() -> Arc<Fake> {
         let fake = Fake::default();
         fake.catalogs.lock().unwrap().insert(
@@ -775,7 +793,7 @@ mod tests {
         );
         fake.catalogs.lock().unwrap().insert(
             "router".into(),
-            offering(vec![script("disk", vec![threshold()]), script("backups", vec![threshold()])]),
+            offering(vec![script("disk", vec![threshold()]), script("backups", vec![since()])]),
         );
         Arc::new(fake)
     }
@@ -823,12 +841,11 @@ mod tests {
     }
 
     #[test]
-    fn tools_are_the_files_and_every_consistent_script() {
+    fn tools_are_the_files_and_every_script() {
         let server = mcp_server(&nas_and_router());
         let tools = rpc(&server, "tools/list", &json!({}))["result"]["tools"].as_array().unwrap().clone();
         let names: Vec<&str> = tools.iter().map(|tool| tool["name"].as_str().unwrap()).collect();
-        assert_eq!(names, ["nodes", "read_file", "list_dir", "history", "disk", "purge"]);
-        // `backups` has different arguments on each node: no tool until that is fixed.
+        assert_eq!(names, ["nodes", "read_file", "list_dir", "history", "backups", "disk", "purge"]);
         let read_only = |name: &str| tools.iter().find(|tool| tool["name"] == name).unwrap()["annotations"].clone();
         assert_eq!(read_only("read_file")["readOnlyHint"], true);
         assert_eq!(read_only("purge"), json!({"readOnlyHint": false, "destructiveHint": true}));
@@ -882,6 +899,51 @@ mod tests {
         let text = text_of(&result);
         assert!(text.contains("purge: About purge."), "{text}");
         assert!(text.contains("backups: declared with different arguments"), "{text}");
+        assert!(text.contains("on nas, no arguments; on router, only since (required)"), "{text}");
+        assert!(text.contains("Its tool shows the arguments on nas"), "{text}");
+    }
+
+    #[test]
+    fn a_script_declared_differently_stays_a_tool_for_every_node() {
+        // Through the hub, `backups` can still reach both nodes while they disagree: a change to it can roll out.
+        let client = nas_and_router();
+        let server = mcp_server(&client);
+        let tools = rpc(&server, "tools/list", &json!({}))["result"]["tools"].as_array().unwrap().clone();
+        let backups = tools.iter().find(|tool| tool["name"] == "backups").unwrap();
+        assert_eq!(backups["inputSchema"]["properties"]["node"]["enum"], json!(["nas", "router"]));
+        let description = backups["description"].as_str().unwrap();
+        assert!(
+            description.contains("Its arguments differ by node: on router, only since (required)."),
+            "{description}"
+        );
+        assert_eq!(call_tool(&server, "backups", &json!({"node": "nas"}))["isError"], false);
+        let routed = call_tool(&server, "backups", &json!({"node": "router", "since": "2026-01-01"}));
+        assert_eq!(routed["isError"], false, "checked against the router's own declaration");
+        let (node, _, args) = client.calls.lock().unwrap().last().unwrap().clone();
+        assert_eq!((node.as_str(), &args["args"]), ("router", &json!({"since": "2026-01-01"})));
+        let missing = call_tool(&server, "backups", &json!({"node": "router"}));
+        assert_eq!(missing["isError"], true);
+        assert!(text_of(&missing).contains("on router, backups takes only since (required)"), "{missing}");
+        let unknown = call_tool(&server, "backups", &json!({"node": "nas", "since": "2026-01-01"}));
+        assert!(text_of(&unknown).contains("unknown argument 'since'"), "{unknown}");
+    }
+
+    #[test]
+    fn an_optional_argument_added_on_one_node_is_shown_and_no_conflict() {
+        let client = nas_and_router();
+        let sync = |params: Vec<Param>| script("sync", params);
+        client.catalogs.lock().unwrap().get_mut("nas").unwrap().scripts.push(sync(vec![]));
+        let reference = Param::new("ref", ParamType::String, "");
+        client.catalogs.lock().unwrap().get_mut("router").unwrap().scripts.push(sync(vec![reference]));
+        let server = mcp_server(&client);
+        let tools = rpc(&server, "tools/list", &json!({}))["result"]["tools"].as_array().unwrap().clone();
+        let tool = tools.iter().find(|tool| tool["name"] == "sync").unwrap();
+        assert!(tool["inputSchema"]["properties"]["ref"].is_object(), "{tool}");
+        assert!(tool["description"].as_str().unwrap().contains("on nas, no arguments"), "{tool}");
+        assert_eq!(call_tool(&server, "sync", &json!({"node": "nas"}))["isError"], false);
+        assert_eq!(call_tool(&server, "sync", &json!({"node": "router", "ref": "v2"}))["isError"], false);
+        let nodes = text_of(&call_tool(&server, "nodes", &json!({}))).to_string();
+        assert!(!nodes.contains("sync: declared"), "{nodes}");
     }
 
     /// A server that notifies, and what it sent.
@@ -1023,7 +1085,9 @@ mod tests {
     fn unknown_methods_and_tools_are_protocol_errors() {
         let server = mcp_server(&nas_and_router());
         assert_eq!(rpc(&server, "resources/list", &json!({}))["error"]["code"], METHOD_NOT_FOUND);
-        assert_eq!(rpc(&server, "tools/call", &json!({"name": "rm"}))["error"]["code"], INVALID_PARAMS);
+        let unknown = rpc(&server, "tools/call", &json!({"name": "rm"}));
+        assert_eq!(unknown["error"]["code"], INVALID_PARAMS);
+        assert!(unknown["error"]["message"].as_str().unwrap().contains("no node offers a script"), "{unknown}");
         let not_an_object: Value = serde_json::from_str(&server.handle("[1]").unwrap()).unwrap();
         assert_eq!(not_an_object["error"]["code"], PARSE_ERROR);
     }
