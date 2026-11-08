@@ -283,10 +283,176 @@ pub fn env_name(param: &str) -> String {
     format!("LIMEN_ARG_{}", param.to_uppercase())
 }
 
+/// One script as every node that offers it declares it, merged into the one tool the hub shows for it (spec §5).
+/// The nodes may declare different arguments while a change to the script rolls out: the tool stays, so the change
+/// can reach the rest through it, and each call is checked against the declaration of the node it goes to.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScriptTool {
+    /// What the tool shows: a description, the arguments of its schema, and read-only only when every node says so:
+    /// one node can't make another's script look harmless.
+    pub shown: ScriptSpec,
+    /// Each node's own declaration, in node order.
+    pub declarations: Vec<(String, ScriptSpec)>,
+    /// Whether the declarations differ at most by optional arguments some of them add. Then `shown` has them all;
+    /// otherwise it has the arguments most nodes declare, and the rest is a conflict.
+    pub compatible: bool,
+}
+
+/// Nodes that declare the same arguments, and those arguments.
+pub type Declared<'a> = (Vec<&'a str>, &'a [Param]);
+
+impl ScriptTool {
+    /// The tool for [declarations], one per node, in node order. None when there are none.
+    pub fn merge(declarations: Vec<(String, ScriptSpec)>) -> Option<Self> {
+        let groups = declared_alike(&declarations);
+        let widest = groups.iter().find(|(_, params)| groups.iter().all(|(_, other)| extends(params, other)));
+        // The first of the most declared: min_by_key keeps the first of equals, and node order makes it stable.
+        let chosen = widest.or_else(|| groups.iter().min_by_key(|(nodes, _)| std::cmp::Reverse(nodes.len())))?;
+        let shown = ScriptSpec {
+            read_only: declarations.iter().all(|(_, spec)| spec.read_only),
+            ..declarations.iter().find(|(_, spec)| spec.params == chosen.1)?.1.clone()
+        };
+        let compatible = widest.is_some();
+        Some(ScriptTool { shown, declarations, compatible })
+    }
+
+    pub fn nodes(&self) -> Vec<String> {
+        self.declarations.iter().map(|(node, _)| node.clone()).collect()
+    }
+
+    /// What [node] declares, if it offers the script.
+    pub fn declaration(&self, node: &str) -> Option<&ScriptSpec> {
+        self.declarations.iter().find(|(offering, _)| offering == node).map(|(_, spec)| spec)
+    }
+
+    /// Every declaration, with the nodes that make it, in the order of their first node.
+    pub fn declared(&self) -> Vec<Declared<'_>> {
+        declared_alike(&self.declarations)
+    }
+
+    /// The declarations whose arguments are not the ones the tool shows.
+    pub fn differing(&self) -> Vec<Declared<'_>> {
+        self.declared().into_iter().filter(|(_, params)| *params != self.shown.params.as_slice()).collect()
+    }
+}
+
+fn declared_alike(declarations: &[(String, ScriptSpec)]) -> Vec<Declared<'_>> {
+    let mut groups: Vec<Declared<'_>> = Vec::new();
+    for (node, spec) in declarations {
+        match groups.iter_mut().find(|(_, params)| *params == spec.params.as_slice()) {
+            Some((nodes, _)) => nodes.push(node),
+            None => groups.push((vec![node], &spec.params)),
+        }
+    }
+    groups
+}
+
+/// Whether [wider] holds every argument of [narrower] as it is declared there, and only optional ones besides: a call
+/// [narrower] accepts means the same to [wider].
+fn extends(wider: &[Param], narrower: &[Param]) -> bool {
+    narrower.iter().all(|param| wider.contains(param))
+        && wider
+            .iter()
+            .filter(|param| !narrower.iter().any(|other| other.name == param.name))
+            .all(|param| !param.required)
+}
+
+/// What a script takes, for a person or a model to read: `no arguments`, or `only a, b (required)`.
+pub fn arguments_text(params: &[Param]) -> String {
+    if params.is_empty() {
+        return "no arguments".into();
+    }
+    let names: Vec<String> = params
+        .iter()
+        .map(|param| if param.required { format!("{} (required)", param.name) } else { param.name.clone() })
+        .collect();
+    format!("only {}", names.join(", "))
+}
+
+/// `on a, b, only x; on c, no arguments`: each declaration in [declared] and its nodes.
+pub fn declarations_text(declared: &[Declared<'_>]) -> String {
+    let each: Vec<String> =
+        declared.iter().map(|(nodes, params)| format!("on {}, {}", nodes.join(", "), arguments_text(params))).collect();
+    each.join("; ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn declared(name: &str, params: Vec<Param>) -> ScriptSpec {
+        ScriptSpec {
+            name: name.into(),
+            description: format!("About {name}."),
+            timeout_seconds: 60,
+            params,
+            read_only: true,
+        }
+    }
+
+    fn reference() -> Param {
+        Param::new("ref", ParamType::String, "")
+    }
+
+    fn repository() -> Param {
+        Param::new("repo", ParamType::String, "").required()
+    }
+
+    fn by_node(declarations: &[(&str, Vec<Param>)]) -> Vec<(String, ScriptSpec)> {
+        declarations.iter().map(|(node, params)| ((*node).into(), declared("sync", params.clone()))).collect()
+    }
+
+    #[test]
+    fn an_added_optional_argument_keeps_one_tool_with_every_argument() {
+        // The new `sync` reached one node first: the tool shows `ref`, and still goes to all four.
+        let tool = ScriptTool::merge(by_node(&[
+            ("a", vec![repository()]),
+            ("b", vec![repository(), reference()]),
+            ("c", vec![repository()]),
+            ("d", vec![repository()]),
+        ]))
+        .unwrap();
+        assert!(tool.compatible);
+        assert_eq!(tool.shown.params, vec![repository(), reference()]);
+        assert_eq!(tool.nodes(), ["a", "b", "c", "d"]);
+        assert_eq!(declarations_text(&tool.differing()), "on a, c, d, only repo (required)");
+        // And the other way round: an optional argument taken out.
+        let removed = ScriptTool::merge(by_node(&[("a", vec![]), ("b", vec![reference()])])).unwrap();
+        assert!(removed.compatible);
+        assert_eq!(removed.shown.params, vec![reference()]);
+    }
+
+    #[test]
+    fn a_change_that_is_not_an_optional_addition_shows_what_most_nodes_declare() {
+        let tool = ScriptTool::merge(by_node(&[
+            ("a", vec![repository(), reference().required()]),
+            ("b", vec![repository()]),
+            ("c", vec![repository()]),
+        ]))
+        .unwrap();
+        assert!(!tool.compatible, "a required argument added is a conflict");
+        assert_eq!(tool.shown.params, vec![repository()]);
+        assert_eq!(tool.nodes(), ["a", "b", "c"], "every node keeps the tool");
+        assert_eq!(tool.declaration("a").unwrap().params.len(), 2);
+        assert_eq!(declarations_text(&tool.differing()), "on a, only repo (required), ref (required)");
+        // A tie goes to the first node's.
+        let tie = ScriptTool::merge(by_node(&[("a", vec![reference().required()]), ("b", vec![])])).unwrap();
+        assert_eq!(tie.shown.params, vec![reference().required()]);
+        // The same name with another type is not an extension either.
+        let retyped =
+            ScriptTool::merge(by_node(&[("a", vec![reference()]), ("b", vec![Param::new("ref", ParamType::Int, "")])]));
+        assert!(!retyped.unwrap().compatible);
+    }
+
+    #[test]
+    fn a_merged_tool_is_read_only_only_when_every_node_says_so() {
+        let mut declarations = by_node(&[("a", vec![]), ("b", vec![])]);
+        assert!(ScriptTool::merge(declarations.clone()).unwrap().shown.read_only);
+        declarations[1].1.read_only = false;
+        assert!(!ScriptTool::merge(declarations).unwrap().shown.read_only);
+        assert_eq!(ScriptTool::merge(vec![]), None);
+    }
 
     const SCRIPT: &str = r#"#!/usr/bin/env bash
 #: description = "Free space on the backup volume"

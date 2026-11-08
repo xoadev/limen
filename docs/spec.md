@@ -162,9 +162,14 @@ Every tool but `nodes` takes a `node` argument.
   bounded, that declares a `node`, `grep` or `tail` argument, or whose name is a built-in tool's or request's, is
   left out and counted in `nodes`; `limen lint` on the node names each and says why, by the same rules
   ([scripts.md](scripts.md)). Its text reaches the model as it is, so it is kept short.
-- A script's tool accepts only the nodes whose catalog has it; the hub refuses the others itself. The same
-  name on several nodes must declare the same arguments; if it doesn't, the hub reports the conflict in
-  `nodes` and exposes no tool for it until it's fixed.
+- A script's tool accepts only the nodes whose catalog has it; the hub refuses the others itself. Each call is
+  checked against the arguments the node it goes to declares, and a refusal says what that node takes.
+- **A script declared differently on different nodes stays one tool for all of them**, so a change to its
+  arguments —`sync` itself, the script that rolls out scripts— can reach the rest through the hub, one node at a
+  time. When the declarations differ only by optional arguments some add —one holds every argument of the
+  others, unchanged, and only optional ones besides— the tool shows that one. Otherwise it shows the arguments
+  most nodes declare (on a tie, the first node's), and `nodes` reports the conflict: each declaration and its
+  nodes. Either way the tool's description names the nodes that declare other arguments, and what they take.
 
 ## 6. Scripts and packs
 
