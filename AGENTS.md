@@ -151,9 +151,10 @@ and the scripts each offers, where every limit is enforced on the machine itself
 for any agent (Claude Code or another) and for people: the shared head above, and what follows, which is limen's own.
 `CLAUDE.md` points here.
 
-**limen is in production**: its releases are public, `install.sh` and `limen_update` fetch the latest one, and our own
-machines run it. So the request schemas, the tools the hub offers, `limen.toml`, script headers and the packs' scripts
-only grow.
+**limen is in testing**: its releases are public and `install.sh` and `limen_update` fetch the latest one, but only its
+author runs it. Until 1.0 a release may break the request schemas, the tools the hub offers, `limen.toml`, script
+headers or the packs' scripts: a breaking change is a `!` commit, it raises the minor version, and its release notes say
+what to do. README's status note says the same to users.
 
 ## Sources of truth
 
