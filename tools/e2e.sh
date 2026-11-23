@@ -103,6 +103,38 @@ mcp_session() {
     "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"$2\",\"arguments\":$arguments}}" \
     | "$binary" mcp --home "$work/$1" 2>/dev/null
 }
+# progress_session <node> <script>: one call of <script> over stdio, with a progress token: the progress' messages,
+# then the result's text.
+progress_session() {
+  printf '%s\n' \
+    '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}' \
+    '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
+    "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"$2\",\"arguments\":{\"node\":\"$1\"},\"_meta\":{\"progressToken\":\"e2e\"}}}" \
+    | "$binary" mcp --home "$work/$1" 2>/dev/null \
+    | jq -r 'if .method == "notifications/progress" then "progress \(.params.progressToken): \(.params.message)"
+             elif .id == 3 then .result.content[0].text else empty end'
+}
+# status <command...>: what the command prints, then `exit <its exit code>`.
+status() {
+  local code=0
+  "$@" || code=$?
+  echo "exit $code"
+}
+# stderr_of <command...>: only what the command writes on stderr.
+stderr_of() {
+  { "$@" >/dev/null; } 2>&1
+}
+# first_line_early <command...>: `early: <its first line>` when that line comes within 3 s, though the command runs
+# longer; `late: …` otherwise.
+first_line_early() {
+  local start line
+  start=$(date +%s%N)
+  "$@" | {
+    IFS= read -r line
+    if (( ($(date +%s%N) - start) / 1000000 < 3000 )); then echo "early: $line"; else echo "late: $line"; fi
+    cat >/dev/null
+  }
+}
 # approval_session <node> <client capabilities as JSON> [<answer as JSON>]: calls `mark` over stdio and, a few seconds
 # later, answers the hub's first question with <answer>, as a person at the client would.
 approval_session() {
@@ -157,6 +189,13 @@ EOF
 #: description = "Never finishes in time"
 #: timeout = "1s"
 sleep 30
+EOF
+  script "$1" "$2/ticks" 0755 <<'EOF'
+#!/bin/sh
+#: description = "Says something, waits, and says more"
+echo "tick 1"
+sleep 5
+echo "tick 2"
 EOF
   script "$1" "$2/helper.sh" 0755 <<'EOF'
 #!/bin/sh
@@ -236,7 +275,7 @@ EOF
   expect "hello reports the catalog" '"name": "disk"' limen call debian hello
   expect "hello reports a script it won't run, and why" 'loose is writable by group or others' limen call debian hello
   refuse "a file without a header is not a script" '"name": "disk"' '"name": "helper"' limen call debian hello
-  expect "an allowed file is read" '"content": "' limen call debian read_file --arg path=/etc/hostname
+  expect "an allowed file is read" '[/etc/hostname: lines 1–1, end of file]' limen call debian read_file --arg path=/etc/hostname
   expect "a secret in an allowed file is redacted" 'password=[redacted]' limen call debian read_file --arg path=/etc/limen-e2e/app.conf
   expect "and so is a name of redact.names" 'MQTT_PASS=[redacted]' limen call debian read_file --arg path=/etc/limen-e2e/app.conf
   expect "a file outside the allowlist is denied" '/etc/passwd is not readable' limen call debian read_file --arg path=/etc/passwd
@@ -250,28 +289,33 @@ EOF
   expect "a denied path is denied before its type is told" '"denied"' limen call debian list_dir --arg path=/etc/shadow
   expect "dots are walked where links lead, not as text" '/var/run/../etc/shadowX is not readable' \
     limen call debian read_file --arg path=/var/run/../etc/shadowX
-  expect "a binary file answers its size, no content" '"binary": true' limen call debian read_file --arg path=/etc/limen-e2e/blob
-  expect "tail: the last lines" '"line 110"' limen call debian read_file --arg path=/var/log/e2e.log --tail 5
-  refuse "tail: only the lines asked for" '"line 110"' 'ERROR' limen call debian read_file --arg path=/var/log/e2e.log --tail 5
+  expect "a binary file answers its size, no content" 'a binary file, ' limen call debian read_file --arg path=/etc/limen-e2e/blob
+  expect "tail: the last lines" $'line 110\n[/var/log/e2e.log: its last 5 lines]' limen call debian read_file --arg path=/var/log/e2e.log --tail 5
+  refuse "tail: only the lines asked for" 'its last 5 lines' 'ERROR' limen call debian read_file --arg path=/var/log/e2e.log --tail 5
   expect "grep searches the whole end of the file" 'ERROR disk full' limen call debian read_file --arg path=/var/log/e2e.log --grep error
-  expect "more lines than limits.max_lines: cut, and said so" '"truncated": true' \
+  expect "more lines than limits.max_lines: cut, and said so" '[truncated: ' \
     limen call debian read_file --arg path=/var/log/e2e.log --tail 5000
   expect "a range and a tail at once is refused" 'not both' limen call debian read_file --arg path=/var/log/e2e.log --arg from=1 --tail 5
 
   echo "e2e/debian: scripts"
   expect "a script runs with its default" 'threshold 100%' limen call debian disk
   expect "an argument reaches the script" 'threshold 1%' limen call debian disk --arg threshold=1
-  expect "its exit code comes back" '"exit": 1' limen call debian disk --arg threshold=1
+  expect "call exits with its exit code" 'exit 1' status limen call debian disk --arg threshold=1
   expect "a bad argument never reaches the script" 'threshold must be at most 100' limen call debian disk --arg threshold=500
   expect "it runs as root, from /, with its pack and node" "pack $pack node " limen call debian where
   expect "and as root" "user root cwd /" limen call debian where
   expect "its output is redacted" 'password=[redacted]' limen call debian where
-  expect "stderr comes back apart" '"stderr": "to stderr"' limen call debian where
-  refuse "grep sees only what redaction left" '"exit": 0' 'secret' limen call debian where --grep password=h
+  expect "its stderr comes out on stderr" 'to stderr' stderr_of limen call debian where
+  refuse "and only there" 'to stderr' 'password' stderr_of limen call debian where
+  refuse "grep sees only what redaction left" 'exit 0' 'secret' status limen call debian where --grep password=h
   expect "a script that changes the machine" 'marked here' limen call debian mark --arg word=here
   expect "it did" "present" docker exec "$node" sh -c 'test -f /tmp/limen-marked && echo present'
   expect "a string argument can't be an option" 'word does not match' limen call debian mark --arg word=-rf
-  expect "a script past its timeout is stopped" '"code": "timeout"' limen call debian slow
+  expect "a script past its timeout is stopped" 'timeout: slow did not finish' limen call debian slow
+  expect "a script's output is printed as it comes" 'early: tick 1' first_line_early limen call debian ticks
+  expect "and all at once with --tail" 'late: tick 1' first_line_early limen call debian ticks --tail 5
+  expect "--json prints the answer as before" '"stdout": "tick 1\ntick 2"' limen call debian ticks --json
+  expect "limen run on the node prints it as it comes too" 'early: tick 1' first_line_early docker exec "$node" limen run ticks
   expect "a group-writable script is not run" 'writable by group or others' limen call debian loose
   expect "two files with one script name: neither runs" "are both 'twice'" limen call debian twice
   expect "and lint says so" "are both 'twice'" docker exec "$node" limen lint
@@ -332,6 +376,9 @@ EOF
   expect "mcp lists every script as a tool" '"name":"mark"' mcp_session debian disk
   expect "mcp calls one" 'threshold 100%' mcp_session debian disk
   expect "with its arguments and filters" 'marked mcp' mcp_session debian mark '"word":"mcp","tail":1'
+  expect "a call with a progress token gets the output as it comes" $'progress e2e: tick 1\n\nprogress e2e: tick 2' \
+    progress_session debian ticks
+  expect "and the whole of it as the result" $'tick 1\ntick 2\n[exit 0]' progress_session debian ticks
   expect "files are read-only tools" 'read_file {\"readOnlyHint\":true' annotations debian read_file
   expect "so is a script whose header says read_only" 'status {\"readOnlyHint\":true' annotations debian status
   printf '\n[approval]\nscripts = ["mark"]\ntimeout = "20s"\n' >> "$work/debian/limen.toml"
@@ -421,10 +468,11 @@ EOF
 
   echo "e2e/openwrt: files and scripts"
   expect "hello: the OS" '"os": "OpenWrt' limen call openwrt hello
-  expect "an allowed uci file is read" '"path": "/etc/config/' limen call openwrt read_file --arg path=/etc/config/dropbear
+  expect "an allowed uci file is read" '[/etc/config/dropbear: lines 1–' limen call openwrt read_file --arg path=/etc/config/dropbear
   expect "the Wi-Fi keys are never read" 'wireless is not readable' limen call openwrt read_file --arg path=/etc/config/wireless
   expect "root's files are owned by root, without NSS" '"owner": "root"' limen call openwrt list_dir --arg path=/etc/config
   expect "a script runs under busybox" 'user root cwd /' limen call openwrt where
+  expect "and its output is printed as it comes" 'early: tick 1' first_line_early limen call openwrt ticks
   expect "and one changes the machine" 'marked router' limen call openwrt mark --arg word=router
   expect "it did" "present" docker exec "$node" sh -c 'test -f /tmp/limen-marked && echo present'
   # The system pack under busybox: its ip, df, awk and ping, and no getent.

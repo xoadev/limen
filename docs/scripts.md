@@ -99,6 +99,9 @@ what most nodes declare, and `nodes` lists it under `script_conflicts` until the
   `limits.max_lines` lines. `grep` and `tail`, when the agent asks for them, apply to stdout after redaction; a script
   never sees them. Both streams together are captured up to 16 MiB: past it the script is stopped. Whatever a limit
   cuts, the answer says so, and the answer as a whole is bounded by `limits.max_response`.
+- Whoever runs it by hand —`limen call` on the hub, `limen run` on the node— sees its output as it is printed, a
+  line at a time, redacted the same way; an MCP client may too, through progress notifications. A private key's
+  block shows once its `END` line is printed, so it is redacted whole.
 - The exit code is data, not an error: `0` is success, anything else is what the script says it is.
 - Every run is recorded in the audit log with its arguments, when it starts and when it ends.
 
@@ -117,6 +120,10 @@ passes; one made with a looser umask, or by another user, doesn't.
   environment values, `ps` shows command lines. Choose fields (`--format`) and leave secrets out.
 - **Take arguments as data.** Quote them (`"$LIMEN_ARG_UNIT"`), put `--` before them where the command accepts
   it, and narrow `pattern` to what the argument can be.
+- **Print as you go, in a long script.** Its output reaches a pipe, not a terminal, and many programs then keep it
+  until they have a few kilobytes: Python, `grep`, `awk`, `sed`. Whoever follows the run sees nothing until then.
+  `stdbuf -oL <command>`, `PYTHONUNBUFFERED=1` or `grep --line-buffered` print each line when it is done. A progress
+  bar redrawn with `\r` shows only when its line ends.
 - **A script that changes something is safe to run twice**, and says what it did. The agent may run it again
   after a timeout.
 - **One at a time, where it matters**: `exec 9> /run/lock/limen-<name>.lock; flock -n 9 || exit 1` refuses a

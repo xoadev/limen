@@ -13,9 +13,10 @@ use limen_core::config::node::PATH as NODE_CONFIG;
 use limen_core::durations;
 use limen_core::join::{self, JoinUrl};
 use limen_core::params::{self, Param, ParamType};
-use limen_core::protocol::{LimenError, pretty};
+use limen_core::protocol::{Chunk, LimenError, NodeError, NodeResponse, Stream, pretty};
 use limen_core::requests;
 use limen_core::scripts::Catalog;
+use limen_core::text::{self, TRUNCATED};
 use limen_core::version::{BUILD_DATE, BUILD_NUMBER, VERSION};
 use node::installer::Installer;
 use node::joiner::Joiner;
@@ -109,7 +110,8 @@ enum Command {
         #[arg(long)]
         home: Option<String>,
     },
-    /// One request to a node over SSH, printed as JSON: hello, read_file, list_dir, history, or a script by its name
+    /// One request to a node over SSH: hello, read_file, list_dir, history, or a script by its name, whose output is
+    /// printed as it comes
     Call {
         node: String,
         request: String,
@@ -118,6 +120,9 @@ enum Command {
         args: Vec<String>,
         #[command(flatten)]
         filters: Filters,
+        /// Print the node's JSON answer, all at the end
+        #[arg(long)]
+        json: bool,
         /// Hub directory with limen.toml
         #[arg(long)]
         home: Option<String>,
@@ -303,7 +308,9 @@ fn run(command: Command) -> Exit {
             trust(&name, &address, &host_key, &user, port, home.as_deref())
         }
         Command::Forget { name, home } => forget(&name, home.as_deref()),
-        Command::Call { node, request, args, filters, home } => call(&node, &request, &args, &filters, home.as_deref()),
+        Command::Call { node, request, args, filters, json, home } => {
+            call(&Request { node, request, pairs: args, json }, &filters, home.as_deref())
+        }
         Command::Join(args) => join_hub(&args),
         Command::Gate { config } => Ok(gate::run(&config)),
         Command::Install(args) => Installer::new(args.dry_run)
@@ -417,7 +424,16 @@ fn forget(name: &str, home: Option<&str>) -> Exit {
     Ok(0)
 }
 
-fn call(node: &str, request: &str, pairs: &[String], filters: &Filters, home: Option<&str>) -> Exit {
+/// What `limen call` asks: of which node, with which arguments, and whether as JSON.
+struct Request {
+    node: String,
+    request: String,
+    pairs: Vec<String>,
+    json: bool,
+}
+
+fn call(asked: &Request, filters: &Filters, home: Option<&str>) -> Exit {
+    let (node, request, pairs) = (asked.node.as_str(), asked.request.as_str(), asked.pairs.as_slice());
     let live = LiveHub::new(Arc::new(Hub::at(home)));
     if live.config()?.node(node).is_none() {
         return Err(Stop::Usage(format!("no node named '{node}'")));
@@ -437,9 +453,64 @@ fn call(node: &str, request: &str, pairs: &[String], filters: &Filters, home: Op
             ("run", args, timeout)
         }
     };
-    let response = live.call(node, name, &args, timeout);
-    sys::say(&pretty(&response));
-    Ok(exit_code(response.ok))
+    if asked.json {
+        let response = live.call(node, name, &args, timeout);
+        sys::say(&pretty(&response));
+        return Ok(exit_code(response.ok));
+    }
+    let response = if name == "run" && filters.tail.is_none() {
+        live.follow(node, &args, timeout, &mut |chunk| print_chunk(&chunk))
+    } else {
+        live.call(node, name, &args, timeout)
+    };
+    print_answer(name, &response)
+}
+
+/// A node's answer as `call` prints it (spec §11): a script's output and exit code, a file's lines, or the JSON.
+fn print_answer(request: &str, response: &NodeResponse) -> Exit {
+    let Some(data) = response.data.as_ref().filter(|_| response.ok) else {
+        let failure = response.error.as_ref().map_or_else(|| "internal: no answer".into(), NodeError::summary);
+        return Err(Stop::Message(failure));
+    };
+    match (request, text::answer_text(request, data)) {
+        ("run", _) => Ok(print_run(data, response.truncated)),
+        (_, Some(text)) => {
+            sys::say(&text);
+            if response.truncated {
+                sys::log(TRUNCATED);
+            }
+            Ok(0)
+        }
+        (_, None) => {
+            sys::say(&pretty(response));
+            Ok(0)
+        }
+    }
+}
+
+/// A piece of a script's output, where the script wrote it.
+fn print_chunk(chunk: &Chunk) {
+    match chunk.stream {
+        Stream::Stdout => sys::out(&chunk.text),
+        Stream::Stderr => sys::err(&chunk.text),
+    }
+}
+
+/// What a script's answer holds of its output —all of it, unless it was followed— and how it ended; its exit code.
+fn print_run(data: &Value, truncated: bool) -> i32 {
+    for (stream, print) in [("stdout", sys::out as fn(&str)), ("stderr", sys::err)] {
+        let output = data.get(stream).and_then(Value::as_str).unwrap_or_default();
+        if !output.is_empty() {
+            print(&format!("{output}\n"));
+        }
+    }
+    if truncated {
+        sys::log(TRUNCATED);
+    }
+    if let Some(signal) = data.get("signal").and_then(Value::as_i64) {
+        sys::log(&format!("ended by signal {signal}"));
+    }
+    data.get("exit").and_then(Value::as_i64).map_or(1, |exit| exit as i32)
 }
 
 /// The parameters and the timeout [name]'s header declares, from the node's catalog, so a script's arguments are
@@ -490,19 +561,12 @@ fn run_script(script: &str, pairs: &[String], filters: &Filters, config: &str) -
     args.insert("script".into(), script.into());
     args.insert("args".into(), Value::Object(parse_args(pairs, &spec.params)?));
     let args = params::validate(&requests::named("run").params, &args)?;
-    let answer = scripts::run(&node, &args)?;
-    let text = |key: &str| answer.data.get(key).and_then(Value::as_str).unwrap_or_default().to_string();
-    let (stdout, stderr) = (text("stdout"), text("stderr"));
-    if !stdout.is_empty() {
-        sys::say(&stdout);
-    }
-    if !stderr.is_empty() {
-        sys::log(&stderr);
-    }
-    if answer.truncated {
-        sys::log("[truncated: a limit cut this output]");
-    }
-    Ok(answer.data.get("exit").and_then(Value::as_i64).map_or(1, |exit| exit as i32))
+    let answer = if filters.tail.is_none() {
+        scripts::run_following(&node, &args, &mut |chunk| print_chunk(&chunk))?
+    } else {
+        scripts::run(&node, &args)?
+    };
+    Ok(print_run(&answer.data, answer.truncated))
 }
 
 /// `--arg key=value`, typed by [params] where it names one; otherwise a number, a boolean or a string.

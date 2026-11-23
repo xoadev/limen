@@ -6,7 +6,7 @@ use super::{NodeClient, constant_time_eq, internal};
 use crate::os::{fs, proc, sys};
 use limen_core::config::hub::{self, Approval, HubConfig, is};
 use limen_core::join::{self, Arrival, Invitation, PendingInvite, Welcome};
-use limen_core::protocol::{ErrorCode, LimenError, NodeError, NodeResponse, Result, error};
+use limen_core::protocol::{Chunk, ErrorCode, LimenError, NodeError, NodeResponse, Result, error};
 use limen_core::time;
 use serde_json::{Map, Value};
 use std::sync::{Arc, Mutex};
@@ -378,6 +378,19 @@ impl NodeClient for LiveHub {
     fn call(&self, node: &str, request: &str, args: &Map<String, Value>, timeout: Option<Duration>) -> NodeResponse {
         match self.ssh() {
             Ok(client) => client.call(node, request, args, timeout),
+            Err(failure) => NodeResponse::failure(&failure),
+        }
+    }
+
+    fn follow(
+        &self,
+        node: &str,
+        args: &Map<String, Value>,
+        timeout: Option<Duration>,
+        on_chunk: &mut dyn FnMut(Chunk),
+    ) -> NodeResponse {
+        match self.ssh() {
+            Ok(client) => client.follow(node, args, timeout, on_chunk),
             Err(failure) => NodeResponse::failure(&failure),
         }
     }

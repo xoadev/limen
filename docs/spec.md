@@ -120,6 +120,13 @@ is ignored.
 - `run` with `read_only: true` is refused, `denied`, unless the script's header says `read_only = true` as the node
   reads it then: a hub's sensors ask so (§9.1), and a script whose header stopped saying it never runs as one. A node
   that predates the argument refuses it as unknown.
+- `run` with `follow: true` streams the script's output while it runs: before the answer, the node writes one line per
+  piece of output as it comes, `{"chunk": {"stream": "stdout", "text": "…"}}` (or `"stderr"`), and the answer then
+  holds the exit code and signal without `stdout` or `stderr`. A piece is whole lines, through `Node::clean` and
+  `grep` like the rest; `tail` doesn't apply, since it needs the end. A private key's block is held back until its
+  `END` line, so it is redacted whole, never in halves. What is streamed counts towards `limits.max_response`: past it
+  nothing more is sent, the script runs on, and the answer says `truncated`. A node that predates `follow` refuses it
+  as unknown before running anything, and the hub asks again without it.
 - Error codes: `bad_request`, `denied`, `not_found`, `unavailable` (the node is at `limits.concurrency`, or the
   script is refused: not root's, two with its name),
   `timeout`, `unsupported_version`, `internal`. The hub adds `unreachable` and `host_key_mismatch` from
@@ -152,6 +159,14 @@ Every tool but `nodes` takes a `node` argument.
   answer it. The hub logs each question and its answer. The description of a script's tool says when a person approves
   each run, so the model can say so before calling it. `nodes` names every script `[approval]` lists that no node
   offers: a misspelt name would otherwise let the script it meant run without asking.
+- **Results are text, as a person reads them**: a script's tool answers what it printed, its stderr after a
+  `[stderr]` line, and a last line with its exit code, `[exit 0]` (with the signal that ended it, when one did); a
+  file, its lines and a last line with the path and the range, `[/etc/hosts: lines 1–12, end of file]`. The other
+  tools answer JSON. A limit that cut the answer is said in a last line.
+- **Progress.** Over stdio, a script's call with a `progressToken` and no `tail` runs with `follow` (§4): each piece of
+  output reaches the client as it is produced, in a `notifications/progress` whose `message` is the text, and the
+  result is the whole output as above. The model sees the result; the progress is for the client's interface. HTTP
+  sends none: `POST /mcp` answers with JSON once the call ends.
 - `grep` is a fixed string, case-insensitive, matched against the redacted text —never the raw one, or a
   guess at a secret would be told apart by whether a line comes back— and filters before `tail` applies:
   the answer is the last N matching lines. A script never sees `grep` or `tail`, and can't declare
@@ -543,12 +558,12 @@ button is declared in the hub's `limen.toml`. Only `serve`: a hub that lives as 
 | `limen invite <name> [--ttl 1h] [--home <dir>]` | hub | The line that joins a machine (§10.1) |
 | `limen trust <name> <address> <host-key> [--user <user>] [--port <port>] [--home <dir>]` | hub | A node added by hand |
 | `limen forget <name> [--home <dir>]` | hub | A node taken off the hub |
-| `limen call <node> <request \| script> [--arg k=v]… [--grep <text>] [--tail <n>] [--home <dir>]` | hub | One request over SSH; prints the JSON. A script's arguments are typed by its header, from the node's catalog |
+| `limen call <node> <request \| script> [--arg k=v]… [--grep <text>] [--tail <n>] [--json] [--home <dir>]` | hub | One request over SSH. A script's arguments are typed by its header, from the node's catalog. A script's output is printed as it is produced (`follow`, §4; all at the end with `--tail`), its stdout on stdout and its stderr on stderr, and `call` exits with its exit code; a file prints its lines; other requests, and everything with `--json`, print the node's JSON answer and exit 0 when it is `ok` |
 | `limen join <line> \| --hub-key <key> --name <name> [--from …] [--address …] [--ssh-port …]` | node, root | Joins the hub (§10.1): install with the hub's key, then report |
 | `limen install [--hub-key <key>] [--from <addresses>] [--dry-run]` | node, root | Debian, Ubuntu and the like: binary in `/usr/local/bin`, the `limen` user, `authorized_keys`, `sudoers` (validated with `visudo -c` first) and, where systemd runs, the user's `user@<uid>.service` masked. OpenWrt: binary in `/usr/bin`, root's dropbear keys, sysupgrade keep list. Both: `/etc/limen/` and a `limen.toml` if there is none. Without `--hub-key` nothing opens to SSH yet. Idempotent |
 | `limen uninstall [--purge] [--dry-run]` | node, root | Undoes `install`; keeps `/etc/limen/` and the logs unless `--purge` |
 | `limen gate [--config <file>]` | node | The forced command. Not for people |
-| `limen run <script> [--arg k=v]… [--grep <text>] [--tail <n>] [--config <file>]` | node, root | One script, as the hub would run it; prints its output and exits with its exit code |
+| `limen run <script> [--arg k=v]… [--grep <text>] [--tail <n>] [--config <file>]` | node, root | One script, as the hub would run it; prints its output as it is produced (all at the end with `--tail`) and exits with its exit code |
 | `limen lint [--config <file>]` | node | Packs, script names, headers and permissions, without running anything |
 | `limen version` | both | The version |
 
@@ -735,5 +750,4 @@ hub:   [nodes.nas] with the request's source address, then `hello`  →  {"reach
 - The `arm64` binary runs under qemu-user, children included, but has not run on hardware yet.
 - 32-bit routers: an ARMv7 build (`armv7-unknown-linux-musleabihf`) links and runs under qemu; MIPS
   needs Rust's nightly. Neither is released.
-- Following a script's output (`follow`): v1 only answers once it has finished.
 - A `.deb` package besides `limen install`.

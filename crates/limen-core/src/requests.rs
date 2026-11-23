@@ -57,6 +57,7 @@ pub fn all() -> &'static [RequestDef] {
                     Param::new("script", String, "The script's name").required().pattern(SCRIPT_NAME),
                     Param::new("args", Object, "The script's arguments"),
                     Param::new("read_only", Bool, "Refused unless the script's header says read_only: a sensor's read"),
+                    Param::new("follow", Bool, "Its output as it comes, in chunk lines before the answer"),
                 ]),
             ),
         ]

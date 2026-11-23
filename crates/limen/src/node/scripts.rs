@@ -2,8 +2,9 @@
 
 use super::{Answer, Node, gate, internal};
 use crate::os::{fs, proc, sys};
+use limen_core::follow::Lines;
 use limen_core::params::{self, ArgsExt};
-use limen_core::protocol::{ErrorCode, Result, error};
+use limen_core::protocol::{Chunk, ChunkLine, ErrorCode, LimenError, Result, Stream, error};
 use limen_core::scripts::{self, Catalog, ScriptSpec};
 use limen_core::trust;
 use serde_json::{Map, Value, json};
@@ -17,6 +18,8 @@ const MAX_HEADER: usize = 64 * 1024;
 pub const MAX_OUTPUT_BYTES: usize = 16 << 20;
 /// What a request is given on top of its script's own timeout: starting it, stopping it, answering.
 const MARGIN: Duration = Duration::from_secs(30);
+/// What a followed run holds back of a line without its newline, or of a private key without its end.
+const MAX_CARRY: usize = 64 * 1024;
 
 /// A file of a pack: its spec when it is a usable script, what is wrong with it otherwise, or [ignored] when it is not
 /// a script at all —a README, a helper without a header—, which only `limen lint` mentions.
@@ -154,8 +157,44 @@ pub fn find(node: &Node, name: &str) -> Result<(ScriptEntry, ScriptSpec)> {
     Ok((entry, spec))
 }
 
-/// `run`: the script, its arguments checked against its header; its output redacted, then filtered.
+/// `run`: the script, its arguments checked against its header; its output redacted, then filtered. With `follow`, the
+/// output goes out on stdout as it comes, in chunk lines before the answer (spec §4).
 pub fn run(node: &Node, args: &Args) -> Result<Answer> {
+    if args.bool("follow") == Some(true) {
+        return run_following(node, args, &mut |chunk| sys::say(&ChunkLine { chunk }.to_line()));
+    }
+    let (script, spec, run) = prepare(node, args)?;
+    let result = proc::run(std::slice::from_ref(&script), run).map_err(internal)?;
+    if result.timed_out {
+        return Err(timed_out(&spec));
+    }
+    let tail = args.small_integer("tail")?.map(|tail| tail.max(1) as usize);
+    let (stdout, stdout_cut) = node.filter(&node.clean(&result.out()), args.string("grep"), tail);
+    let (stderr, stderr_cut) = node.filter(&node.clean(&result.err()), None, None);
+    let mut answer = exit_of(&spec, &result);
+    answer["stdout"] = json!(stdout.join("\n"));
+    answer["stderr"] = json!(stderr.join("\n"));
+    Ok(Answer::cut(answer, result.truncated || stdout_cut || stderr_cut))
+}
+
+/// `run` with `follow`: each piece of output, whole lines cleaned and filtered, to [send] as it comes; the answer
+/// holds the exit code alone. `tail` doesn't apply: it needs the end.
+pub fn run_following(node: &Node, args: &Args, send: &mut dyn FnMut(Chunk)) -> Result<Answer> {
+    let (script, spec, run) = prepare(node, args)?;
+    let mut streaming = Streaming::new(node, args.string("grep"));
+    let result = proc::run_watching(std::slice::from_ref(&script), run, &mut |stream, bytes| {
+        streaming.take(stream, bytes, send);
+    })
+    .map_err(internal)?;
+    let cut = streaming.finish(send);
+    if result.timed_out {
+        return Err(timed_out(&spec));
+    }
+    Ok(Answer::cut(exit_of(&spec, &result), result.truncated || cut))
+}
+
+/// The script [args] name, ready to run: its path, its header, and how it runs.
+fn prepare(node: &Node, args: &Args) -> Result<(String, ScriptSpec, proc::Run)> {
     let (entry, spec) = find(node, args.string("script").unwrap_or_default())?;
     // The hub's sensors only read: the node checks it on the script as it is now, not as the hub last saw it.
     if args.bool("read_only") == Some(true) && !spec.read_only {
@@ -164,24 +203,77 @@ pub fn run(node: &Node, args: &Args) -> Result<Answer> {
     let env = environment(&entry, &spec, &args.object("args"))?;
     let timeout = Duration::from_secs(spec.timeout_seconds);
     gate::allow(timeout + MARGIN);
-    let result = proc::run(
-        std::slice::from_ref(&entry.path),
-        proc::Run { env, timeout, max_output: MAX_OUTPUT_BYTES, ..Default::default() },
-    )
-    .map_err(internal)?;
-    if result.timed_out {
-        return Err(error(ErrorCode::Timeout, format!("{} did not finish in {}s", spec.name, spec.timeout_seconds)));
-    }
-    let tail = args.small_integer("tail")?.map(|tail| tail.max(1) as usize);
-    let (stdout, stdout_cut) = node.filter(&node.clean(&result.out()), args.string("grep"), tail);
-    let (stderr, stderr_cut) = node.filter(&node.clean(&result.err()), None, None);
+    Ok((entry.path, spec, proc::Run { env, timeout, max_output: MAX_OUTPUT_BYTES, ..Default::default() }))
+}
+
+fn timed_out(spec: &ScriptSpec) -> LimenError {
+    error(ErrorCode::Timeout, format!("{} did not finish in {}s", spec.name, spec.timeout_seconds))
+}
+
+/// The answer's script, exit code and signal.
+fn exit_of(spec: &ScriptSpec, result: &proc::ProcResult) -> Value {
     let mut answer = json!({"script": spec.name, "exit": result.exit_code});
     if let Some(signal) = result.signal {
         answer["signal"] = json!(signal);
     }
-    answer["stdout"] = json!(stdout.join("\n"));
-    answer["stderr"] = json!(stderr.join("\n"));
-    Ok(Answer::cut(answer, result.truncated || stdout_cut || stderr_cut))
+    answer
+}
+
+/// A script's output on its way out as it comes: whole lines, cleaned, then filtered, within `limits.max_response`.
+struct Streaming<'a> {
+    node: &'a Node,
+    grep: Option<&'a str>,
+    stdout: Lines,
+    stderr: Lines,
+    room: usize,
+    cut: bool,
+}
+
+impl<'a> Streaming<'a> {
+    fn new(node: &'a Node, grep: Option<&'a str>) -> Self {
+        Streaming {
+            node,
+            grep,
+            stdout: Lines::holding_private_keys(MAX_CARRY),
+            stderr: Lines::holding_private_keys(MAX_CARRY),
+            room: node.config.max_response_bytes,
+            cut: false,
+        }
+    }
+
+    fn take(&mut self, stream: Stream, bytes: &[u8], send: &mut dyn FnMut(Chunk)) {
+        let lines = if stream == Stream::Stdout { &mut self.stdout } else { &mut self.stderr };
+        if let Some(text) = lines.push(bytes) {
+            self.send(stream, &text, send);
+        }
+    }
+
+    /// Sends what is left; whether a limit kept something from going.
+    fn finish(mut self, send: &mut dyn FnMut(Chunk)) -> bool {
+        let (stdout, stderr) = (self.stdout.rest(), self.stderr.rest());
+        for (stream, rest) in [(Stream::Stdout, stdout), (Stream::Stderr, stderr)] {
+            if let Some(text) = rest {
+                self.send(stream, &text, send);
+            }
+        }
+        self.cut
+    }
+
+    /// [text] as it may leave the node: `grep` applies to stdout, as when the run answers at the end.
+    fn send(&mut self, stream: Stream, text: &str, send: &mut dyn FnMut(Chunk)) {
+        let cleaned = self.node.clean(text);
+        let grep = self.grep.filter(|_| stream == Stream::Stdout);
+        let text = super::last_matching(cleaned.split_inclusive('\n').collect(), grep, usize::MAX).concat();
+        if text.is_empty() || self.cut {
+            return;
+        }
+        if text.len() > self.room {
+            self.cut = true;
+            return;
+        }
+        self.room -= text.len();
+        send(Chunk { stream, text });
+    }
 }
 
 /// The environment of a script: a clean one plus `LIMEN_*` (docs/scripts.md). Arguments are validated first.
@@ -210,6 +302,7 @@ mod tests {
     use super::*;
     use limen_core::config::node::NodeConfig;
     use std::os::unix::fs::PermissionsExt;
+    use std::time::Instant;
 
     /// Two packs, removed at the end.
     struct Packs {
@@ -305,6 +398,37 @@ mod tests {
         assert_eq!(filtered.data["stdout"], "", "a guess at the secret is not told apart");
         let last = run(&packs.node, &run_args("say", &json!({"word": "hi"}), &json!({"tail": 1}))).unwrap();
         assert_eq!(last.data["stdout"], "password=[redacted]");
+    }
+
+    #[test]
+    fn a_followed_run_sends_its_output_as_it_comes_redacted_filtered_and_within_max_response() {
+        let slow =
+            "#!/bin/sh\n#: description = \"Slow\"\nprintf 'first\\npassword=hunter2\\n'; sleep 1; echo last >&2\n";
+        let mut packs = packs(&[("one/slow.sh", slow)]);
+        let start = Instant::now();
+        let mut chunks = Vec::new();
+        let answer = run_following(&packs.node, &run_args("slow", &json!({}), &json!({})), &mut |chunk| {
+            chunks.push((chunk, start.elapsed()));
+        })
+        .unwrap();
+        assert_eq!(chunks[0].0, Chunk { stream: Stream::Stdout, text: "first\npassword=[redacted]\n".into() });
+        assert!(chunks[0].1 < Duration::from_millis(800), "it came only at the end: {:?}", chunks[0].1);
+        assert_eq!(chunks[1].0, Chunk { stream: Stream::Stderr, text: "last\n".into() });
+        assert_eq!(answer.data, json!({"script": "slow", "exit": 0}));
+        assert!(!answer.truncated);
+        let mut grepped = Vec::new();
+        run_following(&packs.node, &run_args("slow", &json!({}), &json!({"grep": "pass"})), &mut |chunk| {
+            grepped.push(chunk.text);
+        })
+        .unwrap();
+        assert_eq!(grepped, ["password=[redacted]\n", "last\n"]);
+        packs.node.config.max_response_bytes = 10;
+        let mut cut = Vec::new();
+        let answer =
+            run_following(&packs.node, &run_args("slow", &json!({}), &json!({})), &mut |chunk| cut.push(chunk.text))
+                .unwrap();
+        assert!(cut.is_empty(), "past the limit nothing more goes, a smaller piece neither: {cut:?}");
+        assert!(answer.truncated);
     }
 
     #[test]

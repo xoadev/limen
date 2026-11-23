@@ -275,7 +275,8 @@ Ask the agent as you would ask a colleague with access to the machines' scripts:
 - *"Why does Immich restart?"* — `container immich`, then `container_logs name=immich grep=error`.
 - *"Bring the NAS to the repository."* — `sync`, if the machine's pack offers it.
 
-Without the agent, `docker compose exec limen limen call nas status` asks a machine the same by hand.
+Without the agent, `docker compose exec limen limen call nas status` asks a machine the same by hand: the script's
+output shows as it is printed, and `call` exits with its exit code. `--json` prints the node's whole answer instead.
 
 ### A person approves the changes
 

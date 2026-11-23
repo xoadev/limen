@@ -6,9 +6,10 @@
 use super::NodeClient;
 use limen_core::config::hub::Approval;
 use limen_core::params::{self, Param, ParamType};
-use limen_core::protocol::{LimenError, NodeError, NodeResponse, pretty};
+use limen_core::protocol::{Chunk, LimenError, NodeError, NodeResponse, Stream, pretty};
 use limen_core::requests::{self, RequestDef};
 use limen_core::scripts::{self, Catalog, ScriptSpec, ScriptTool};
+use limen_core::text::{self, TRUNCATED};
 use limen_core::version::VERSION;
 use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -398,7 +399,8 @@ impl McpServer {
             (self.log)(&format!("tool={name} node={node} not approved: {why}"));
             return Ok(tool_error(&format!("not approved: {why}; nothing ran on {node}")));
         }
-        Ok(self.send(name, &node, &call))
+        let progress = params.get("_meta").and_then(|meta| meta.get("progressToken"));
+        Ok(self.send(name, &node, &call, progress))
     }
 
     /// Asks the person at the client whether [call] of [script] may run on [node], and waits up to [timeout]: Ok only
@@ -460,13 +462,36 @@ impl McpServer {
         Ok(Tool::Script { name: name.into(), tool })
     }
 
-    /// Sends [call] to [node], and logs the tool, the node, how it went and how long it took.
-    fn send(&self, tool: &str, node: &str, call: &NodeCall) -> Value {
+    /// Sends [call] to [node], and logs the tool, the node, how it went and how long it took. A script's call with a
+    /// [progress] token follows its output, when the transport reaches the one client that asked (spec §5).
+    fn send(&self, tool: &str, node: &str, call: &NodeCall, progress: Option<&Value>) -> Value {
         let started = Instant::now();
-        let response = self.client.call(node, &call.request, &call.args, call.timeout);
+        let notify = self.notify.as_ref().filter(|_| self.asks);
+        let response = match (progress, notify) {
+            (Some(token), Some(notify)) if call.request == "run" && !call.args.contains_key("tail") => {
+                self.follow(node, call, &|count, chunk: &Chunk| notify(&progress_notification(token, count, chunk)))
+            }
+            _ => self.client.call(node, &call.request, &call.args, call.timeout),
+        };
         let result = response.error.as_ref().map_or("ok", |failure| failure.code.as_str());
         (self.log)(&format!("tool={tool} node={node} result={result} {}ms", started.elapsed().as_millis()));
-        render(&response)
+        render(&call.request, &response)
+    }
+
+    /// A `run` that hands each chunk to [progress] as it comes, and answers its whole output at the end.
+    fn follow(&self, node: &str, call: &NodeCall, progress: &dyn Fn(u64, &Chunk)) -> NodeResponse {
+        let (mut stdout, mut stderr, mut count) = (String::new(), String::new(), 0);
+        let mut response = self.client.follow(node, &call.args, call.timeout, &mut |chunk| {
+            count += 1;
+            progress(count, &chunk);
+            if chunk.stream == Stream::Stdout { &mut stdout } else { &mut stderr }.push_str(&chunk.text);
+        });
+        // A node that predates `follow` sent its output in the answer instead.
+        if let Some(data) = response.data.as_mut().filter(|data| data.get("stdout").is_none()) {
+            data["stdout"] = json!(stdout);
+            data["stderr"] = json!(stderr);
+        }
+        response
     }
 
     fn nodes(&self) -> Result<Value, Fault> {
@@ -676,15 +701,27 @@ fn verdict(answer: &Value) -> Result<(), String> {
     }
 }
 
-fn render(response: &NodeResponse) -> Value {
+/// A node's answer to [request] as the client reads it: text for a script or a file, JSON for the rest (spec §5).
+fn render(request: &str, response: &NodeResponse) -> Value {
     if !response.ok {
         return tool_error(&failure_message(response.error.as_ref()));
     }
-    let body = pretty(response.data.as_ref().unwrap_or(&Value::Null));
+    let data = response.data.as_ref().unwrap_or(&Value::Null);
+    let body = text::answer_text(request, data).unwrap_or_else(|| pretty(data));
     if response.truncated {
-        return tool_text(&format!("{body}\n\n[truncated: a limit cut this answer; narrow the request]"));
+        return tool_text(&format!("{body}\n{TRUNCATED}"));
     }
     tool_text(&body)
+}
+
+/// The [count]th piece of a call's output, for the client that asked with [token].
+fn progress_notification(token: &Value, count: u64, chunk: &Chunk) -> String {
+    json!({
+        "jsonrpc": "2.0",
+        "method": "notifications/progress",
+        "params": {"progressToken": token, "progress": count, "message": chunk.text},
+    })
+    .to_string()
 }
 
 /// A node's error, and what to do when it speaks other protocol versions.
@@ -755,6 +792,20 @@ mod tests {
                 }
                 other => NodeResponse::success(json!({"asked": other}), other == "run"),
             }
+        }
+
+        fn follow(
+            &self,
+            node: &str,
+            args: &Map<String, Value>,
+            _: Option<Duration>,
+            on_chunk: &mut dyn FnMut(Chunk),
+        ) -> NodeResponse {
+            self.calls.lock().unwrap().push((node.into(), "follow".into(), args.clone()));
+            on_chunk(Chunk { stream: Stream::Stdout, text: "copying\n".into() });
+            on_chunk(Chunk { stream: Stream::Stderr, text: "slow disk\n".into() });
+            on_chunk(Chunk { stream: Stream::Stdout, text: "done\n".into() });
+            NodeResponse::success(json!({"script": "backups", "exit": 0}), false)
         }
 
         fn approval(&self) -> Result<Approval> {
@@ -953,6 +1004,38 @@ mod tests {
         let notify: Sink = Box::new(move |message| sink.lock().unwrap().push(message.to_string()));
         let server = McpServer::new(client.clone(), Some(notify), Box::new(|_| {})).refreshing_every(Duration::ZERO);
         (server, sent)
+    }
+
+    fn call_with_progress(server: &McpServer, args: &Value) -> Value {
+        let params = json!({"name": "backups", "arguments": args, "_meta": {"progressToken": "p1"}});
+        rpc(server, "tools/call", &params)["result"].clone()
+    }
+
+    #[test]
+    fn a_script_called_with_a_progress_token_reports_its_output_as_it_comes() {
+        let client = nas_and_router();
+        let (server, sent) = announcing_server(&client);
+        let result = call_with_progress(&server, &json!({"node": "nas"}));
+        assert_eq!(text_of(&result), "copying\ndone\n[stderr]\nslow disk\n[exit 0]");
+        let progress: Vec<Value> =
+            sent.lock().unwrap().iter().map(|message| serde_json::from_str::<Value>(message).unwrap()).collect();
+        assert_eq!(progress.len(), 3);
+        assert_eq!(progress[0]["method"], "notifications/progress");
+        assert_eq!(progress[0]["params"], json!({"progressToken": "p1", "progress": 1, "message": "copying\n"}));
+        assert_eq!(progress[2]["params"]["progress"], 3);
+    }
+
+    #[test]
+    fn progress_only_where_it_reaches_the_caller_and_the_output_can_be_followed() {
+        let client = nas_and_router();
+        let (http, sent) = announcing_server(&client);
+        let http = http.announcing_only();
+        call_with_progress(&http, &json!({"node": "nas"}));
+        call_with_progress(&announcing_server(&client).0, &json!({"node": "nas", "tail": 5}));
+        call_tool(&announcing_server(&client).0, "backups", &json!({"node": "nas"}));
+        assert!(sent.lock().unwrap().is_empty());
+        let asked: Vec<String> = client.calls.lock().unwrap().iter().map(|(_, request, _)| request.clone()).collect();
+        assert!(!asked.contains(&"follow".to_string()), "{asked:?}");
     }
 
     #[test]
