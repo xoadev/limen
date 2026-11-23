@@ -82,7 +82,7 @@ The hub talks to each machine (each *node*) with the system's `ssh`; nothing lis
 | Tool | What it answers |
 |---|---|
 | `nodes` | The machines, whether they answer, their OS, limen version and the scripts each one offers; the [MQTT](#home-assistant-over-mqtt) sensors and buttons refused |
-| `read_file`, `list_dir` | Files the machine allows, and the directories that lead to them: a range of lines, the last ones (`tail`), or those holding a text (`grep`) |
+| `read_file`, `list_dir` | Files the machine allows —a range of lines, the last ones (`tail`), or those holding a text (`grep`)— and the directories that lead to them |
 | `history` | The machine's audit log |
 | *each script* | One tool per script in the machines' packs, with its own typed arguments, plus `grep` and `tail` to narrow its output |
 
@@ -220,15 +220,17 @@ document, read and never run.
 
 ```sh
 #!/bin/sh
-#: description = "Last lines of a Docker container's log"
+#: description = "The log of one Docker container over the last while, with timestamps, its stdout and stderr together"
 #: read_only = true
 #: [args.name]
 #: type = "string"
 #: pattern = '^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$'
+#: description = "The container's name or id"
 #: [args.since]
 #: type = "string"
 #: default = "1h"
-#: pattern = '^[0-9]{1,4}[smh]$'
+#: pattern = '^[0-9]{1,4}[smhd]$'
+#: description = "How far back: 30m, 6h, 2d"
 exec docker logs --timestamps --since "$LIMEN_ARG_SINCE" "$LIMEN_ARG_NAME" 2>&1
 ```
 

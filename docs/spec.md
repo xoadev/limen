@@ -27,7 +27,7 @@ limen/
   install.sh            # the installer piped into `sh` on a new machine or a laptop hub
   Cargo.toml            # the Rust workspace; rust-toolchain.toml pins the compiler and its targets
   crates/limen-core/    # pure rules: protocol, schemas, configuration, script headers, policy, redaction
-  crates/limen/         # the binary: node side, hub, SSH, MCP, HTTP
+  crates/limen/         # the binary: node side, hub, SSH, MCP, HTTP, MQTT
   etc/Dockerfile        # the hub image
   etc/e2e/              # the Debian node image and the MQTT broker of `make e2e`
   tools/                # scripts called by the Makefile
@@ -136,7 +136,7 @@ Every tool but `nodes` takes a `node` argument.
 | `nodes` | Configured nodes, reachability, limen version, OS, each node's catalog and its problems, and the MQTT sensors and buttons refused (§9.1) |
 | `read_file` | An allowed file: a range, `from` and `lines`; or its end, the last `tail` lines, or those that hold `grep` |
 | `list_dir` | An allowed directory: names, types, sizes, owners, modes, modification times. Only entries that are readable or lead to something readable; at most 1000 |
-| `history` | The node's audit log |
+| `history` | The node's audit log: its last `lines` entries, 50 unless given, at most 1000 |
 | `<script>` | One per script in the nodes' catalogs, with its declared arguments plus `grep` and `tail` |
 
 - `nodes`, `read_file`, `list_dir` and `history` are annotated `readOnlyHint: true`, and so is a script whose
@@ -156,8 +156,8 @@ Every tool but `nodes` takes a `node` argument.
   guess at a secret would be told apart by whether a line comes back— and filters before `tail` applies:
   the answer is the last N matching lines. A script never sees `grep` or `tail`, and can't declare
   arguments with those names.
-- `lines` (500 unless given) and `tail` above `limits.max_lines` are cut to it, and the answer says it was truncated.
-  `read_file` with `grep` or `tail` scans at most the last `limits.scan_lines` lines, and 16 MiB.
+- `lines` (500 unless given, at most 20000) and `tail` above `limits.max_lines` are cut to it, and the answer says it
+  was truncated. `read_file` with `grep` or `tail` scans at most the last `limits.scan_lines` lines, and 16 MiB.
 - A node's catalog is not trusted: a script whose name, description, arguments or patterns aren't plain and
   bounded, that declares a `node`, `grep` or `tail` argument, or whose name is a built-in tool's or request's, is
   left out and counted in `nodes`; `limen lint` on the node names each and says why, by the same rules
@@ -365,7 +365,7 @@ host_key = "ssh-ed25519 AAAA…"
   scheme, host and port as a browser sends them, `http://localhost:6274`, with no path or trailing slash. Empty by
   default: a request that carries an `Origin` gets `403`, and one without —an MCP client that isn't a browser—
   passes. The join endpoints don't look at it.
-- `host_key` is required: limen writes its own `known_hosts`, filing each key under the node's name
+- `host_key` is required: limen writes its own `known_hosts`, filing each key under `limen-<name>`
   (`HostKeyAlias`), and runs `ssh` with `StrictHostKeyChecking=yes`. There is no trust on first use:
   `limen install` prints the node's key, or get it with `ssh-keyscan` and verify it out of band. A
   node that changes address keeps its key.
@@ -624,7 +624,7 @@ hub:   [nodes.nas] with the request's source address, then `hello`  →  {"reach
   `SHA256SUMS` to the draft and only then publishes it, which creates the `vX.Y.Z` tag. A release is never public
   without its files, and releases are immutable: once published, neither its files nor its tag change. The version
   exists only from the tag: `limen --version` says
-  `X.Y.Z · build <run> · <date>`, or `dev` for a local build.
+  `limen X.Y.Z · build <run> · <date>`, or `limen dev` for a local build.
 - **Each pack under `packs/` is released on its own**, apart from limen and from the other packs: its tag is
   `pack-<pack>-vX.Y.Z`, and its version comes from the conventional commits that touched `packs/<pack>/`. A push
   that touches `packs/` runs `packs-draft.yml`, which rewrites the draft of each pack that changed; run by hand, it

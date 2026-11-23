@@ -6,9 +6,9 @@ Needs limen 0.1.3 or later: its headers use `read_only`, which older versions re
 
 | Script | Answers | Changes the machine |
 |---|---|---|
-| `limen_version` | The installed version, the latest release, and whether there is something to update | — |
-| `limen_lint` | Every problem `limen lint` finds in this machine's packs: names, headers, permissions | — |
-| `limen_packs` | The packs `limen.toml` lists, how many files each has, the release each one was unpacked from, and whether a newer one is published | — |
+| `limen_version` | The installed version, the latest release, and whether there is something to update | no |
+| `limen_lint` | Every problem `limen lint` finds in this machine's packs: names, headers, permissions | no |
+| `limen_packs` | The packs `limen.toml` lists, how many files each has, the release each one was unpacked from, and whether a newer one is published | no |
 | `limen_update` | Installs the latest release when it is newer than the installed one; otherwise says so | **yes** |
 
 - `limen_update` takes no argument, so it can only go to the latest release: whoever leads the model to call it can't pick
