@@ -286,7 +286,7 @@ EOF
   expect "list_dir names owners without NSS" '"owner": "root"' limen call debian list_dir --arg path=/etc
   refuse "list_dir hides what is not allowed" '"name": "limen-e2e"' '"(passwd|shadow|limen)"' limen call debian list_dir --arg path=/etc
   expect "a denied path that doesn't exist is denied too" '/root/nothing is not readable' limen call debian read_file --arg path=/root/nothing
-  expect "a denied path is denied before its type is told" '"denied"' limen call debian list_dir --arg path=/etc/shadow
+  expect "a denied path is denied before its type is told" 'denied: /etc/shadow' limen call debian list_dir --arg path=/etc/shadow
   expect "dots are walked where links lead, not as text" '/var/run/../etc/shadowX is not readable' \
     limen call debian read_file --arg path=/var/run/../etc/shadowX
   expect "a binary file answers its size, no content" 'a binary file, ' limen call debian read_file --arg path=/etc/limen-e2e/blob
