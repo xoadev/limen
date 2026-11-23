@@ -4,8 +4,9 @@
 use super::{NodeClient, internal};
 use crate::os::{fs, proc, sys};
 use limen_core::config::hub::{Approval, HubConfig, NodeEntry};
+use limen_core::follow::Lines;
 use limen_core::join;
-use limen_core::protocol::{ErrorCode, LimenError, NodeRequest, NodeResponse, Result, error};
+use limen_core::protocol::{Chunk, ChunkLine, ErrorCode, LimenError, NodeRequest, NodeResponse, Result, Stream, error};
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
 use std::sync::{Condvar, Mutex};
@@ -13,6 +14,8 @@ use std::time::Duration;
 
 /// What ssh may print for one of the hub's own requests.
 const MAX_OUTPUT: usize = 32 << 20;
+/// The longest chunk line a node sends: a piece of output, escaped as JSON. A longer one is not a chunk.
+const MAX_CHUNK_LINE: usize = 1 << 20;
 
 /// At most N requests at once per node.
 struct Semaphore {
@@ -112,6 +115,42 @@ impl NodeClient for SshClient {
     }
 
     fn call(&self, node: &str, request: &str, args: &Map<String, Value>, timeout: Option<Duration>) -> NodeResponse {
+        self.request(node, request, args, timeout, &mut |_, _| {})
+    }
+
+    fn follow(
+        &self,
+        node: &str,
+        args: &Map<String, Value>,
+        timeout: Option<Duration>,
+        on_chunk: &mut dyn FnMut(Chunk),
+    ) -> NodeResponse {
+        let mut following = args.clone();
+        following.insert("follow".into(), true.into());
+        let mut lines = Lines::new(MAX_CHUNK_LINE);
+        let response = self.request(node, "run", &following, timeout, &mut |stream, bytes| {
+            let Some(text) = lines.push(bytes).filter(|_| stream == Stream::Stdout) else { return };
+            text.lines().filter_map(ChunkLine::parse).for_each(&mut *on_chunk);
+        });
+        // Refused before anything ran: the node predates `follow`, and answers at the end instead.
+        if refuses_follow(&response) { self.call(node, "run", args, timeout) } else { response }
+    }
+
+    fn approval(&self) -> Result<Approval> {
+        Ok(self.config.approval.clone())
+    }
+}
+
+impl SshClient {
+    /// One request to [node] over ssh, each piece of what ssh prints handed to [watch] as it comes.
+    fn request(
+        &self,
+        node: &str,
+        request: &str,
+        args: &Map<String, Value>,
+        timeout: Option<Duration>,
+        watch: &mut dyn FnMut(Stream, &[u8]),
+    ) -> NodeResponse {
         let (Some(entry), Some(limit)) = (self.config.node(node), self.per_node_limits.get(node)) else {
             return NodeResponse::failure(&no_node(node));
         };
@@ -123,15 +162,18 @@ impl NodeClient for SshClient {
             timeout,
             max_output: MAX_OUTPUT,
         };
-        match limit.with(|| proc::run(&argv, run)) {
+        match limit.with(|| proc::run_watching(&argv, run, watch)) {
             Ok(result) => node_response(node, &result, timeout),
             Err(cause) => NodeResponse::failure(&internal(cause)),
         }
     }
+}
 
-    fn approval(&self) -> Result<Approval> {
-        Ok(self.config.approval.clone())
-    }
+/// Whether [response] is a node's refusal of `follow`, an argument it doesn't know.
+fn refuses_follow(response: &NodeResponse) -> bool {
+    response.error.as_ref().is_some_and(|failure| {
+        failure.code == ErrorCode::BadRequest.wire() && failure.message.contains("unknown argument 'follow'")
+    })
 }
 
 fn no_node(node: &str) -> LimenError {
@@ -235,5 +277,24 @@ fn require_private_dir(path: &str) -> Result<()> {
             Ok(())
         }
         _ => Err(internal(format!("{path} must be a directory of this user with mode 0700"))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use limen_core::params;
+    use limen_core::requests;
+    use serde_json::json;
+
+    #[test]
+    fn a_node_that_predates_follow_is_told_by_its_refusal() {
+        let older: Vec<_> =
+            requests::named("run").params.iter().filter(|param| param.name != "follow").cloned().collect();
+        let args = json!({"script": "backup", "follow": true});
+        let refusal = params::validate(&older, args.as_object().expect("an object")).expect_err("unknown");
+        assert!(refuses_follow(&NodeResponse::failure(&refusal)), "{}", refusal.message);
+        let other = error(ErrorCode::BadRequest, "unknown argument 'verbose'");
+        assert!(!refuses_follow(&NodeResponse::failure(&other)));
     }
 }

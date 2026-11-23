@@ -1,6 +1,7 @@
 //! Child processes without a shell (spec §12): an argument array, stdout and stderr on separate pipes read with a
 //! cap, a timeout that stops the whole process group, and an environment that is exactly the one given.
 
+pub use limen_core::protocol::Stream;
 use rustix::event::{PollFd, PollFlags, Timespec, poll};
 use rustix::io::Errno;
 use rustix::process::{Pid, Signal, kill_process_group};
@@ -94,7 +95,16 @@ pub fn stop_all() {
 }
 
 /// Runs [argv] to completion. `argv[0]` is an absolute path (see [which]).
-pub fn run(argv: &[String], mut options: Run) -> Result<ProcResult, String> {
+pub fn run(argv: &[String], options: Run) -> Result<ProcResult, String> {
+    run_watching(argv, options, &mut |_, _| {})
+}
+
+/// [run], handing [watch] each piece of output as it is read, besides keeping it in the result.
+pub fn run_watching(
+    argv: &[String],
+    mut options: Run,
+    watch: &mut dyn FnMut(Stream, &[u8]),
+) -> Result<ProcResult, String> {
     let program = argv
         .first()
         .filter(|program| program.starts_with('/'))
@@ -109,7 +119,7 @@ pub fn run(argv: &[String], mut options: Run) -> Result<ProcResult, String> {
         max_output: options.max_output,
     };
     track(running.pid);
-    let status = running.await_child(&mut child, options.stdin.take(), options.timeout);
+    let status = running.await_child(&mut child, options.stdin.take(), options.timeout, watch);
     untrack(running.pid);
     let (exit_code, signal) = exit_code_and_signal(status);
     Ok(ProcResult {
@@ -235,7 +245,13 @@ impl Pipes {
 }
 
 impl Running {
-    fn await_child(&mut self, child: &mut Child, input: Option<Vec<u8>>, timeout: Duration) -> Option<ExitStatus> {
+    fn await_child(
+        &mut self,
+        child: &mut Child,
+        input: Option<Vec<u8>>,
+        timeout: Duration,
+        watch: &mut dyn FnMut(Stream, &[u8]),
+    ) -> Option<ExitStatus> {
         let start = Instant::now();
         let mut pipes = Pipes::take(child, input);
         let mut status = None;
@@ -263,7 +279,7 @@ impl Running {
                 }
             };
             for end in ready {
-                self.transfer(&mut pipes, end, &mut buffer);
+                self.transfer(&mut pipes, end, &mut buffer, watch);
             }
             if self.truncated {
                 self.signal(Signal::TERM);
@@ -275,14 +291,15 @@ impl Running {
     }
 
     /// Moves what [end] is ready for: input into the child, or its output into this run.
-    fn transfer(&mut self, pipes: &mut Pipes, end: End, buffer: &mut [u8]) {
-        let read = match end {
+    fn transfer(&mut self, pipes: &mut Pipes, end: End, buffer: &mut [u8], watch: &mut dyn FnMut(Stream, &[u8])) {
+        let (stream, read) = match end {
             End::Stdin => return pipes.feed(),
-            End::Stdout => read_some(&mut pipes.stdout, buffer),
-            End::Stderr => read_some(&mut pipes.stderr, buffer),
+            End::Stdout => (Stream::Stdout, read_some(&mut pipes.stdout, buffer)),
+            End::Stderr => (Stream::Stderr, read_some(&mut pipes.stderr, buffer)),
         };
         if let Some(n) = read {
-            self.accept(end, &buffer[..n]);
+            let kept = self.accept(stream, &buffer[..n]);
+            watch(stream, &buffer[..kept]);
         }
     }
 
@@ -299,15 +316,16 @@ impl Running {
         child.wait().ok()
     }
 
-    fn accept(&mut self, end: End, bytes: &[u8]) {
+    /// Keeps [bytes] within the cap; how many it kept.
+    fn accept(&mut self, stream: Stream, bytes: &[u8]) -> usize {
         let room = self.max_output.saturating_sub(self.stdout.len() + self.stderr.len());
-        let kept = if matches!(end, End::Stdout) { &mut self.stdout } else { &mut self.stderr };
+        let kept = if stream == Stream::Stdout { &mut self.stdout } else { &mut self.stderr };
         if bytes.len() > room {
-            kept.extend_from_slice(&bytes[..room]);
             self.truncated = true;
-        } else {
-            kept.extend_from_slice(bytes);
         }
+        let count = bytes.len().min(room);
+        kept.extend_from_slice(&bytes[..count]);
+        count
     }
 
     /// To the child's whole process group, which it leads.
@@ -412,6 +430,21 @@ mod tests {
         assert!(result.truncated);
         assert!(!result.timed_out);
         assert!(result.stdout.len() <= 10_000);
+    }
+
+    #[test]
+    fn output_is_watched_as_it_comes() {
+        let start = Instant::now();
+        let mut seen = Vec::new();
+        let result = run_watching(&sh("echo first; sleep 1; echo second >&2"), Run::default(), &mut |stream, bytes| {
+            seen.push((stream, String::from_utf8_lossy(bytes).into_owned(), start.elapsed()));
+        })
+        .unwrap();
+        assert_eq!(result.out(), "first\n");
+        assert_eq!(seen[0].0, Stream::Stdout);
+        assert_eq!(seen[0].1, "first\n");
+        assert!(seen[0].2 < Duration::from_millis(800), "first came only at {:?}", seen[0].2);
+        assert!(seen.iter().any(|(stream, text, _)| *stream == Stream::Stderr && text == "second\n"));
     }
 
     #[test]

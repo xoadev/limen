@@ -173,7 +173,7 @@ what to do. README's status note says the same to users.
 | `Cargo.toml`, `rust-toolchain.toml` | The workspace and the Rust version it is built with, targets included; `.cargo/config.toml` links the musl targets with `rust-lld` |
 | `rustfmt.toml`, `clippy.toml`, `[workspace.lints]`, `.rumdl.toml`, `[workspace.metadata.typos]` | The layout and the lints `make lint` applies (see [Rust code](#rust-code)) |
 | `.claude/settings.json` | Claude Code's hooks for this repository: an edited Rust file is formatted at once |
-| `crates/limen-core/` | Pure rules: protocol, request schemas, argument validation, configuration, TOML reading, script headers, path policy, redaction, the join's formats, MQTT's packets, topics and discovery. No processes, files or network |
+| `crates/limen-core/` | Pure rules: protocol, request schemas, argument validation, configuration, TOML reading, script headers, path policy, redaction, a followed run's output cut into lines (`follow`), answers as text (`text`), the join's formats, MQTT's packets, topics and discovery. No processes, files or network |
 | `crates/limen/` | The `limen` binary: `os/` (processes, files, the system, `join`'s HTTP client), `node/` (gate, requests, files, scripts, lint, install, join), `hub/` (SSH client, MCP server, HTTP server, MQTT bridge, transports, the hub's directory) |
 | `install.sh` | The installer a user pipes into `sh` on a new machine. POSIX `sh` (OpenWrt has no bash); `make e2e` runs it under dash and ash |
 | `tools/` | Scripts the `Makefile` calls: `cargo.sh` builds, `lint.sh`, `lint-updates.sh`, `e2e.sh`, `docker.sh`, `pack.sh`, `local-install.sh`, `hooks-install.sh` (installs `pre-push.sh`), `workflow.sh` runs a draft or release workflow on `main`; `format-edited.sh` is Claude Code's hook |
@@ -225,7 +225,7 @@ Each one had an alternative. Changing one is changing this table and the spec's 
   opened once with `fs::open_exact` (`fs::open_dir_exact` for a directory), every check made on that descriptor;
   every argument goes through `params::validate`; every script through `scripts::find` and `proc::run` with an
   argument array; every text leaving the node through `Node::clean` (control sequences removed, then `Redactor`),
-  and every filter after it (`Node::filter`).
+  and every filter after it (`Node::filter`; `Node::matching` for a followed run).
 - **The README names no version**: the latest release of limen and of each pack shows in a badge. A requirement
   that stays true —"needs limen 0.1.3 or later" in a pack's README— is not an example and stays.
 
@@ -360,9 +360,9 @@ Mistakes made here, with what avoids them. `make check` does not see them.
   211 s over 100,000 lines. Fixed patterns are `static … LazyLock<Regex>`.
 - **Unicode's `\s` and `\w` cost milliseconds to compile**, on every request: the built-in redaction patterns
   spell their classes in ASCII and compile on first use.
-- **A `grep` on the raw text is an oracle.** Filtering before redacting answered whether a guess at a secret was
-  right, one character at a time. Every filter runs on what is already redacted (`Node::filter`), and a script never
-  receives `grep` or `tail`.
+- **A `grep` on the raw text is an oracle.** Filtering before redacting answered whether a guess at a secret was right,
+  one character at a time. Every filter runs on what is already redacted (`Node::filter`, `Node::matching`), and a
+  script never receives `grep` or `tail`.
 - **Checking a path and then opening it again is a race.** A local user swapped a directory for a link between the
   check and `list_dir`'s listing, 44 times in 300. `read_file` and `list_dir` open once and check the descriptor.
 - **A Unix socket path has 108 bytes.** ssh's control socket in a long `XDG_RUNTIME_DIR` made every call to OpenWrt

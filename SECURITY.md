@@ -20,6 +20,8 @@ this is a small project, so please allow a few days.
 - An argument reaching a shell, an argument a script's header doesn't declare reaching it, or running a file that
   is not a script of the node's packs.
 - `grep` or `tail` telling apart what redaction masked.
+- A secret leaving a node in halves while a script's output is followed (`follow`, spec §4): output is redacted a
+  piece at a time, whole lines, and a private key's block whole.
 - The MCP server over HTTP answering without the token.
 - A script that `[approval]` names running without a person's yes, other than by the MCP client answering for
   them.

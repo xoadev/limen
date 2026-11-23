@@ -148,6 +148,39 @@ impl NodeResponse {
     }
 }
 
+/// Where a piece of a script's output came from.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Stream {
+    Stdout,
+    Stderr,
+}
+
+/// A piece of a script's output, whole lines already cleaned, that a `run` with `follow` sends before its answer.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Chunk {
+    pub stream: Stream,
+    pub text: String,
+}
+
+/// The line a [Chunk] travels in: `{"chunk": {…}}`, told apart from the answer, which has `ok`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ChunkLine {
+    pub chunk: Chunk,
+}
+
+impl ChunkLine {
+    pub fn to_line(&self) -> String {
+        serde_json::to_string(self).expect("a chunk serializes")
+    }
+
+    /// The chunk [line] carries; None for any other line, the answer included.
+    pub fn parse(line: &str) -> Option<Chunk> {
+        serde_json::from_str::<ChunkLine>(line).ok().map(|line| line.chunk)
+    }
+}
+
 /// JSON with two-space indentation, as `limen call` and the CLI print it.
 pub fn pretty(value: &impl Serialize) -> String {
     serde_json::to_string_pretty(value).unwrap_or_default()
