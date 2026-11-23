@@ -20,8 +20,8 @@ cd "$(dirname "$0")/.."
 
 SHELLCHECK_VERSION=0.11.0
 ACTIONLINT_VERSION=1.7.12
-RUMDL_VERSION=0.3.0
-TYPOS_VERSION=1.51.1
+RUMDL_VERSION=0.3.4
+TYPOS_VERSION=1.52.2
 # sha256 of each archive, per architecture: a changed download is refused, not run. Update them with the versions
 # (`make lint-updates` says when one is behind; AGENTS.md, how to bump it).
 declare -A SHA256=(
@@ -29,10 +29,10 @@ declare -A SHA256=(
   [shellcheck-aarch64]=12b331c1d2db6b9eb13cfca64306b1b157a86eb69db83023e261eaa7e7c14588
   [actionlint-amd64]=8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
   [actionlint-arm64]=325e971b6ba9bfa504672e29be93c24981eeb1c07576d730e9f7c8805afff0c6
-  [rumdl-x86_64]=6c90c398f04c11a09dcbd2da08bdaa6d53d9b14393e3cd32dbdf4da5620eec5c
-  [rumdl-aarch64]=5a6274e69bf22164ee6adb47381c870f61ece4648a89fa8b178f0ed24857154a
-  [typos-x86_64]=93c301fd4120ff076e2cc2a6d6a61cab4a4bdb81899287c0938b452e56d1f454
-  [typos-aarch64]=2ac5e37b3236b3c07dec5cdf1527acf143aec4674a6089b0bf424d021b35e099
+  [rumdl-x86_64]=2e64c7654906f0df82218fcc73cbdded2e41f37961f5be3e876e708bdf42e367
+  [rumdl-aarch64]=712d7b0c5413a5bc0315c939f29a9cc87dbee43fb9a119138fff1d6599a41f92
+  [typos-x86_64]=3b13d1291281d39d01822e54035636487a7a0f228e70097899b1e33aeb0e7e93
+  [typos-aarch64]=f2f54b567f5f4688f000f1bf85c585ee22cce3b55befc9418bcdd4c5adc16595
 )
 
 CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/limen/lint"
