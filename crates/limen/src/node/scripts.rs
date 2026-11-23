@@ -263,7 +263,7 @@ impl<'a> Streaming<'a> {
     fn send(&mut self, stream: Stream, text: &str, send: &mut dyn FnMut(Chunk)) {
         let cleaned = self.node.clean(text);
         let grep = self.grep.filter(|_| stream == Stream::Stdout);
-        let text = super::last_matching(cleaned.split_inclusive('\n').collect(), grep, usize::MAX).concat();
+        let text = self.node.matching(&cleaned, grep);
         if text.is_empty() || self.cut {
             return;
         }

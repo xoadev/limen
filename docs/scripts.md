@@ -100,7 +100,8 @@ what most nodes declare, and `nodes` lists it under `script_conflicts` until the
   never sees them. Both streams together are captured up to 16 MiB: past it the script is stopped. Whatever a limit
   cuts, the answer says so, and the answer as a whole is bounded by `limits.max_response`.
 - Whoever runs it by hand —`limen call` on the hub, `limen run` on the node— sees its output as it is printed, a
-  line at a time, redacted the same way; an MCP client may too, through progress notifications. A private key's
+  line at a time, redacted the same way; an MCP client may too, through progress notifications. Followed like this,
+  the output is not cut to `limits.max_lines`: only `limits.max_response` bounds it. A private key's
   block shows once its `END` line is printed, so it is redacted whole.
 - The exit code is data, not an error: `0` is success, anything else is what the script says it is.
 - Every run is recorded in the audit log with its arguments, when it starts and when it ends.

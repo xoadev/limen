@@ -121,12 +121,12 @@ is ignored.
   reads it then: a hub's sensors ask so (§9.1), and a script whose header stopped saying it never runs as one. A node
   that predates the argument refuses it as unknown.
 - `run` with `follow: true` streams the script's output while it runs: before the answer, the node writes one line per
-  piece of output as it comes, `{"chunk": {"stream": "stdout", "text": "…"}}` (or `"stderr"`), and the answer then
-  holds the exit code and signal without `stdout` or `stderr`. A piece is whole lines, through `Node::clean` and
-  `grep` like the rest; `tail` doesn't apply, since it needs the end. A private key's block is held back until its
-  `END` line, so it is redacted whole, never in halves. What is streamed counts towards `limits.max_response`: past it
-  nothing more is sent, the script runs on, and the answer says `truncated`. A node that predates `follow` refuses it
-  as unknown before running anything, and the hub asks again without it.
+  piece of output as it comes, `{"chunk": {"stream": "stdout", "text": "…"}}` (or `"stderr"`), and the answer then holds
+  the exit code and signal without `stdout` or `stderr`. A piece is whole lines, through `Node::clean` and `grep` like
+  the rest; `tail` doesn't apply, since it needs the end, and neither does `limits.max_lines`. A private key's block is
+  held back until its `END` line, so it is redacted whole, never in halves. What is streamed counts towards
+  `limits.max_response`: past it nothing more is sent, the script runs on, and the answer says `truncated`. A node that
+  predates `follow` refuses it as unknown before running anything, and the hub asks again without it.
 - Error codes: `bad_request`, `denied`, `not_found`, `unavailable` (the node is at `limits.concurrency`, or the
   script is refused: not root's, two with its name),
   `timeout`, `unsupported_version`, `internal`. The hub adds `unreachable` and `host_key_mismatch` from

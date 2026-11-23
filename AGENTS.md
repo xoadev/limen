@@ -225,7 +225,7 @@ Each one had an alternative. Changing one is changing this table and the spec's 
   opened once with `fs::open_exact` (`fs::open_dir_exact` for a directory), every check made on that descriptor;
   every argument goes through `params::validate`; every script through `scripts::find` and `proc::run` with an
   argument array; every text leaving the node through `Node::clean` (control sequences removed, then `Redactor`),
-  and every filter after it (`Node::filter`).
+  and every filter after it (`Node::filter`; `Node::matching` for a followed run).
 - **The README names no version**: the latest release of limen and of each pack shows in a badge. A requirement
   that stays true —"needs limen 0.1.3 or later" in a pack's README— is not an example and stays.
 
@@ -360,9 +360,9 @@ Mistakes made here, with what avoids them. `make check` does not see them.
   211 s over 100,000 lines. Fixed patterns are `static … LazyLock<Regex>`.
 - **Unicode's `\s` and `\w` cost milliseconds to compile**, on every request: the built-in redaction patterns
   spell their classes in ASCII and compile on first use.
-- **A `grep` on the raw text is an oracle.** Filtering before redacting answered whether a guess at a secret was
-  right, one character at a time. Every filter runs on what is already redacted (`Node::filter`), and a script never
-  receives `grep` or `tail`.
+- **A `grep` on the raw text is an oracle.** Filtering before redacting answered whether a guess at a secret was right,
+  one character at a time. Every filter runs on what is already redacted (`Node::filter`, `Node::matching`), and a
+  script never receives `grep` or `tail`.
 - **Checking a path and then opening it again is a race.** A local user swapped a directory for a link between the
   check and `list_dir`'s listing, 44 times in 300. `read_file` and `list_dir` open once and check the descriptor.
 - **A Unix socket path has 108 bytes.** ssh's control socket in a long `XDG_RUNTIME_DIR` made every call to OpenWrt

@@ -58,6 +58,12 @@ impl Node {
         let kept = matched[matched.len().saturating_sub(limit)..].iter().map(ToString::to_string).collect();
         (kept, cut)
     }
+
+    /// The lines of [text] that hold [grep], case aside, each with its newline: a followed run's filter, which has no
+    /// end to count from. [text] is redacted already, as for [Node::filter].
+    pub fn matching(&self, text: &str, grep: Option<&str>) -> String {
+        last_matching(text.split_inclusive('\n').collect(), grep, usize::MAX).concat()
+    }
 }
 
 /// The last [count] of [lines] that hold [grep], case aside.

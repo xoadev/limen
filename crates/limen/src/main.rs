@@ -466,7 +466,7 @@ fn call(asked: &Request, filters: &Filters, home: Option<&str>) -> Exit {
     print_answer(name, &response)
 }
 
-/// A node's answer as `call` prints it (spec §11): a script's output and exit code, a file's lines, or the JSON.
+/// A node's answer as `call` prints it (spec §10): a script's output and exit code, a file's lines, or the JSON.
 fn print_answer(request: &str, response: &NodeResponse) -> Exit {
     let Some(data) = response.data.as_ref().filter(|_| response.ok) else {
         let failure = response.error.as_ref().map_or_else(|| "internal: no answer".into(), NodeError::summary);

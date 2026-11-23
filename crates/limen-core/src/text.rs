@@ -1,4 +1,4 @@
-//! Answers as a person reads them (spec §5, §11): a script's output and a file's lines as text, not JSON.
+//! Answers as a person reads them (spec §5, §10): a script's output and a file's lines as text, not JSON.
 
 use serde_json::Value;
 
