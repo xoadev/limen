@@ -19,7 +19,7 @@ const TOKEN_LENGTH: usize = 32;
 const INVITE_CODE_LENGTH: usize = 26;
 
 /// The nodes go after `[ssh]` as they join, so what is commented out comes first.
-const CONFIG_TEMPLATE: &str = r#"# limen hub (docs/spec.md §7.2). `limen invite` and `limen trust` add nodes to nodes.toml; by hand, here too.
+const CONFIG_TEMPLATE: &str = r#"# limen hub (docs/spec.md §7.2). A join (`limen invite`) and `limen trust` add nodes to nodes.toml; by hand, here too.
 
 # [http]
 # Where nodes reach this hub to join: an address on your network or VPN, not a name.

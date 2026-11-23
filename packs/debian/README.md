@@ -26,4 +26,4 @@ Needs limen 0.1.3 or later: its headers use `read_only`, which older versions re
 - `updates` simulates with the flags `upgrade` uses without `full`: what it lists is what `upgrade` would do, and what it
   keeps back is what `full` adds.
 
-Needs `apt-get`, `dpkg-query`, `awk`, `pgrep` and `shutdown` (systemd).
+Needs `apt-get`, `apt-cache`, `dpkg-query`, `awk`, `pgrep` and `shutdown` (systemd).

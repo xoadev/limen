@@ -151,9 +151,10 @@ and the scripts each offers, where every limit is enforced on the machine itself
 for any agent (Claude Code or another) and for people: the shared head above, and what follows, which is limen's own.
 `CLAUDE.md` points here.
 
-**limen is in production**: its releases are public, `install.sh` and `limen_update` fetch the latest one, and our own
-machines run it. So the request schemas, the tools the hub offers, `limen.toml`, script headers and the packs' scripts
-only grow.
+**limen is in testing**: its releases are public and `install.sh` and `limen_update` fetch the latest one, but only its
+author runs it. Until 1.0 a release may break the request schemas, the tools the hub offers, `limen.toml`, script
+headers or the packs' scripts: a breaking change is a `!` commit, it raises the minor version, and its release notes say
+what to do. README's status note says the same to users.
 
 ## Sources of truth
 
@@ -316,7 +317,7 @@ release is being built waits instead of moving the draft under it.
 | `packs.yml` | By hand only, with a pack's name, to publish it | **Run by hand** (or `make pack-release`), it publishes that pack's draft: waits for `check.yml` green on its commit, `make pack`, attests the tarball, attaches it and `SHA256SUMS`, and publishes it **never as the latest release** —that is limen's, which `install.sh`, `limen_version` and `limen_update` ask for |
 | `cli.yml` | Label `cli` on a PR, or by hand | Both binaries (debug) as an artifact, with the link commented on the PR: for trying a change on a real node |
 | `e2e.yml` | Every PR that touches code (`crates/`, `Cargo.*`, `rust-toolchain.toml`, `.cargo/`, `tools/`, `etc/`, `install.sh`, `packs/`, `Makefile`, the workflow itself); weekly; by hand | `make e2e`, every suite. Weekly because OpenWrt's image moves upstream; Debian's and Mosquitto's are pinned by digest in `etc/e2e/node.Dockerfile` and `broker.Dockerfile`, and follow upstream through Dependabot's weekly pull request, which this workflow tests |
-| `dependabot.yml` | Weekly, versions a week old | Pull requests that update the pinned actions (SHA and version comment together), the crates (pinned `=X.Y.Z` in the `Cargo.toml` files, each pull request moves the requirement and `Cargo.lock` together), the Rust version of `rust-toolchain.toml` and the base images of `etc/Dockerfile` and `etc/e2e/` |
+| `.github/dependabot.yml` (not a workflow) | Weekly, versions a week old | Pull requests that update the pinned actions (SHA and version comment together), the crates (pinned `=X.Y.Z` in the `Cargo.toml` files, each pull request moves the requirement and `Cargo.lock` together), the Rust version of `rust-toolchain.toml` and the base images of `etc/Dockerfile` and `etc/e2e/` |
 | `lint-updates.yml` | Weekly; by hand | `make lint-updates`: the linters of `tools/lint.sh`, which Dependabot cannot see. When one is behind, it opens (or comments) the `lint-updates` issue |
 
 The version is never written in the code: the commits decide it, and it only exists once a release is published.
