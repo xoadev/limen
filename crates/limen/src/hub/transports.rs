@@ -59,7 +59,8 @@ fn answer(server: &McpServer, line: &str) {
     }
 }
 
-/// `limen serve`: MCP Streamable HTTP. `POST /mcp` answers in JSON; `GET /mcp` opens a stream of server-sent events,
+/// `limen serve`: MCP Streamable HTTP. `POST /mcp` answers in JSON, or a call that asks for its progress with an event
+/// stream of its own; `GET /mcp` opens a stream of server-sent events,
 /// where `notifications/tools/list_changed` reaches every client listening. No sessions. A bearer token is required
 /// and `Origin`, when a browser sends one, must be listed, against DNS rebinding.
 ///
@@ -181,7 +182,7 @@ impl Handler for Routes {
     fn answer(&self, head: &Head, body: &str) -> Response {
         let code = head.path.strip_prefix(JOIN_PREFIX).unwrap_or_default();
         match head.method.as_str() {
-            "POST" if head.path == "/mcp" => self.mcp(body),
+            "POST" if head.path == "/mcp" => self.mcp(head, body),
             "GET" if head.path == "/mcp" => {
                 self.listeners.open().map_or_else(|| Response::status(503), Response::events)
             }
@@ -203,7 +204,24 @@ impl Routes {
         None
     }
 
-    fn mcp(&self, body: &str) -> Response {
+    /// A call that asks for its progress, from a client that takes an event stream, is answered with one: its
+    /// progress, then its result (spec §9). Everything else, with JSON.
+    fn mcp(&self, head: &Head, body: &str) -> Response {
+        let streams = head.header("Accept").is_some_and(|accept| accept.contains("text/event-stream"));
+        if streams && mcp::asks_progress(body) {
+            let (events, received) = mpsc::channel::<String>();
+            let (server, body) = (self.server.clone(), body.to_string());
+            std::thread::spawn(move || {
+                let progress = Mutex::new(events.clone());
+                let send = |message: &str| {
+                    progress.lock().expect("nothing panics holding the call's stream").send(message.into()).ok();
+                };
+                if let Some(answer) = server.handle_reporting(&body, Some(&send)) {
+                    events.send(answer).ok();
+                }
+            });
+            return Response::events(received);
+        }
         match self.server.handle(body) {
             None => Response::status(202),
             Some(answer) => Response::json(200, answer),

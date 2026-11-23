@@ -203,6 +203,12 @@ impl McpServer {
     }
 
     pub fn handle(&self, line: &str) -> Option<String> {
+        self.handle_reporting(line, None)
+    }
+
+    /// [handle], with the progress of a script's call sent to [progress]: the event stream that answers this one
+    /// request over HTTP (spec §9). Without it, progress goes where the server notifies, if that is its one client.
+    pub fn handle_reporting(&self, line: &str, progress: Option<&(dyn Fn(&str) + Sync)>) -> Option<String> {
         let message = match serde_json::from_str::<Value>(line) {
             Ok(Value::Object(object)) => object,
             Ok(_) => return Some(rpc_error(&Value::Null, PARSE_ERROR, "expected a JSON object")),
@@ -219,18 +225,23 @@ impl McpServer {
         let params = message.get("params").and_then(Value::as_object).cloned().unwrap_or_default();
         // A notification: nothing to answer, whatever it is.
         let id = id?;
-        Some(match self.dispatch(method, &params) {
+        Some(match self.dispatch(method, &params, progress) {
             Ok(result) => json!({"jsonrpc": "2.0", "id": id, "result": result}).to_string(),
             Err(fault) => fault.to_rpc_error(&id),
         })
     }
 
-    fn dispatch(&self, method: &str, params: &Map<String, Value>) -> Result<Value, Fault> {
+    fn dispatch(
+        &self,
+        method: &str,
+        params: &Map<String, Value>,
+        progress: Option<&(dyn Fn(&str) + Sync)>,
+    ) -> Result<Value, Fault> {
         match method {
             "initialize" => Ok(self.initialize(params)),
             "ping" => Ok(json!({})),
             "tools/list" => self.tools().map(|tools| json!({"tools": tools})),
-            "tools/call" => self.call(params),
+            "tools/call" => self.call(params, progress),
             other => Err(Fault::UnknownMethod(format!("unknown method {other}"))),
         }
     }
@@ -371,7 +382,7 @@ impl McpServer {
         Ok(self.client.nodes()?.into_iter().collect())
     }
 
-    fn call(&self, params: &Map<String, Value>) -> Result<Value, Fault> {
+    fn call(&self, params: &Map<String, Value>, progress: Option<&(dyn Fn(&str) + Sync)>) -> Result<Value, Fault> {
         let name = params
             .get("name")
             .and_then(Value::as_str)
@@ -399,8 +410,8 @@ impl McpServer {
             (self.log)(&format!("tool={name} node={node} not approved: {why}"));
             return Ok(tool_error(&format!("not approved: {why}; nothing ran on {node}")));
         }
-        let progress = params.get("_meta").and_then(|meta| meta.get("progressToken"));
-        Ok(self.send(name, &node, &call, progress))
+        let token = params.get("_meta").and_then(|meta| meta.get("progressToken"));
+        Ok(self.send(name, &node, &call, token, progress))
     }
 
     /// Asks the person at the client whether [call] of [script] may run on [node], and waits up to [timeout]: Ok only
@@ -463,11 +474,21 @@ impl McpServer {
     }
 
     /// Sends [call] to [node], and logs the tool, the node, how it went and how long it took. A script's call with a
-    /// [progress] token follows its output, when the transport reaches the one client that asked (spec §5).
-    fn send(&self, tool: &str, node: &str, call: &NodeCall, progress: Option<&Value>) -> Value {
+    /// progress [token] follows its output, when [progress], or the transport, reaches the one client that asked
+    /// (spec §5).
+    fn send(
+        &self,
+        tool: &str,
+        node: &str,
+        call: &NodeCall,
+        token: Option<&Value>,
+        progress: Option<&(dyn Fn(&str) + Sync)>,
+    ) -> Value {
         let started = Instant::now();
-        let notify = self.notify.as_ref().filter(|_| self.asks);
-        let response = match (progress, notify) {
+        let to_caller =
+            self.notify.as_ref().filter(|_| self.asks).map(|notify| notify.as_ref() as &(dyn Fn(&str) + Sync));
+        let notify = progress.or(to_caller);
+        let response = match (token, notify) {
             (Some(token), Some(notify)) if call.request == "run" && !call.args.contains_key("tail") => {
                 self.follow(node, call, &|count, chunk: &Chunk| notify(&progress_notification(token, count, chunk)))
             }
@@ -653,6 +674,13 @@ fn read_only_tool(name: &str, description: &str, input_schema: &Value) -> Value 
 /// Whether [line] is a `tools/call`: what may run long, or wait for a person, and so gets a thread of its own.
 pub fn is_tool_call(line: &str) -> bool {
     serde_json::from_str::<Value>(line).is_ok_and(|message| message["method"] == "tools/call")
+}
+
+/// Whether [line] is a tool call that asks for its progress, with a `progressToken`.
+pub fn asks_progress(line: &str) -> bool {
+    serde_json::from_str::<Value>(line).is_ok_and(|message| {
+        message["method"] == "tools/call" && !message["params"]["_meta"]["progressToken"].is_null()
+    })
 }
 
 /// The `elicitation/create` request that asks whether [call] of [script] may run on [node]: what would run, exactly,
@@ -1023,6 +1051,24 @@ mod tests {
         assert_eq!(progress[0]["method"], "notifications/progress");
         assert_eq!(progress[0]["params"], json!({"progressToken": "p1", "progress": 1, "message": "copying\n"}));
         assert_eq!(progress[2]["params"]["progress"], 3);
+    }
+
+    #[test]
+    fn over_http_progress_goes_to_the_stream_that_answers_the_call() {
+        let client = nas_and_router();
+        let (server, broadcast) = announcing_server(&client);
+        let server = server.announcing_only();
+        let streamed = Mutex::new(Vec::new());
+        let progress = |message: &str| streamed.lock().unwrap().push(message.to_string());
+        let call = json!({"jsonrpc": "2.0", "id": 9, "method": "tools/call",
+            "params": {"name": "backups", "arguments": {"node": "nas"}, "_meta": {"progressToken": 4}}});
+        let answer = server.handle_reporting(&call.to_string(), Some(&progress)).unwrap();
+        assert!(answer.contains("copying\\ndone"), "{answer}");
+        assert_eq!(streamed.lock().unwrap().len(), 3);
+        assert!(streamed.lock().unwrap()[0].contains(r#""progressToken":4"#));
+        assert!(broadcast.lock().unwrap().is_empty(), "every client's stream hears nothing of it");
+        assert!(asks_progress(&call.to_string()));
+        assert!(!asks_progress(&json!({"method": "tools/call", "params": {"name": "x"}}).to_string()));
     }
 
     #[test]

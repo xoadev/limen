@@ -135,6 +135,18 @@ first_line_early() {
     cat >/dev/null
   }
 }
+# released_binary <file>: limen's latest release for this machine in <file>, checked against its SHA256SUMS.
+released_binary() {
+  local releases=https://github.com/xoadev/limen/releases version name
+  version=$(curl -fsSL -o /dev/null -w '%{url_effective}' "$releases/latest") || return 1
+  version=${version##*/v}
+  name="limen-$version-linux-$(uname -m)"
+  curl -fsSL -o "$1" "$releases/download/v$version/$name" || return 1
+  curl -fsSL "$releases/download/v$version/SHA256SUMS" | grep " \./$name\$" | sed "s#\./$name\$#$1#" | sha256sum -c --quiet \
+    || return 1
+  chmod 755 "$1"
+  echo "limen $version"
+}
 # approval_session <node> <client capabilities as JSON> [<answer as JSON>]: calls `mark` over stdio and, a few seconds
 # later, answers the hub's first question with <answer>, as a person at the client would.
 approval_session() {
@@ -348,6 +360,14 @@ EOF
   expect "system's reach: a port that listens" 'port 22: open' limen call debian reach --arg host=127.0.0.1 --arg port=22
   expect "and one that doesn't" 'port 9: closed' limen call debian reach --arg host=127.0.0.1 --arg port=9
   expect "a host can't be an option" 'host does not match' limen call debian reach --arg host=-c
+  echo "e2e/debian: a node on the latest release, which may predate what this hub asks"
+  expect "the latest release downloads" "limen " released_binary "$work/limen-released"
+  docker exec "$node" cp /usr/local/bin/limen /tmp/limen-current
+  docker cp "$work/limen-released" "$node:/usr/local/bin/limen"
+  expect "a script's output comes, followed or asked again without follow" $'tick 1\ntick 2' limen call debian ticks
+  expect "and call exits with the script's code" 'exit 1' status limen call debian disk --arg threshold=1
+  expect "mcp with a progress token gets its result" $'tick 1\ntick 2\n[exit 0]' progress_session debian ticks
+  docker exec "$node" cp /tmp/limen-current /usr/local/bin/limen
   expect "history records the client" '"client": "' limen call debian history --arg lines=3
   expect "and a script's exit code" '"exit": 1' limen call debian history --arg lines=40
   docker exec "$node" sh -c 'cp /etc/limen/kept.toml /tmp/kept.toml && printf "max_response = 300\n" >> /etc/limen/kept.toml'
@@ -613,6 +633,16 @@ EOF
     "for _ in \$(seq 1 90); do grep -q list_changed '$work/events' && break; sleep 1; done; cat '$work/events'"
   kill "$listening" 2>/dev/null || true
   expect "and the new script is a tool" '"name":"fresh"' mcp_http '{"jsonrpc":"2.0","id":5,"method":"tools/list"}'
+  mcp_http_events() {
+    curl -s -N -X POST -H "Authorization: Bearer $token" -H 'Content-Type: application/json' \
+      -H 'Accept: application/json, text/event-stream' "$url/mcp" -d "$1"
+  }
+  local followed='{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"fresh","arguments":{"node":"nas"},"_meta":{"progressToken":"h1"}}}'
+  expect "a call with a progress token over HTTP gets its progress on an event stream" 'notifications/progress' \
+    mcp_http_events "$followed"
+  expect "then its result, on the same stream" 'fresh\n[exit 0]' mcp_http_events "$followed"
+  refuse "a client that takes no stream gets JSON, no progress" 'fresh\n[exit 0]' 'notifications/progress' \
+    mcp_http "$followed"
   expect "forget takes a node off the hub" "removed" hub_exec forget spare
   expect "and it is gone" '"enum":["nas","router"]' mcp_http '{"jsonrpc":"2.0","id":3,"method":"tools/list"}'
 }

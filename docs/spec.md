@@ -163,10 +163,10 @@ Every tool but `nodes` takes a `node` argument.
   `[stderr]` line, and a last line with its exit code, `[exit 0]` (with the signal that ended it, when one did); a
   file, its lines and a last line with the path and the range, `[/etc/hosts: lines 1–12, end of file]`. The other
   tools answer JSON. A limit that cut the answer is said in a last line.
-- **Progress.** Over stdio, a script's call with a `progressToken` and no `tail` runs with `follow` (§4): each piece of
+- **Progress.** A script's call with a `progressToken` and no `tail` runs with `follow` (§4): each piece of
   output reaches the client as it is produced, in a `notifications/progress` whose `message` is the text, and the
-  result is the whole output as above. The model sees the result; the progress is for the client's interface. HTTP
-  sends none: `POST /mcp` answers with JSON once the call ends.
+  result is the whole output as above. Over HTTP the same, when the client takes an event stream (§9). The model sees
+  the result; the progress is for the client's interface.
 - `grep` is a fixed string, case-insensitive, matched against the redacted text —never the raw one, or a
   guess at a secret would be told apart by whether a line comes back— and filters before `tail` applies:
   the answer is the last N matching lines. A script never sees `grep` or `tail`, and can't declare
@@ -457,10 +457,12 @@ host_key = "ssh-ed25519 AAAA…"
 - **stdio** — `limen mcp`: newline-delimited JSON-RPC 2.0, one client. For a hub that is the
   operator's own machine. Each `tools/call` runs in a thread of its own, so a call waiting for a person's approval
   holds up no other; the client's answers to the hub's questions come back on stdin, matched by their id.
-- **HTTP** — `limen serve`: MCP Streamable HTTP. `POST /mcp` answers each call with JSON; `GET /mcp` opens a stream
+- **HTTP** — `limen serve`: MCP Streamable HTTP. `POST /mcp` answers each call with JSON, but a `tools/call` with a
+  `progressToken` from a client whose `Accept` takes `text/event-stream`: that one is answered with an event stream of
+  its own, its progress (§5) and then its result, which ends with the call. `GET /mcp` opens a stream
   of server-sent events that carries the hub's notifications and nothing else. No sessions: a notification goes to
   every stream open. The hub can't ask the client anything there, so a script that needs approval (§5) is not run.
-  - At most 8 streams at once, each holding one of the 64 connections for as long as it lasts; one more gets
+  - At most 8 `GET` streams at once, each holding one of the 64 connections for as long as it lasts; one more gets
     `503`. A stream with nothing to say sends a comment every 30 seconds, so the stream of a client that is gone
     ends at the first one that can't be written. The token and `Origin` are checked as for `POST`.
   - Requires a bearer token, compared in constant time. `serve` creates one on its first start, or takes
