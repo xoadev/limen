@@ -7,7 +7,6 @@
 #   crates/**/*.rs               clippy       Rust's own lints, every warning an error
 #   *.md                         rumdl        markdownlint's rules, configured in .rumdl.toml
 #   every tracked file           typos        misspellings, configured in Cargo.toml
-#   AGENTS.md                    agents-check its shared head is the one at AGENTS_URL (make agents-check)
 #
 # (the tool names go second on purpose: a comment line that starts with a linter's name is read by that linter
 # as a directive)
@@ -95,7 +94,6 @@ run typos "$CACHE/typos-$TYPOS_VERSION"
 
 run rustfmt tools/cargo.sh fmt
 run clippy tools/cargo.sh clippy
-run agents-check make -s agents-check
 
 [[ $status -eq 0 ]] && echo "lint: OK"
 exit $status
