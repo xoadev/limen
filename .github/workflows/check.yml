@@ -7,17 +7,25 @@ on:
   push:
     branches: [main]
   pull_request:
+    # edited: a new title changes the squash commit, and so the version it releases.
+    types: [opened, edited, reopened, synchronize]
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: check-${{ github.ref }}
+  # An edit of the description runs the title only, in a group of its own, so it never cancels a full run.
+  group: check-${{ github.ref }}-${{ github.event.action == 'edited' && 'title' || 'all' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  title:
+    uses: xoadev/xoa-base/.github/workflows/title.yml@4cfb2e775d6b97518bd1c9a273d07845bc7b9e8f # v0.2.0
+
   check:
+    # Editing the description re-runs the workflow for the title only.
+    if: github.event.action != 'edited'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
