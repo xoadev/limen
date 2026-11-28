@@ -10,14 +10,16 @@
 [![release](https://img.shields.io/github/v/release/xoadev/limen?include_prereleases&sort=semver)](https://github.com/xoadev/limen/releases)
 [![license](https://img.shields.io/github/license/xoadev/limen)](LICENSE)
 
-Let an AI agent into your Linux machines **without giving it a shell.** It reads the files each machine allows, and
-runs the scripts each machine offers —to look, and to change what you decided may be changed—. Nothing else.
+Let an AI agent into your Linux machines **without giving it a shell.** It reads the files each
+machine allows, and runs the scripts each machine offers —to look, and to change what you decided
+may be changed—. Nothing else.
 
-limen is an [MCP](https://modelcontextprotocol.io) server —MCP is how Claude Code and other agents call tools— that
-reaches every machine you join to it over SSH. Every script becomes a tool: `containers`, `unit_logs`,
-`restart_unit`, `purge`, `sync`… whatever you put in the machine's packs.
+limen is an [MCP](https://modelcontextprotocol.io) server —MCP is how Claude Code and other agents
+call tools— that reaches every machine you join to it over SSH. Every script becomes a tool:
+`containers`, `unit_logs`, `restart_unit`, `purge`, `sync`… whatever you put in the machine's packs.
 
-*Limen* is Latin for *threshold*: the agent stands at the door of each machine, and the machine decides what crosses.
+*Limen* is Latin for *threshold*: the agent stands at the door of each machine, and the machine
+decides what crosses.
 
 ```text
 You:    Immich is down. Why?
@@ -28,40 +30,47 @@ You:    Clear the images.
 Agent:  (purge on nas) Freed 41 GB; immich-server is up.
 ```
 
-> **Status: early.** limen works end to end —its tests run it on Debian and on OpenWrt's own image, against real
-> SSH servers—, and its [releases](https://github.com/xoadev/limen/releases) publish the binaries, the hub's image
-> and each pack. It has not run for long on real machines yet, and until 1.0 its configuration and protocol may
-> change between versions: read a release's notes before updating.
+> **Status: early.** limen works end to end —its tests run it on Debian and on OpenWrt's own image,
+> against real SSH servers—, and its [releases](https://github.com/xoadev/limen/releases) publish
+> the binaries, the hub's image and each pack. It has not run for long on real machines yet, and
+> until 1.0 its configuration and protocol may change between versions: read a release's notes
+> before updating.
 
 ## Why
 
-Asking an agent "why is Immich down?" is useful only if it can look, and "clear the old images" only if it can act.
-The usual way is an MCP server with SSH access, and those give the agent a shell, perhaps with a list of forbidden
-commands kept by the MCP server itself. That list is only as strong as the MCP server and the model behind it: a
-compromised client, or an instruction hidden in a log line the agent just read, and the shell is there.
+Asking an agent "why is Immich down?" is useful only if it can look, and "clear the old images" only
+if it can act. The usual way is an MCP server with SSH access, and those give the agent a shell,
+perhaps with a list of forbidden commands kept by the MCP server itself. That list is only as strong
+as the MCP server and the model behind it: a compromised client, or an instruction hidden in a log
+line the agent just read, and the shell is there.
 
 limen turns it around: **the machine decides.**
 
-- On every machine, SSH only lets the hub's key run one program, `limen gate`, as a forced command. It reads only
-  the paths the machine allows, runs only the scripts in the machine's packs with the arguments their headers
-  declare, masks secrets, caps every answer and writes each request to an audit log.
-- The MCP server —the *hub*— is just a relay. If the hub, its token or the model are compromised, the worst outcome
-  is reading what each machine allows and running the scripts it offers: never a command of their own.
-- **limen knows nothing of systemd, Docker or git.** Everything a machine can do is a script, grouped in packs: one
-  for systemd, one for Docker, one for your own services. A new kind of machine is a new pack, not a new release.
+- On every machine, SSH only lets the hub's key run one program, `limen gate`, as a forced command.
+  It reads only the paths the machine allows, runs only the scripts in the machine's packs with the
+  arguments their headers declare, masks secrets, caps every answer and writes each request to an
+  audit log.
+- The MCP server —the *hub*— is just a relay. If the hub, its token or the model are compromised,
+  the worst outcome is reading what each machine allows and running the scripts it offers: never a
+  command of their own.
+- **limen knows nothing of systemd, Docker or git.** Everything a machine can do is a script,
+  grouped in packs: one for systemd, one for Docker, one for your own services. A new kind of
+  machine is a new pack, not a new release.
 
 ## What you get
 
-- **An agent that can diagnose and act, within what you wrote.** Status, logs of a unit or a container, a
-  configuration file, restarting a service, clearing old images, bringing the machine to its repository: each a
-  script you can read, on each machine.
-- **Every machine alike.** One static binary per architecture runs on Debian, Ubuntu and OpenWrt, x86-64 and arm64.
-- **Nothing extra to run on the machines.** No daemon, no open port: `sshd` is already there, and `limen` starts
-  per request and exits.
-- **Home Assistant, if you want it.** Scripts' output as sensors and scripts as buttons, through MQTT, each one
-  declared on the hub.
-- **A record of everything asked.** Every request and every script run —sensors' polling aside, if you say so—, with
-  its arguments, client and exit code, in each machine's audit log, readable with the `history` tool.
+- **An agent that can diagnose and act, within what you wrote.** Status, logs of a unit or a
+  container, a configuration file, restarting a service, clearing old images, bringing the machine
+  to its repository: each a script you can read, on each machine.
+- **Every machine alike.** One static binary per architecture runs on Debian, Ubuntu and OpenWrt,
+  x86-64 and arm64.
+- **Nothing extra to run on the machines.** No daemon, no open port: `sshd` is already there, and
+  `limen` starts per request and exits.
+- **Home Assistant, if you want it.** Scripts' output as sensors and scripts as buttons, through
+  MQTT, each one declared on the hub.
+- **A record of everything asked.** Every request and every script run —sensors' polling aside, if
+  you say so—, with its arguments, client and exit code, in each machine's audit log, readable with
+  the `history` tool.
 
 ## How it works
 
@@ -75,7 +84,8 @@ node:  sshd ──forced command──▶ sudo limen gate ──▶ allowed file
 a new machine ──GET/POST /join/<one-time code>──▶ hub   (its key, then the machine's host key)
 ```
 
-The hub talks to each machine (each *node*) with the system's `ssh`; nothing listens on the machines but `sshd`.
+The hub talks to each machine (each *node*) with the system's `ssh`; nothing listens on the machines
+but `sshd`.
 
 ## Tools
 
@@ -101,15 +111,18 @@ Each pack's README says what each script needs and what it never prints.
 
 ## Install
 
-Two pieces: the **hub**, where the MCP server runs, and every **machine** it inspects —a *node*, in the tools and the
-configuration—. You start the hub once; each machine then joins it with one line the hub gives you.
+Two pieces: the **hub**, where the MCP server runs, and every **machine** it inspects —a *node*, in
+the tools and the configuration—. You start the hub once; each machine then joins it with one line
+the hub gives you.
 
 You need:
 
-- For the hub: Docker on an always-on machine; or, for a hub on your laptop, OpenSSH's `ssh` and `ssh-keygen`.
-- For each machine: Debian, Ubuntu or OpenWrt, x86-64 or arm64, running an SSH server the hub can reach —over a VPN
-  such as Tailscale or Headscale, or your LAN—, and root to install. `curl` and `sudo` on Debian and Ubuntu (OpenWrt
-  has `wget` and needs no sudo). What the packs' scripts use —systemd, Docker— is their business.
+- For the hub: Docker on an always-on machine; or, for a hub on your laptop, OpenSSH's `ssh` and
+  `ssh-keygen`.
+- For each machine: Debian, Ubuntu or OpenWrt, x86-64 or arm64, running an SSH server the hub can
+  reach —over a VPN such as Tailscale or Headscale, or your LAN—, and root to install. `curl` and
+  `sudo` on Debian and Ubuntu (OpenWrt has `wget` and needs no sudo). What the packs' scripts use
+  —systemd, Docker— is their business.
 
 ### 1. Start the hub
 
@@ -138,12 +151,11 @@ docker compose exec limen limen connect
 # claude mcp add --transport http limen http://100.64.0.2:7341/mcp --header "Authorization: Bearer …"
 ```
 
-On its first start the hub creates, in the `limen` volume, its SSH key, its `limen.toml` and the token of MCP
-clients. (The image runs as distroless's `nonroot`, uid 65532: a bind mount instead of the volume needs a directory that
-user owns.)
-`limen connect` prints the line that connects Claude Code (or any MCP client) to it. A session sees the scripts a
-machine offers change within a minute, if the client keeps `GET /mcp` open to hear of it; otherwise, in its next
-session.
+On its first start the hub creates, in the `limen` volume, its SSH key, its `limen.toml` and the
+token of MCP clients. (The image runs as distroless's `nonroot`, uid 65532: a bind mount instead of
+the volume needs a directory that user owns.) `limen connect` prints the line that connects Claude
+Code (or any MCP client) to it. A session sees the scripts a machine offers change within a minute,
+if the client keeps `GET /mcp` open to hear of it; otherwise, in its next session.
 
 ### 2. Add a machine
 
@@ -158,31 +170,35 @@ docker compose exec limen limen invite nas
 # Valid once, for 1h.
 ```
 
-Paste the line for the machine's system on it. It downloads limen and checks it, fetches the hub's key and checks
-it against the fingerprint in the line, sets the machine up and reports to the hub, which adds it and tries it:
+Paste the line for the machine's system on it. It downloads limen and checks it, fetches the hub's
+key and checks it against the fingerprint in the line, sets the machine up and reports to the hub,
+which adds it and tries it:
 
 ```text
 nas is on the hub, at 100.64.0.5: Debian GNU/Linux 13, limen X.Y.Z.
 ```
 
-- **Debian, Ubuntu**: a `limen` user whose key only runs `limen gate`, and a sudo rule for exactly that.
-- **OpenWrt**: the hub's key in root's dropbear `authorized_keys`, held to `limen gate`, next to the keys already
-  there; limen survives `sysupgrade`. **Turn off dropbear's password logins**: a forced command only holds a login
-  by key, and the installer warns when root has no password.
+- **Debian, Ubuntu**: a `limen` user whose key only runs `limen gate`, and a sudo rule for exactly
+  that.
+- **OpenWrt**: the hub's key in root's dropbear `authorized_keys`, held to `limen gate`, next to the
+  keys already there; limen survives `sysupgrade`. **Turn off dropbear's password logins**: a forced
+  command only holds a login by key, and the installer warns when root has no password.
 
-The hub files the address the join request comes from. When the hub runs in Docker, or a NAT sits between, that is the
-gateway and not the machine, and the hub fails with `host_key_mismatch`. Then tell it where the machine is, by
-address or by a name the hub resolves: `sudo sh -s -- --join '…' --address 100.64.0.5` on the installer, or
-`limen join '…' --address 100.64.0.5` once limen is there. Joining again with a new invitation replaces the entry.
+The hub files the address the join request comes from. When the hub runs in Docker, or a NAT sits
+between, that is the gateway and not the machine, and the hub fails with `host_key_mismatch`. Then
+tell it where the machine is, by address or by a name the hub resolves:
+`sudo sh -s -- --join '…' --address 100.64.0.5` on the installer, or
+`limen join '…' --address 100.64.0.5` once limen is there. Joining again with a new invitation
+replaces the entry.
 
-The hub needs no restart, and the invitation is spent: the next machine gets its own. How the join is protected
-against someone in between: [`docs/spec.md`](docs/spec.md#101-joining-a-node).
+The hub needs no restart, and the invitation is spent: the next machine gets its own. How the join
+is protected against someone in between: [`docs/spec.md`](docs/spec.md#101-joining-a-node).
 
 ### From source
 
-To run a commit that isn't released: build it (see [Develop](#develop)), then `make docker` for the hub
-—`image: limen:local` in the compose file— and, on each machine, copy the binary of `make cli` and `install.sh`
-and run `sudo env LIMEN_BINARY=./limen sh install.sh --join '<line>'`.
+To run a commit that isn't released: build it (see [Develop](#develop)), then `make docker` for the
+hub —`image: limen:local` in the compose file— and, on each machine, copy the binary of `make cli`
+and `install.sh` and run `sudo env LIMEN_BINARY=./limen sh install.sh --join '<line>'`.
 
 ### What the agent may read and run
 
@@ -200,23 +216,24 @@ packs = ["/opt/limen-packs/system@X.Y.Z", "/opt/limen-packs/docker@X.Y.Z", "/opt
 names = ["DB_PASSWORD", "MQTT_PASS"]
 ```
 
-- **Files**: whatever is readable ends up in the context of the model the hub talks to. List what helps diagnose,
-  nothing that holds a secret. Some paths are never readable whatever the list says —`/etc/shadow`, private keys,
-  `/proc`, `/root`, `/etc/limen`—. A link is read where it leads, so it is the target that must be allowed:
-  `/etc/os-release` on Debian is `/usr/lib/os-release`.
-- **Scripts**: every script of the packs listed is a tool. **Offer only changes you would let whoever writes to
-  your logs trigger**: text in a log can lead the model to call any of them.
-- **Secrets**: `password=…`, tokens, keys and the values of `redact.names` are masked in everything that leaves the
-  machine, as a safety net.
+- **Files**: whatever is readable ends up in the context of the model the hub talks to. List what
+  helps diagnose, nothing that holds a secret. Some paths are never readable whatever the list says
+  —`/etc/shadow`, private keys, `/proc`, `/root`, `/etc/limen`—. A link is read where it leads, so
+  it is the target that must be allowed: `/etc/os-release` on Debian is `/usr/lib/os-release`.
+- **Scripts**: every script of the packs listed is a tool.
+  **Offer only changes you would let whoever writes to your logs trigger**: text in a log can lead
+  the model to call any of them.
+- **Secrets**: `password=…`, tokens, keys and the values of `redact.names` are masked in everything
+  that leaves the machine, as a safety net.
 
-`limen.toml` can be a link into your own repository, with the packs next to it: limen never writes it after
-install. `sudo limen lint` checks the packs without running anything; `sudo limen run <script>` runs one as the hub
-would.
+`limen.toml` can be a link into your own repository, with the packs next to it: limen never writes
+it after install. `sudo limen lint` checks the packs without running anything;
+`sudo limen run <script>` runs one as the hub would.
 
 ## Packs
 
-A pack is a directory of scripts. A script is an executable file with a header: `#:` lines that form a TOML
-document, read and never run.
+A pack is a directory of scripts. A script is an executable file with a header: `#:` lines that form
+a TOML document, read and never run.
 
 ```sh
 #!/bin/sh
@@ -234,38 +251,46 @@ document, read and never run.
 exec docker logs --timestamps --since "$LIMEN_ARG_SINCE" "$LIMEN_ARG_NAME" 2>&1
 ```
 
-The agent gets a tool with `name` and `since`; limen checks both before the script runs, and they reach it as
-`LIMEN_ARG_NAME` and `LIMEN_ARG_SINCE`. `read_only = true` tells MCP clients the script changes nothing, so they may
-run it without asking. The script runs as root, owned by root and writable by nobody else, like every directory
-above it. The whole format, and a machine set up from a Git repository with a `sync` script the agent can run, are
-in [`docs/scripts.md`](docs/scripts.md).
+The agent gets a tool with `name` and `since`; limen checks both before the script runs, and they
+reach it as `LIMEN_ARG_NAME` and `LIMEN_ARG_SINCE`. `read_only = true` tells MCP clients the script
+changes nothing, so they may run it without asking. The script runs as root, owned by root and
+writable by nobody else, like every directory above it. The whole format, and a machine set up from
+a Git repository with a `sync` script the agent can run, are in
+[`docs/scripts.md`](docs/scripts.md).
 
-The packs of this repository are released on their own, as `pack-<pack>-vX.Y.Z`: a tarball and its `SHA256SUMS`,
-with a build attestation. limen downloads none of them: the machine's own setup unpacks each one into a folder of its
-version, `/opt/limen-packs/<pack>@X.Y.Z`, pinning its hash, as [`docs/scripts.md`](docs/scripts.md#released-packs)
-shows; the `limen` pack's `limen_packs` then says when a newer one is out. **Update limen before the packs**: a
-pack can use a header key an older limen refuses, and each pack's README says which limen it needs.
+The packs of this repository are released on their own, as `pack-<pack>-vX.Y.Z`: a tarball and its
+`SHA256SUMS`, with a build attestation. limen downloads none of them: the machine's own setup
+unpacks each one into a folder of its version, `/opt/limen-packs/<pack>@X.Y.Z`, pinning its hash, as
+[`docs/scripts.md`](docs/scripts.md#released-packs) shows; the `limen` pack's `limen_packs` then
+says when a newer one is out. **Update limen before the packs**: a pack can use a header key an
+older limen refuses, and each pack's README says which limen it needs.
 
 ### Other ways
 
 - **Before a hub**, a machine can have its configuration and packs first:
-  `curl -fsSL …/install.sh | sudo env LIMEN_YES=1 sh` installs limen with nothing open to SSH, and a hub joins it
-  later with its line. [`docs/scripts.md`](docs/scripts.md#a-machine-from-a-git-repository) shows a bootstrap that
-  clones the machine's repository first.
-  [Our machines, through pull requests](https://xoa.dev/notes/machines-through-pull-requests/) is that setup in use.
+  `curl -fsSL …/install.sh | sudo env LIMEN_YES=1 sh` installs limen with nothing open to SSH, and a
+  hub joins it later with its line.
+  [`docs/scripts.md`](docs/scripts.md#a-machine-from-a-git-repository) shows a bootstrap that clones
+  the machine's repository first.
+  [Our machines, through pull requests](https://xoa.dev/notes/machines-through-pull-requests/) is
+  that setup in use.
 - **The hub on your laptop**, for Claude Code there (stdio, nothing listening):
-  `curl -fsSL …/install.sh | sh -s -- --hub` installs `limen` in `~/.local/bin`, creates `~/.limen` and prints the
-  `claude mcp add` line. Without an HTTP hub to call back, `limen invite nas` prints a line with the hub's key in it
-  (`--hub-key`), and the machine ends by printing the `limen trust nas <address> '<host key>'` line to run on the
-  laptop (`--address` on the installer fills the address in).
-- **Unattended**, every answer comes from the environment: `sudo env LIMEN_YES=1 LIMEN_JOIN='…' sh install.sh`.
-  `LIMEN_FROM` (`--from`) limits where the hub's key may connect from (not on OpenWrt), `LIMEN_ADDRESS`
-  (`--address`) is where the hub reaches this machine, and `LIMEN_SSH_PORT` (`--ssh-port`) its SSH port when it isn't
+  `curl -fsSL …/install.sh | sh -s -- --hub` installs `limen` in `~/.local/bin`, creates `~/.limen`
+  and prints the `claude mcp add` line. Without an HTTP hub to call back, `limen invite nas` prints
+  a line with the hub's key in it (`--hub-key`), and the machine ends by printing the
+  `limen trust nas <address> '<host key>'` line to run on the laptop (`--address` on the installer
+  fills the address in).
+- **Unattended**, every answer comes from the environment:
+  `sudo env LIMEN_YES=1 LIMEN_JOIN='…' sh install.sh`. `LIMEN_FROM` (`--from`) limits where the
+  hub's key may connect from (not on OpenWrt), `LIMEN_ADDRESS` (`--address`) is where the hub
+  reaches this machine, and `LIMEN_SSH_PORT` (`--ssh-port`) its SSH port when it isn't
   22. The whole list is at the top of [`install.sh`](install.sh).
-- **By hand**: download `limen-<version>-linux-$(uname -m)` from the [releases](https://github.com/xoadev/limen/releases)
-  and run `sudo ./limen-… join '<line>'`. Where there is `gh`, `gh attestation verify limen-… --repo xoadev/limen`
-  checks that the release workflow built it; the image, likewise with `oci://ghcr.io/xoadev/limen:<version>`.
-- `limen forget nas` takes a machine off the hub; `limen uninstall --purge` on the machine removes limen from it.
+- **By hand**: download `limen-<version>-linux-$(uname -m)` from the
+  [releases](https://github.com/xoadev/limen/releases) and run `sudo ./limen-… join '<line>'`. Where
+  there is `gh`, `gh attestation verify limen-… --repo xoadev/limen` checks that the release
+  workflow built it; the image, likewise with `oci://ghcr.io/xoadev/limen:<version>`.
+- `limen forget nas` takes a machine off the hub; `limen uninstall --purge` on the machine removes
+  limen from it.
 
 ## Use it
 
@@ -275,13 +300,14 @@ Ask the agent as you would ask a colleague with access to the machines' scripts:
 - *"Why does Immich restart?"* — `container immich`, then `container_logs name=immich grep=error`.
 - *"Bring the NAS to the repository."* — `sync`, if the machine's pack offers it.
 
-Without the agent, `docker compose exec limen limen call nas status` asks a machine the same by hand: the script's
-output shows as it is printed, and `call` exits with its exit code. `--json` prints the node's whole answer instead.
+Without the agent, `docker compose exec limen limen call nas status` asks a machine the same by
+hand: the script's output shows as it is printed, and `call` exits with its exit code. `--json`
+prints the node's whole answer instead.
 
 ### A person approves the changes
 
-With `limen mcp` (stdio), the hub can ask you before each run of a script that changes things. Add this to the hub's
-`limen.toml`:
+With `limen mcp` (stdio), the hub can ask you before each run of a script that changes things. Add
+this to the hub's `limen.toml`:
 
 ```toml
 [approval]
@@ -290,20 +316,22 @@ except = ["restart_container"]   # with "changes": these run without asking
 timeout = "5m"
 ```
 
-The question appears in the MCP client's own window (MCP elicitation), with the machine, the script and its
-arguments: the model can't see it or answer it. Only a yes runs the script, once. A no, no answer, or a client that
-can't ask means nothing runs. Over HTTP (`limen serve`) the hub can't ask yet, so those scripts are refused there.
+The question appears in the MCP client's own window (MCP elicitation), with the machine, the script
+and its arguments: the model can't see it or answer it. Only a yes runs the script, once. A no, no
+answer, or a client that can't ask means nothing runs. Over HTTP (`limen serve`) the hub can't ask
+yet, so those scripts are refused there.
 
 ## Home Assistant, over MQTT
 
-`limen serve` can publish scripts' output to an MQTT broker as Home Assistant sensors, and run scripts as buttons
-pressed there. Home Assistant finds them through its MQTT discovery: nothing to install in it or on the machines, and
-nothing changes on them: every read and every press is a run of one of their scripts over SSH, as the agent's are.
-Each sensor and button is declared in the hub's `limen.toml`; a machine offering a script never makes it reachable
-over MQTT.
+`limen serve` can publish scripts' output to an MQTT broker as Home Assistant sensors, and run
+scripts as buttons pressed there. Home Assistant finds them through its MQTT discovery: nothing to
+install in it or on the machines, and nothing changes on them: every read and every press is a run
+of one of their scripts over SSH, as the agent's are. Each sensor and button is declared in the
+hub's `limen.toml`; a machine offering a script never makes it reachable over MQTT.
 
-You need a broker Home Assistant uses —its Mosquitto add-on, or your own— reachable from the hub by address, and
-the hub as `limen serve` (the image): `limen mcp` lives as long as its MCP client, and never connects.
+You need a broker Home Assistant uses —its Mosquitto add-on, or your own— reachable from the hub by
+address, and the hub as `limen serve` (the image): `limen mcp` lives as long as its MCP client, and
+never connects.
 
 ```toml
 [mqtt]
@@ -330,26 +358,29 @@ args = { name = "immich_server" }   # fixed: a press chooses nothing
 discovery = { icon = "mdi:restart" }
 ```
 
-What joins, `trust` and `forget` write goes to `nodes.toml`, next to `limen.toml`. So `limen.toml` can live in your
-own repository, with its history and reviews, and be mounted read-only over the hub's
-(`- ./limen.toml:/data/limen.toml:ro`, readable by uid 65532). The one exception: a machine declared in `limen.toml`,
-by hand or because it joined before `nodes.toml` existed, is changed or forgotten there, so move its `[nodes.<name>]`
-table to `nodes.toml` before mounting `limen.toml` read-only. The same name in both files is an error.
+What joins, `trust` and `forget` write goes to `nodes.toml`, next to `limen.toml`. So `limen.toml`
+can live in your own repository, with its history and reviews, and be mounted read-only over the
+hub's (`- ./limen.toml:/data/limen.toml:ro`, readable by uid 65532). The one exception: a machine
+declared in `limen.toml`, by hand or because it joined before `nodes.toml` existed, is changed or
+forgotten there, so move its `[nodes.<name>]` table to `nodes.toml` before mounting `limen.toml`
+read-only. The same name in both files is an error.
 
-`[mqtt]` is read when `serve` starts; the sensors and buttons, whenever the file changes. In Home Assistant each
-machine is a device, with its sensors and buttons:
+`[mqtt]` is read when `serve` starts; the sensors and buttons, whenever the file changes. In Home
+Assistant each machine is a device, with its sensors and buttons:
 
-- A **sensor** runs its script every `every` (10 s at least) and publishes its output, trimmed, when it changes. Only
-  a script whose header says `read_only = true`, which the machine checks on every read: it needs a limen as recent
-  as the hub's. The packs' scripts print text for an agent; a sensor's prints a value —how, in
-  [`docs/scripts.md`](docs/scripts.md#for-home-assistant)—, and `discovery.value_template` can take a field of JSON.
-- A **button** runs its script once per press, never twice at once. Its result —exit code and output— shows as a
-  sensor next to it. A script `[approval]` asks about can't be a button: over MQTT there is nobody to ask.
-- **Available** while the hub runs, reaches the machine, and the machine offers what it declares. A sensor or button
-  the machine doesn't offer, or refuses, turns unavailable, keeping its name and dashboards; taken out of
-  `limen.toml`, it leaves Home Assistant.
-- `discovery` sets how an entity looks: `name`, `icon`, `device_class`, `unit_of_measurement`… never a topic. The
-  list is in [`docs/spec.md`](docs/spec.md#72-hub-limen_homelimentoml).
+- A **sensor** runs its script every `every` (10 s at least) and publishes its output, trimmed, when
+  it changes. Only a script whose header says `read_only = true`, which the machine checks on every
+  read: it needs a limen as recent as the hub's. The packs' scripts print text for an agent; a
+  sensor's prints a value —how, in [`docs/scripts.md`](docs/scripts.md#for-home-assistant)—, and
+  `discovery.value_template` can take a field of JSON.
+- A **button** runs its script once per press, never twice at once. Its result —exit code and
+  output— shows as a sensor next to it. A script `[approval]` asks about can't be a button: over
+  MQTT there is nobody to ask.
+- **Available** while the hub runs, reaches the machine, and the machine offers what it declares. A
+  sensor or button the machine doesn't offer, or refuses, turns unavailable, keeping its name and
+  dashboards; taken out of `limen.toml`, it leaves Home Assistant.
+- `discovery` sets how an entity looks: `name`, `icon`, `device_class`, `unit_of_measurement`… never
+  a topic. The list is in [`docs/spec.md`](docs/spec.md#72-hub-limen_homelimentoml).
 
 The topics, under the hub's prefix (`limen`):
 
@@ -362,8 +393,9 @@ The topics, under the hub's prefix (`limen`):
 | `limen/<node>/<id>/result` | A button's last run |
 | `limen/<node>/<id>/status` | Whether the machine offers that sensor or button |
 
-**Anyone who can publish to the broker can press your buttons.** Declare as buttons only what anyone on the broker
-may press, and give the hub a user of its own whose access covers only its topics; with Mosquitto's `acl_file`:
+**Anyone who can publish to the broker can press your buttons.** Declare as buttons only what anyone
+on the broker may press, and give the hub a user of its own whose access covers only its topics;
+with Mosquitto's `acl_file`:
 
 ```text
 user limen
@@ -371,13 +403,13 @@ topic readwrite limen/#
 topic readwrite homeassistant/+/limen/#
 ```
 
-Polling every minute writes the machine's audit log every minute. `[audit] read_only = "none"` in the machine's
-`limen.toml` leaves out what sensors poll, when it succeeds; whatever the agent reads or runs, and anything that
-fails, is still written.
+Polling every minute writes the machine's audit log every minute. `[audit] read_only = "none"` in
+the machine's `limen.toml` leaves out what sensors poll, when it succeeds; whatever the agent reads
+or runs, and anything that fails, is still written.
 
-When something doesn't show: `nodes` lists the sensors and buttons refused and why (`mqtt_problems`), and the hub's
-log (`docker compose logs limen`) says when it connects, when a machine goes down or comes back, and when a sensor
-starts failing.
+When something doesn't show: `nodes` lists the sensors and buttons refused and why
+(`mqtt_problems`), and the hub's log (`docker compose logs limen`) says when it connects, when a
+machine goes down or comes back, and when a sensor starts failing.
 
 ## Security, in short
 
@@ -391,19 +423,22 @@ starts failing.
 | Someone can publish to the hub's MQTT broker | Presses the [buttons you declared](#home-assistant-over-mqtt), with their fixed arguments, and forges what Home Assistant shows. Nothing else reaches the machines |
 | A script is malicious or prints secrets | Not covered: scripts belong to root, and limen trusts them. Masking catches the usual shapes |
 
-The HTTP hub bounds connections and request sizes and deadlines. Excess connections are rejected without waiting
-for the client; discarding unread input after a response has a total deadline too.
+The HTTP hub bounds connections and request sizes and deadlines. Excess connections are rejected
+without waiting for the client; discarding unread input after a response has a total deadline too.
 
 What is readable or printed reaches the model provider, by design. The full threat model is in
-[`docs/spec.md`](docs/spec.md#13-threat-model); to report a vulnerability, see [`SECURITY.md`](SECURITY.md).
+[`docs/spec.md`](docs/spec.md#13-threat-model); to report a vulnerability, see
+[`SECURITY.md`](SECURITY.md).
 
 ## Platforms
 
-- Machines: Debian, Ubuntu and OpenWrt with dropbear; the tests run Debian and OpenWrt. Another Linux with OpenSSH's
-  `sshd`, `sudo` and `useradd` should work the same way, untested. What the scripts need is the packs' business.
+- Machines: Debian, Ubuntu and OpenWrt with dropbear; the tests run Debian and OpenWrt. Another
+  Linux with OpenSSH's `sshd`, `sudo` and `useradd` should work the same way, untested. What the
+  scripts need is the packs' business.
 - Binaries: Linux x86-64 and arm64, static (musl); the same file runs on any distribution. OpenWrt
   in detail: [`docs/openwrt.md`](docs/openwrt.md).
-- Hub: anything that runs the binary and OpenSSH's `ssh`; the image is `ghcr.io/xoadev/limen`, amd64 and arm64.
+- Hub: anything that runs the binary and OpenSSH's `ssh`; the image is `ghcr.io/xoadev/limen`, amd64
+  and arm64.
 
 ## Documentation
 
@@ -429,12 +464,12 @@ make e2e     # Debian and OpenWrt containers with a real SSH server, the install
 make help    # the rest
 ```
 
-Needs Linux, [rustup](https://rustup.rs) and Docker for `make e2e`; the pinned Rust version installs itself.
-Contributions are welcome: [`CONTRIBUTING.md`](CONTRIBUTING.md).
+Needs Linux, [rustup](https://rustup.rs) and Docker for `make e2e`; the pinned Rust version installs
+itself. Contributions are welcome: [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ## License
 
 limen is licensed under the [Apache License 2.0](LICENSE).
 
-The release binaries are static, so they contain third-party code under its own permissive licences: musl (MIT),
-Rust's standard library and the crates listed in `Cargo.lock` (MIT or Apache-2.0).
+The release binaries are static, so they contain third-party code under its own permissive licences:
+musl (MIT), Rust's standard library and the crates listed in `Cargo.lock` (MIT or Apache-2.0).

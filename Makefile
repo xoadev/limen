@@ -1,21 +1,37 @@
 # limen — task runner. `make check` is what CI runs; green means correct.
-# Targets only call scripts under tools/. Never launch the build by hand.
+# Its own targets only call scripts under tools/; the linters are xoa-base's. Never launch the build by hand.
 
-SHELL := /bin/bash
-.DEFAULT_GOAL := help
 # What `cli` and `docker` compile. `debug` links in seconds; a published binary is `release`.
 VARIANT ?= debug
 
-.PHONY: check lint lint-updates build test cli local-install docker e2e pack pack-drafts pack-release release hooks clean help
+# xoadev/xoa-base at the commit the workflows call, which Dependabot moves: make reads it from them,
+# fetches it into .xoa-base/ when it is missing or at another commit, and git checks it.
+XOA_BASE := $(sort $(shell sed -n 's|.*xoadev/xoa-base/\.github/[^@]*@\([0-9a-f]\{40\}\).*|\1|p' .github/workflows/*.y*ml))
+$(if $(XOA_BASE),,$(error no workflow calls xoa-base yet: add the one its README shows first))
+$(if $(filter 1,$(words $(XOA_BASE))),,$(error the workflows call xoa-base at $(XOA_BASE): one commit, in every uses: line))
+# install.sh and the packs' scripts are POSIX sh (OpenWrt has no bash), which their shebang tells shellcheck and
+# shfmt; a pack's scripts have no extension: they are its executable files.
+SHELL_FILES := $(wildcard tools/*.sh) install.sh $(shell find packs -type f -perm -u+x | sort)
+# Neither starts a document: CLAUDE.md is one import line, the template fills a pull request's body.
+MD_OPTIONS := --config 'per-file-ignores = { "CLAUDE.md" = ["MD041"], ".github/pull_request_template.md" = ["MD041"] }'
+include .xoa-base/$(XOA_BASE)/base.mk
+include $(foreach linter,markdown yaml shell actions typos editorconfig,.xoa-base/$(XOA_BASE)/lint/$(linter).mk)
+.xoa-base/$(XOA_BASE)/%: .xoa-base/$(XOA_BASE)/.fetched ;
+.xoa-base/$(XOA_BASE)/.fetched:
+	@rm -rf .xoa-base && git init -q $(@D)
+	@git -C $(@D) fetch -q --depth 1 https://github.com/xoadev/xoa-base $(XOA_BASE)
+	@git -C $(@D) checkout -q FETCH_HEAD && touch $@
+
+.PHONY: check lint format build test cli local-install docker e2e pack pack-drafts pack-release release hooks clean
 
 check: lint build test ## Everything CI runs (`make -k check` to see every failure at once)
 	@echo "check: OK"
 
-lint: ## rustfmt, clippy, shellcheck, actionlint, rumdl and typos. `make lint FIX=1` formats instead of checking
-	@FIX=$(FIX) tools/lint.sh
+lint: md-lint yaml-lint shell-lint actions-lint typos-lint editorconfig-lint ## xoa-base's linters, then rustfmt and clippy
+	@tools/lint.sh
 
-lint-updates: ## Fails if a linter pinned in tools/lint.sh has a newer release a week old (weekly in lint-updates.yml)
-	@tools/lint-updates.sh
+format: md-format yaml-format shell-format ## Format the Markdown, the YAML, the scripts and the Rust
+	@FIX=1 tools/lint.sh
 
 build: ## Compile every crate, tests included
 	@tools/cargo.sh build
@@ -52,6 +68,3 @@ hooks: ## Install the git hooks of tools/ (pre-push: nothing is pushed to main)
 
 clean: ## Remove build output
 	@tools/cargo.sh clean
-
-help: ## List the targets
-	@grep -hE '^[a-zA-Z0-9_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  %-14s %s\n",$$1,$$2}'

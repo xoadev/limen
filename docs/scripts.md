@@ -1,16 +1,17 @@
 # Scripts and packs
 
-Everything an agent can do on a machine, besides reading the files it allows, is a script the machine offers.
-This is what a script's author needs: the header, how limen runs it, the rules it must meet, and a setup that
-takes a machine's packs from a Git repository. The design around it is in the [spec](spec.md) (§6).
+Everything an agent can do on a machine, besides reading the files it allows, is a script the
+machine offers. This is what a script's author needs: the header, how limen runs it, the rules it
+must meet, and a setup that takes a machine's packs from a Git repository. The design around it is
+in the [spec](spec.md) (§6).
 
 ## A pack
 
-A directory listed in `scripts.packs` of `/etc/limen/limen.toml`. Its scripts are the executable files at its
-top whose name is `^[a-z0-9][a-z0-9_-]{0,47}`, plus an optional extension, and that carry a header. Everything
-else —a README, helpers without a header, subdirectories— is the pack's own, for its scripts to use: the
-agent never sees it. A file with a header that isn't executable, or that [Who owns it](#who-owns-it) refuses, is
-no helper: `limen lint` and `nodes` report it.
+A directory listed in `scripts.packs` of `/etc/limen/limen.toml`. Its scripts are the executable
+files at its top whose name is `^[a-z0-9][a-z0-9_-]{0,47}`, plus an optional extension, and that
+carry a header. Everything else —a README, helpers without a header, subdirectories— is the pack's
+own, for its scripts to use: the agent never sees it. A file with a header that isn't executable, or
+that [Who owns it](#who-owns-it) refuses, is no helper: `limen lint` and `nodes` report it.
 
 ```text
 packs/docker/
@@ -62,29 +63,36 @@ Each argument:
 | `values = ["a", "b"]` | For `enum` |
 | `pattern` | For `string`. By default `^[A-Za-z0-9_][A-Za-z0-9._-]{0,63}$`: never an option, `.` or `..` |
 
-A `pattern` is a Rust `regex` that must match the whole value: `\w`, `\d`, `\s` and `(?i)` are there, Unicode's
-`\p{…}` classes and look-around are not. Whatever the pattern, a string argument never holds a control character: a
-NUL, a newline or an `ESC` is refused before the pattern is applied.
+A `pattern` is a Rust `regex` that must match the whole value: `\w`, `\d`, `\s` and `(?i)` are
+there, Unicode's `\p{…}` classes and look-around are not. Whatever the pattern, a string argument
+never holds a control character: a NUL, a newline or an `ESC` is refused before the pattern is
+applied.
 
-The catalog reaches every MCP session as text, and the hub doesn't take it on trust. It leaves out a script:
+The catalog reaches every MCP session as text, and the hub doesn't take it on trust. It leaves out a
+script:
 
-- named as one of its own tools or the node's requests: `nodes`, `hello`, `read_file`, `list_dir`, `history`, `run`;
+- named as one of its own tools or the node's requests: `nodes`, `hello`, `read_file`, `list_dir`,
+  `history`, `run`;
 - whose description, or an argument's, runs past 300 characters or holds a control character;
-- with a `pattern` over 512 bytes, or that compiles to more than 1 MiB. A bounded repetition unrolls: `\w{1,300}`
-  —Unicode's `\w`, hundreds of ranges, 300 times— is too big; `[A-Za-z0-9_]{1,300}` is not.
+- with a `pattern` over 512 bytes, or that compiles to more than 1 MiB. A bounded repetition
+  unrolls: `\w{1,300}` —Unicode's `\w`, hundreds of ranges, 300 times— is too big;
+  `[A-Za-z0-9_]{1,300}` is not.
 
 The hub only counts these in `nodes`; `limen lint` on the node says which and why.
 
-A script declared with different arguments on different nodes is not left out: while a change to it rolls out,
-its one tool reaches every node that has it, and each call is checked against what that node declares. Adding an
-optional argument is seamless —the tool shows it, and says which nodes don't take it yet—; any other change shows
-what most nodes declare, and `nodes` lists it under `script_conflicts` until the nodes agree (spec §5).
+A script declared with different arguments on different nodes is not left out: while a change to it
+rolls out, its one tool reaches every node that has it, and each call is checked against what that
+node declares. Adding an optional argument is seamless —the tool shows it, and says which nodes
+don't take it yet—; any other change shows what most nodes declare, and `nodes` lists it under
+`script_conflicts` until the nodes agree (spec §5).
 
 ## How it runs
 
-- As root, with no shell in between: limen executes the file, and its `#!` line picks the interpreter.
-- A clean environment: `PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`, `LANG` and `LC_ALL`
-  `C.UTF-8`, `TZ=UTC`, `HOME=/root`, no pagers or colours, and:
+- As root, with no shell in between: limen executes the file, and its `#!` line picks the
+  interpreter.
+
+- A clean environment: `PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`, `LANG`
+  and `LC_ALL` `C.UTF-8`, `TZ=UTC`, `HOME=/root`, no pagers or colours, and:
 
   | Variable | |
   |---|---|
@@ -94,61 +102,72 @@ what most nodes declare, and `nodes` lists it under `script_conflicts` until the
   | `LIMEN_NODE` | The machine's hostname |
 
 - cwd `/`, stdin `/dev/null`, umask `022`.
-- What the agent gets back: the exit code, stdout and stderr, each stripped of terminal control sequences (colours
-  and other control characters but newline, tab and carriage return), then redacted, and each cut to its last
-  `limits.max_lines` lines. `grep` and `tail`, when the agent asks for them, apply to stdout after redaction; a script
-  never sees them. Both streams together are captured up to 16 MiB: past it the script is stopped. Whatever a limit
-  cuts, the answer says so, and the answer as a whole is bounded by `limits.max_response`.
-- Whoever runs it by hand —`limen call` on the hub, `limen run` on the node— sees its output as it is printed, a
-  line at a time, redacted the same way; an MCP client may too, through progress notifications. Followed like this,
-  the output is not cut to `limits.max_lines`: only `limits.max_response` bounds it. A private key's
-  block shows once its `END` line is printed, so it is redacted whole.
+
+- What the agent gets back: the exit code, stdout and stderr, each stripped of terminal control
+  sequences (colours and other control characters but newline, tab and carriage return), then
+  redacted, and each cut to its last `limits.max_lines` lines. `grep` and `tail`, when the agent
+  asks for them, apply to stdout after redaction; a script never sees them. Both streams together
+  are captured up to 16 MiB: past it the script is stopped. Whatever a limit cuts, the answer says
+  so, and the answer as a whole is bounded by `limits.max_response`.
+
+- Whoever runs it by hand —`limen call` on the hub, `limen run` on the node— sees its output as it
+  is printed, a line at a time, redacted the same way; an MCP client may too, through progress
+  notifications. Followed like this, the output is not cut to `limits.max_lines`: only
+  `limits.max_response` bounds it. A private key's block shows once its `END` line is printed, so it
+  is redacted whole.
+
 - The exit code is data, not an error: `0` is success, anything else is what the script says it is.
+
 - Every run is recorded in the audit log with its arguments, when it starts and when it ends.
 
 ## Who owns it
 
-A script that isn't owned by root, or is writable by group or others, is refused, and so is one under such a
-directory, all the way up to `/` — the same rule as `sshd`'s `StrictModes`. It holds for the pack's directory
-and for `limen.toml` and where it leads, if it is a link. A checkout or a copy made as root with umask `022`
-passes; one made with a looser umask, or by another user, doesn't.
+A script that isn't owned by root, or is writable by group or others, is refused, and so is one
+under such a directory, all the way up to `/` — the same rule as `sshd`'s `StrictModes`. It holds
+for the pack's directory and for `limen.toml` and where it leads, if it is a link. A checkout or a
+copy made as root with umask `022` passes; one made with a looser umask, or by another user,
+doesn't.
 
 ## Writing one
 
-- **Print what the agent needs, short.** A first line that sums it up, then the detail. Machine output such as
-  JSON is fine; a whole `docker inspect` is not.
-- **Never print a secret.** Redaction is a safety net, not a filter to rely on: `docker inspect` shows
-  environment values, `ps` shows command lines. Choose fields (`--format`) and leave secrets out.
-- **Take arguments as data.** Quote them (`"$LIMEN_ARG_UNIT"`), put `--` before them where the command accepts
-  it, and narrow `pattern` to what the argument can be.
-- **Print as you go, in a long script.** Its output reaches a pipe, not a terminal, and many programs then keep it
-  until they have a few kilobytes: Python, `grep`, `awk`, `sed`. Whoever follows the run sees nothing until then.
-  `stdbuf -oL <command>`, `PYTHONUNBUFFERED=1` or `grep --line-buffered` print each line when it is done. A progress
-  bar redrawn with `\r` shows only when its line ends.
-- **A script that changes something is safe to run twice**, and says what it did. The agent may run it again
-  after a timeout.
-- **One at a time, where it matters**: `exec 9> /run/lock/limen-<name>.lock; flock -n 9 || exit 1` refuses a
-  second run while the first goes on.
-- **Offer only changes you would let whoever writes to your logs trigger.** Text in a log or a file can lead the
-  model to call any script on offer.
-- **A script that can update itself** —a `sync` that pulls the repository it lives in— puts its body in a
-  function called on the last line, `main "$@"`, so the shell has read it whole before the file changes.
+- **Print what the agent needs, short.** A first line that sums it up, then the detail. Machine
+  output such as JSON is fine; a whole `docker inspect` is not.
+- **Never print a secret.** Redaction is a safety net, not a filter to rely on: `docker inspect`
+  shows environment values, `ps` shows command lines. Choose fields (`--format`) and leave secrets
+  out.
+- **Take arguments as data.** Quote them (`"$LIMEN_ARG_UNIT"`), put `--` before them where the
+  command accepts it, and narrow `pattern` to what the argument can be.
+- **Print as you go, in a long script.** Its output reaches a pipe, not a terminal, and many
+  programs then keep it until they have a few kilobytes: Python, `grep`, `awk`, `sed`. Whoever
+  follows the run sees nothing until then. `stdbuf -oL <command>`, `PYTHONUNBUFFERED=1` or
+  `grep --line-buffered` print each line when it is done. A progress bar redrawn with `\r` shows
+  only when its line ends.
+- **A script that changes something is safe to run twice**, and says what it did. The agent may run
+  it again after a timeout.
+- **One at a time, where it matters**: `exec 9> /run/lock/limen-<name>.lock; flock -n 9 || exit 1`
+  refuses a second run while the first goes on.
+- **Offer only changes you would let whoever writes to your logs trigger.** Text in a log or a file
+  can lead the model to call any script on offer.
+- **A script that can update itself** —a `sync` that pulls the repository it lives in— puts its body
+  in a function called on the last line, `main "$@"`, so the shell has read it whole before the file
+  changes.
 
 ## For Home Assistant
 
-A hub with `[mqtt]` publishes a script's output as a sensor ([spec §9.1](spec.md#91-mqtt)): its whole stdout,
-trimmed, is the state, published when it changes. Most scripts print text for an agent; a sensor's script prints a
-value.
+A hub with `[mqtt]` publishes a script's output as a sensor ([spec §9.1](spec.md#91-mqtt)): its
+whole stdout, trimmed, is the state, published when it changes. Most scripts print text for an
+agent; a sensor's script prints a value.
 
-- **`read_only = true`**, or the hub refuses it as a sensor, and the node refuses each read. A button's script needs
-  no such word.
-- **One value**: `87`, `on`, `running`; or one line of JSON, from which the sensor's `discovery.value_template`
-  takes a field. Home Assistant keeps 255 characters of a state.
-- **Rounded where it should be**: `87`, not `87.31`. A value that changes on every read is published on every read.
+- **`read_only = true`**, or the hub refuses it as a sensor, and the node refuses each read. A
+  button's script needs no such word.
+- **One value**: `87`, `on`, `running`; or one line of JSON, from which the sensor's
+  `discovery.value_template` takes a field. Home Assistant keeps 255 characters of a state.
+- **Rounded where it should be**: `87`, not `87.31`. A value that changes on every read is published
+  on every read.
 - **Exit 0 when the value is good.** Any other exit publishes nothing and keeps the last state.
 
-The `system` pack's `cpu_used`, `memory_used`, `disk_used`, `temperature` and `gpu`, and the `docker` pack's
-`container_state`, are written this way. `disk_used`:
+The `system` pack's `cpu_used`, `memory_used`, `disk_used`, `temperature` and `gpu`, and the
+`docker` pack's `container_state`, are written this way. `disk_used`:
 
 ```sh
 #!/bin/sh
@@ -166,9 +185,10 @@ df -P -- "$LIMEN_ARG_PATH" | awk 'NR == 2 { sub(/%/, "", $5); print $5 }'
 
 ## Released packs
 
-Each pack in limen's `packs/` is released on its own as `pack-<pack>-vX.Y.Z`: a tarball of its folder and
-`SHA256SUMS`, with a build provenance attestation. limen fetches nothing, so the machine's own setup —its `sync`, a
-configuration manager— brings it, and the machine's `limen.toml` lists where it went:
+Each pack in limen's `packs/` is released on its own as `pack-<pack>-vX.Y.Z`: a tarball of its
+folder and `SHA256SUMS`, with a build provenance attestation. limen fetches nothing, so the
+machine's own setup —its `sync`, a configuration manager— brings it, and the machine's `limen.toml`
+lists where it went:
 
 ```sh
 pack=system version=X.Y.Z sha256=<from the release's SHA256SUMS, kept in your repository>
@@ -187,20 +207,23 @@ fi
 packs = ["/opt/limen-packs/system@X.Y.Z", "/opt/state/nodes/nas"]
 ```
 
-- **Pin the hash, not only the tag**: a tag names a version, the hash is what makes it the same bytes.
-- **As root, with `umask 022`**: limen runs a script only if root owns it and nobody else can write it or any
-  directory above it. The tarball is made that way; extracting as root keeps it.
-- **A folder per version**, named `<pack>@X.Y.Z`: moving a machine to a new one is changing `limen.toml`, and going
-  back is changing it back. `limen lint` after each. The `limen` pack's `limen_packs` reads the version from that
-  name and says when a newer release is published.
-- The agent must not be able to change the pinned version or hash: that is choosing what runs as root.
-- **limen before the packs**: a pack can use a header key an older limen doesn't know, and that limen refuses
-  the script. Each pack's README says which limen it needs, and its release notes say when that changes.
+- **Pin the hash, not only the tag**: a tag names a version, the hash is what makes it the same
+  bytes.
+- **As root, with `umask 022`**: limen runs a script only if root owns it and nobody else can write
+  it or any directory above it. The tarball is made that way; extracting as root keeps it.
+- **A folder per version**, named `<pack>@X.Y.Z`: moving a machine to a new one is changing
+  `limen.toml`, and going back is changing it back. `limen lint` after each. The `limen` pack's
+  `limen_packs` reads the version from that name and says when a newer release is published.
+- The agent must not be able to change the pinned version or hash: that is choosing what runs as
+  root.
+- **limen before the packs**: a pack can use a header key an older limen doesn't know, and that
+  limen refuses the script. Each pack's README says which limen it needs, and its release notes say
+  when that changes.
 
 ## A machine from a Git repository
 
-One way to keep a machine's packs and configuration in a private repository. limen takes no part in it beyond
-running the `sync` script.
+One way to keep a machine's packs and configuration in a private repository. limen takes no part in
+it beyond running the `sync` script.
 
 ```text
 infra/
@@ -235,8 +258,8 @@ ln -sf /opt/state/nodes/nas/limen.toml /etc/limen/limen.toml
 limen lint
 ```
 
-- The token goes under `/etc/limen/`, which `read_file` never reads, and reaches git through its environment:
-  never in a URL, an argument or `.git/config`.
+- The token goes under `/etc/limen/`, which `read_file` never reads, and reaches git through its
+  environment: never in a URL, an argument or `.git/config`.
 - Then the join line from `limen invite nas` on the hub, pasted on the machine.
 
 **From then on, through the agent** — `nodes/nas/sync`:
@@ -261,10 +284,11 @@ main() {
 main "$@"
 ```
 
-- Whoever can push to `main` runs code as root on every machine that syncs it, and the agent can run `sync`:
-  the agent must not be able to push there. Protect the branch, and change it only through reviewed pull
-  requests.
-- The first clone can't be a script: until it runs there are no packs. That is why the bootstrap does it.
+- Whoever can push to `main` runs code as root on every machine that syncs it, and the agent can run
+  `sync`: the agent must not be able to push there. Protect the branch, and change it only through
+  reviewed pull requests.
+- The first clone can't be a script: until it runs there are no packs. That is why the bootstrap
+  does it.
 
-[Our machines, through pull requests](https://xoa.dev/notes/machines-through-pull-requests/) tells how we use this setup, with the
-agent's changes going through reviewed pull requests.
+[Our machines, through pull requests](https://xoa.dev/notes/machines-through-pull-requests/) tells
+how we use this setup, with the agent's changes going through reviewed pull requests.

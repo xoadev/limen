@@ -32,6 +32,8 @@ jobs:
       # Every action pinned by commit SHA, with its version in a comment: a tag can move, a SHA cannot.
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Toolchain, dependencies and build cache
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -42,9 +44,15 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/git/db
             target
-            ~/.cache/limen/lint
-          key: rust-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'tools/lint.sh') }}
+          key: rust-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
           restore-keys: rust-${{ runner.os }}-
+
+      # The linters of xoa-base's lint/*.mk: GitHub's runner brings shellcheck only, and xoa-base's action the rest.
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: 1.27.2
+          cache: false
+      - uses: xoadev/xoa-base/.github/actions/linters@4cfb2e775d6b97518bd1c9a273d07845bc7b9e8f # v0.2.0
 
       # `-k`: every check runs even when one fails, so a red build says everything that is wrong at once.
       - name: make -k check
@@ -56,7 +64,8 @@ jobs:
         run: |
           make cli ARCH="x86_64 aarch64"
           file "$(tools/cargo.sh artifact x86_64)" | tee /dev/stderr | grep -Eq "x86-64.*static(-pie)?(ally)? linked"
-          file "$(tools/cargo.sh artifact aarch64)" | tee /dev/stderr | grep -Eq "ARM aarch64.*static(-pie)?(ally)? linked"
+          file "$(tools/cargo.sh artifact aarch64)" | tee /dev/stderr |
+            grep -Eq "ARM aarch64.*static(-pie)?(ally)? linked"
 
   # A red `main` must be impossible to miss: one open issue, reused, that says which commit broke it.
   alert:
@@ -70,7 +79,8 @@ jobs:
         with:
           script: |
             const title = 'main is red';
-            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const { owner, repo } = context.repo;
+            const runUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
             const body = `\`make check\` failed on \`main\` at ${context.sha.slice(0, 7)}.\n\n` +
               `Run: ${runUrl}\n\nFixed like everything else: a branch, a PR and a green \`check\` (AGENTS.md).`;
             const { data: open } = await github.rest.issues.listForRepo({

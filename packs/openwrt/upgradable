@@ -8,16 +8,22 @@
 #: description = "Download the package lists first; they live in RAM and are gone after a reboot"
 set -eu
 
-if command -v apk > /dev/null 2>&1; then
+if command -v apk >/dev/null 2>&1; then
   if [ "${LIMEN_ARG_REFRESH:-true}" = true ]; then
-    apk update > /dev/null 2>&1 || { echo "apk update failed: are the feeds reachable? (system's reach)"; exit 1; }
+    apk update >/dev/null 2>&1 || {
+      echo "apk update failed: are the feeds reachable? (system's reach)"
+      exit 1
+    }
   fi
-  upgradable=$(apk list --upgradable 2> /dev/null) || true
-elif command -v opkg > /dev/null 2>&1; then
+  upgradable=$(apk list --upgradable 2>/dev/null) || true
+elif command -v opkg >/dev/null 2>&1; then
   if [ "${LIMEN_ARG_REFRESH:-true}" = true ]; then
-    opkg update > /dev/null 2>&1 || { echo "opkg update failed: are the feeds reachable? (system's reach)"; exit 1; }
+    opkg update >/dev/null 2>&1 || {
+      echo "opkg update failed: are the feeds reachable? (system's reach)"
+      exit 1
+    }
   fi
-  upgradable=$(opkg list-upgradable 2> /dev/null) || true
+  upgradable=$(opkg list-upgradable 2>/dev/null) || true
 else
   echo "neither opkg nor apk is here"
   exit 1
@@ -27,7 +33,7 @@ if [ "${LIMEN_ARG_REFRESH:-true}" = false ]; then
   echo "(from the package lists as they were; refresh to download them anew)"
 fi
 # shellcheck disable=SC1091 # the router's own file, not this repository's
-release=$(. /etc/openwrt_release 2> /dev/null && echo "$DISTRIB_DESCRIPTION") || release="OpenWrt"
+release=$(. /etc/openwrt_release 2>/dev/null && echo "$DISTRIB_DESCRIPTION") || release="OpenWrt"
 if [ -z "$upgradable" ]; then
   echo "$release: every package is up to date"
   exit 0

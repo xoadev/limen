@@ -1,7 +1,7 @@
 # openwrt
 
-A router running OpenWrt: its board, services, log, network, Wi-Fi clients, DHCP leases and packages.
-POSIX `sh`, as busybox's `ash` runs it.
+A router running OpenWrt: its board, services, log, network, Wi-Fi clients, DHCP leases and
+packages. POSIX `sh`, as busybox's `ash` runs it.
 
 Needs limen 0.1.3 or later: its headers use `read_only`, which older versions refuse.
 
@@ -16,11 +16,11 @@ Needs limen 0.1.3 or later: its headers use `read_only`, which older versions re
 | `upgradable` | Packages with a newer version in the feeds, with `opkg` or, from OpenWrt 25, `apk` | no (it refreshes the lists first, in RAM, unless `refresh` is false) |
 | `restart_service` | Restarts one service with `/etc/init.d/<name> restart` | **yes** |
 
-Needs `ubus`, `jsonfilter` and `logread`, all in a default image; `wifi_clients` needs `iwinfo`, there on any router
-with Wi-Fi. The `system` pack works here too.
+Needs `ubus`, `jsonfilter` and `logread`, all in a default image; `wifi_clients` needs `iwinfo`,
+there on any router with Wi-Fi. The `system` pack works here too.
 
-`upgradable` only lists: upgrading packages one by one can leave a router that doesn't boot, and a new release goes
-through `sysupgrade`.
+`upgradable` only lists: upgrading packages one by one can leave a router that doesn't boot, and a
+new release goes through `sysupgrade`.
 
-`restart_service` refuses `network`, which would cut the connection its answer goes back through. Narrow its
-`pattern` to the services you would let the agent restart.
+`restart_service` refuses `network`, which would cut the connection its answer goes back through.
+Narrow its `pattern` to the services you would let the agent restart.

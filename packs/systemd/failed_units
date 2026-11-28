@@ -24,6 +24,6 @@ for unit in $failed; do
         value["Result"], value["ExecMainStatus"], value["InactiveEnterTimestamp"], value["NRestarts"]
     }'
   if [ "$lines" -gt 0 ]; then
-    journalctl --no-pager --output=short-iso --lines="$lines" --unit="$unit" 2> /dev/null | sed 's/^/  /'
+    journalctl --no-pager --output=short-iso --lines="$lines" --unit="$unit" 2>/dev/null | sed 's/^/  /'
   fi
 done

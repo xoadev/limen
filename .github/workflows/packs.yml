@@ -59,7 +59,8 @@ jobs:
           tag=$(PREFIX="pack-$PACK-v" gh release list --limit 100 --json tagName,isDraft \
             --jq '[.[] | select(.isDraft and (.tagName | startswith($ENV.PREFIX))) | .tagName] | first // empty')
           if [[ -z "$tag" ]]; then
-            echo "::error title=No draft::$PACK has no draft release: nothing changed in packs/$PACK since its last one, or its drafts were never made: run packs-draft (make pack-drafts)" >&2
+            echo "::error title=No draft::$PACK has no draft release: nothing changed in packs/$PACK since its" \
+              "last one, or its drafts were never made: run packs-draft (make pack-drafts)" >&2
             exit 1
           fi
           sha=$(gh release view "$tag" --json targetCommitish --jq .targetCommitish)
@@ -99,9 +100,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          run=$(gh run list --workflow check.yml --commit "$SHA" --event push --limit 1 --json databaseId --jq '.[0].databaseId // empty')
+          run=$(gh run list --workflow check.yml --commit "$SHA" --event push --limit 1 \
+            --json databaseId --jq '.[0].databaseId // empty')
           if [[ -z "$run" ]]; then
-            echo "::error title=No check::check.yml never ran on $SHA; a pack is only published from a commit of main" >&2
+            echo "::error title=No check::check.yml never ran on $SHA;" \
+              "a pack is only published from a commit of main" >&2
             exit 1
           fi
           gh run watch "$run" --interval 30 --exit-status > /dev/null || {
@@ -160,15 +163,19 @@ jobs:
         run: |
           name=limen-pack-$PACK-$VERSION.tar.gz
           notes="$RUNNER_TEMP/notes.md"
+          docs="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/blob/main/docs/scripts.md#released-packs"
           {
             gh release view "$TAG" --json body --jq .body
             echo
             echo "**limen pack $PACK $VERSION** · build $GITHUB_RUN_NUMBER"
             echo
-            echo "- \`$name\`: the folder \`$PACK/\`, owned by root and writable only by its owner. Unpack it where the machine's \`limen.toml\` lists it, as [docs/scripts.md](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/blob/main/docs/scripts.md#released-packs) says."
+            echo "- \`$name\`: the folder \`$PACK/\`, owned by root and writable only by its owner." \
+              "Unpack it where the machine's \`limen.toml\` lists it, as" \
+              "[docs/scripts.md]($docs) says."
             echo "- \`SHA256SUMS\`: to check what you downloaded. Pin that hash, not only the tag."
             echo
-            echo "\`gh attestation verify $name --repo $GITHUB_REPOSITORY\` says it was built by this repository's packs workflow, \`.github/workflows/packs.yml\`."
+            echo "\`gh attestation verify $name --repo $GITHUB_REPOSITORY\` says it was built" \
+              "by this repository's packs workflow, \`.github/workflows/packs.yml\`."
           } > "$notes"
           gh release upload "$TAG" dist/* --clobber
           gh release edit "$TAG" --notes-file "$notes"

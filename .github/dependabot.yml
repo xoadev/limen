@@ -2,7 +2,8 @@
 # e2e.yml then test: the actions of the workflows (pinned by commit SHA with the version in a comment), the crates
 # (pinned `=X.Y.Z` in the Cargo.toml files, so the requirement moves with Cargo.lock), the Rust version of
 # rust-toolchain.toml, and the base images of etc/Dockerfile and etc/e2e/node.Dockerfile. Only versions a week old:
-# a release pulled in its first days never reaches the build. The linters of tools/lint.sh are no manifest Dependabot reads: lint-updates.yml watches them.
+# a release pulled in its first days never reaches the build. xoa-base's commit moves with the actions, and with it
+# the linters.
 version: 2
 updates:
   - package-ecosystem: github-actions

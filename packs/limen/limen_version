@@ -6,14 +6,26 @@ set -eu
 
 repo=xoadev/limen
 
-command -v curl > /dev/null 2>&1 || { echo "curl is needed to reach GitHub"; exit 1; }
+command -v curl >/dev/null 2>&1 || {
+  echo "curl is needed to reach GitHub"
+  exit 1
+}
 installed=$(limen --version | sed -n 's/^limen \([0-9][0-9.]*\).*/\1/p')
-[ -n "$installed" ] || { echo "cannot read the installed version from: $(limen --version)"; exit 1; }
+[ -n "$installed" ] || {
+  echo "cannot read the installed version from: $(limen --version)"
+  exit 1
+}
 echo "installed: $installed"
 
-json=$(curl -fsS --proto '=https' --tlsv1.2 --retry 3 "https://api.github.com/repos/$repo/releases/latest") || { echo "cannot ask GitHub for the latest release"; exit 1; }
+json=$(curl -fsS --proto '=https' --tlsv1.2 --retry 3 "https://api.github.com/repos/$repo/releases/latest") || {
+  echo "cannot ask GitHub for the latest release"
+  exit 1
+}
 latest=$(printf '%s\n' "$json" | sed -n 's/.*"tag_name": *"v\([0-9][0-9.]*\)".*/\1/p' | head -n 1)
-[ -n "$latest" ] || { echo "no release found at github.com/$repo"; exit 1; }
+[ -n "$latest" ] || {
+  echo "no release found at github.com/$repo"
+  exit 1
+}
 echo "latest: $latest"
 
 # Numeric, field by field: 0.1.10 is newer than 0.1.9.

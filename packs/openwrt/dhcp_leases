@@ -3,9 +3,9 @@
 #: read_only = true
 set -eu
 
-leases=$(uci -q get dhcp.@dnsmasq[0].leasefile 2> /dev/null) || leases=/tmp/dhcp.leases
+leases=$(uci -q get dhcp.@dnsmasq[0].leasefile 2>/dev/null) || leases=/tmp/dhcp.leases
 # Static leases by MAC, from /etc/config/dhcp: `dhcp.cfg01.mac='aa:bb:…'`, or `'aa:…' 'cc:…'` for a host with several.
-static=$(uci -q show dhcp 2> /dev/null | sed -n "s/^dhcp\.[^.]*\.mac=//p" | tr -d "'" | tr 'A-F ' 'a-f\n') || true
+static=$(uci -q show dhcp 2>/dev/null | sed -n "s/^dhcp\.[^.]*\.mac=//p" | tr -d "'" | tr 'A-F ' 'a-f\n') || true
 now=$(date +%s)
 
 if [ -r "$leases" ]; then
@@ -30,7 +30,7 @@ else
 fi
 
 # odhcpd's, where it hands out IPv6 addresses: {"device": {"br-lan": {"leases": [...]}}}.
-ipv6=$(ubus call dhcp ipv6leases 2> /dev/null) || exit 0
+ipv6=$(ubus call dhcp ipv6leases 2>/dev/null) || exit 0
 leases6=$(jsonfilter -q -s "$ipv6" -e '@.device[*].leases[*]') || true
 [ -n "$leases6" ] || exit 0
 echo

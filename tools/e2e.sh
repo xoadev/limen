@@ -10,7 +10,10 @@
 #   (default: all four)
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-command -v docker >/dev/null || { echo "e2e: needs Docker; skipped" >&2; exit 0; }
+command -v docker >/dev/null || {
+  echo "e2e: needs Docker; skipped" >&2
+  exit 0
+}
 binary=$("$ROOT/tools/cargo.sh" artifact)
 SUITE=${SUITE:-all}
 
@@ -61,7 +64,7 @@ refuse() {
   out=$("$@" 2>&1) || true
   if [[ "$out" != *"$needle"* ]]; then
     ko "expected: $needle" "got: ${out:0:700}"
-  elif grep -Eq -- "$absent" <<< "$out"; then
+  elif grep -Eq -- "$absent" <<<"$out"; then
     ko "did not expect: $absent" "got: ${out:0:700}"
   else
     ok
@@ -75,7 +78,7 @@ ssh-keygen -q -t ed25519 -N '' -f "$work/stranger" -C limen-e2e-stranger
 hub_config() {
   mkdir -p "$work/$1"
   cp "$work/hub" "$work/$1/hub"
-  cat > "$work/$1/limen.toml" <<EOF
+  cat >"$work/$1/limen.toml" <<EOF
 [ssh]
 identity = "hub"
 
@@ -100,8 +103,8 @@ mcp_session() {
     '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}' \
     '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
     '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
-    "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"$2\",\"arguments\":$arguments}}" \
-    | "$binary" mcp --home "$work/$1" 2>/dev/null
+    "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"$2\",\"arguments\":$arguments}}" |
+    "$binary" mcp --home "$work/$1" 2>/dev/null
 }
 # progress_session <node> <script>: one call of <script> over stdio, with a progress token: the progress' messages,
 # then the result's text.
@@ -109,10 +112,10 @@ progress_session() {
   printf '%s\n' \
     '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}' \
     '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
-    "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"$2\",\"arguments\":{\"node\":\"$1\"},\"_meta\":{\"progressToken\":\"e2e\"}}}" \
-    | "$binary" mcp --home "$work/$1" 2>/dev/null \
-    | jq -r 'if .method == "notifications/progress" then "progress \(.params.progressToken): \(.params.message)"
-             elif .id == 3 then .result.content[0].text else empty end'
+    "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"$2\",\"arguments\":{\"node\":\"$1\"},\"_meta\":{\"progressToken\":\"e2e\"}}}" |
+    "$binary" mcp --home "$work/$1" 2>/dev/null |
+    jq -r 'if .method == "notifications/progress" then "progress \(.params.progressToken): \(.params.message)"
+            elif .id == 3 then .result.content[0].text else empty end'
 }
 # status <command...>: what the command prints, then `exit <its exit code>`.
 status() {
@@ -131,7 +134,7 @@ first_line_early() {
   start=$(date +%s%N)
   "$@" | {
     IFS= read -r line
-    if (( ($(date +%s%N) - start) / 1000000 < 3000 )); then echo "early: $line"; else echo "late: $line"; fi
+    if ((($(date +%s%N) - start) / 1000000 < 3000)); then echo "early: $line"; else echo "late: $line"; fi
     cat >/dev/null
   }
 }
@@ -142,8 +145,8 @@ released_binary() {
   version=${version##*/v}
   name="limen-$version-linux-$(uname -m)"
   curl -fsSL -o "$1" "$releases/download/v$version/$name" || return 1
-  curl -fsSL "$releases/download/v$version/SHA256SUMS" | grep " \./$name\$" | sed "s#\./$name\$#$1#" | sha256sum -c --quiet \
-    || return 1
+  curl -fsSL "$releases/download/v$version/SHA256SUMS" | grep " \./$name\$" | sed "s#\./$name\$#$1#" | sha256sum -c --quiet ||
+    return 1
   chmod 755 "$1"
   echo "limen $version"
 }
@@ -375,22 +378,22 @@ EOF
   docker exec "$node" cp /tmp/kept.toml /etc/limen/kept.toml
 
   echo "e2e/debian: the gate is the only way in"
-  read -ra hub_ssh <<< "$(ssh_as hub limen "$port")"
+  read -ra hub_ssh <<<"$(ssh_as hub limen "$port")"
   expect "a command sent over ssh is ignored" 'no request on stdin' "${hub_ssh[@]}" 'cat /etc/shadow' </dev/null
-  expect "a request limen doesn't know is refused" "unknown request 'apply'" "${hub_ssh[@]}" <<< '{"v":1,"request":"apply"}'
-  expect "an unknown protocol version says so" '"versions":[1]' "${hub_ssh[@]}" <<< '{"v":9,"request":"hello"}'
+  expect "a request limen doesn't know is refused" "unknown request 'apply'" "${hub_ssh[@]}" <<<'{"v":1,"request":"apply"}'
+  expect "an unknown protocol version says so" '"versions":[1]' "${hub_ssh[@]}" <<<'{"v":9,"request":"hello"}'
   expect "and is in the audit log too" '"result": "unsupported_version"' limen call debian history --arg lines=5
-  expect "a field nobody reads is an error" 'bad_request' "${hub_ssh[@]}" <<< '{"v":1,"request":"hello","role":"deploy"}'
+  expect "a field nobody reads is an error" 'bad_request' "${hub_ssh[@]}" <<<'{"v":1,"request":"hello","role":"deploy"}'
   expect "a flood of arguments is refused" 'bad_request' \
-    "${hub_ssh[@]}" <<< "{\"v\":1,\"request\":\"hello\",\"args\":{\"x\":\"$(head -c 200000 /dev/zero | tr '\0' x)\"}}"
+    "${hub_ssh[@]}" <<<"{\"v\":1,\"request\":\"hello\",\"args\":{\"x\":\"$(head -c 200000 /dev/zero | tr '\0' x)\"}}"
   expect "and not copied into the audit log" '"omitted_bytes": ' limen call debian history --arg lines=3
   expect "no forwarding through the gate" 'stdio forwarding failed' "${hub_ssh[0]}" -W 127.0.0.1:22 "${hub_ssh[@]:1}" </dev/null
-  read -ra stranger_ssh <<< "$(ssh_as stranger limen "$port")"
-  expect "an unknown key doesn't get in" 'Permission denied' "${stranger_ssh[@]}" <<< '{"v":1,"request":"hello"}'
+  read -ra stranger_ssh <<<"$(ssh_as stranger limen "$port")"
+  expect "an unknown key doesn't get in" 'Permission denied' "${stranger_ssh[@]}" <<<'{"v":1,"request":"hello"}'
   docker exec "$node" limen install --hub-key "$(cat "$work/hub.pub")" --from 10.99.0.0/16 >/dev/null
-  expect "--from: the key only from there" 'Permission denied' "${hub_ssh[@]}" <<< '{"v":1,"request":"hello"}'
+  expect "--from: the key only from there" 'Permission denied' "${hub_ssh[@]}" <<<'{"v":1,"request":"hello"}'
   docker exec "$node" limen install --hub-key "$(cat "$work/hub.pub")" >/dev/null
-  expect "install without --from lifts it" '"ok":true' "${hub_ssh[@]}" <<< '{"v":1,"request":"hello"}'
+  expect "install without --from lifts it" '"ok":true' "${hub_ssh[@]}" <<<'{"v":1,"request":"hello"}'
 
   echo "e2e/debian: hub"
   expect "mcp lists every script as a tool" '"name":"mark"' mcp_session debian disk
@@ -401,7 +404,7 @@ EOF
   expect "and the whole of it as the result" $'tick 1\ntick 2\n[exit 0]' progress_session debian ticks
   expect "files are read-only tools" 'read_file {\"readOnlyHint\":true' annotations debian read_file
   expect "so is a script whose header says read_only" 'status {\"readOnlyHint\":true' annotations debian status
-  printf '\n[approval]\nscripts = ["mark"]\ntimeout = "20s"\n' >> "$work/debian/limen.toml"
+  printf '\n[approval]\nscripts = ["mark"]\ntimeout = "20s"\n' >>"$work/debian/limen.toml"
   expect "a change waits for a person's yes" 'marked approved' \
     approval_session debian '{"elicitation":{}}' '{"action":"accept","content":{"approve":true}}'
   expect "the question shows what would run" 'run the script mark on debian, with arguments: {\"word\":\"approved\"}' \
@@ -411,7 +414,7 @@ EOF
   refuse "a client that can't ask runs nothing" 'declares no elicitation' 'marked approved' \
     approval_session debian '{}'
   sed -i '/^\[approval\]/,$d' "$work/debian/limen.toml"
-  printf '[approval]\nscripts = "changes"\nexcept = ["mark"]\n' >> "$work/debian/limen.toml"
+  printf '[approval]\nscripts = "changes"\nexcept = ["mark"]\n' >>"$work/debian/limen.toml"
   expect "a change excepted runs without asking" 'marked approved' approval_session debian '{}'
   sed -i '/^\[approval\]/,$d' "$work/debian/limen.toml"
   expect "one without it may change the machine" 'mark {\"readOnlyHint\":false,\"destructiveHint\":true}' annotations debian mark
@@ -434,11 +437,11 @@ packs = ["$pack"]
 EOF
   expect "install with no hub key" "with no hub yet" docker exec "$node" /tmp/limen install
   expect "leaves the linked limen.toml alone" "/opt/state/limen.toml" docker exec "$node" readlink /etc/limen/limen.toml
-  read -ra hub_ssh <<< "$(ssh_as hub limen "$port")"
-  expect "and nothing a hub could log in with" 'Permission denied' "${hub_ssh[@]}" <<< '{"v":1,"request":"hello"}'
+  read -ra hub_ssh <<<"$(ssh_as hub limen "$port")"
+  expect "and nothing a hub could log in with" 'Permission denied' "${hub_ssh[@]}" <<<'{"v":1,"request":"hello"}'
   expect "its scripts run on the machine itself" "marked early" docker exec "$node" limen run mark --arg word=early
   expect "a hub joins later" "limen is installed" docker exec "$node" limen install --hub-key "$(cat "$work/hub.pub")"
-  expect "and gets in" '"ok":true' "${hub_ssh[@]}" <<< '{"v":1,"request":"hello"}'
+  expect "and gets in" '"ok":true' "${hub_ssh[@]}" <<<'{"v":1,"request":"hello"}'
 }
 
 suite_openwrt() {
@@ -503,10 +506,10 @@ EOF
   expect "openwrt's dhcp_leases without dnsmasq running" 'no IPv4 leases' limen call openwrt dhcp_leases
 
   echo "e2e/openwrt: the gate is the only way in"
-  read -ra hub_ssh <<< "$(ssh_as hub root "$port")"
+  read -ra hub_ssh <<<"$(ssh_as hub root "$port")"
   expect "a command sent over ssh is ignored" 'no request on stdin' "${hub_ssh[@]}" 'cat /etc/shadow' </dev/null
-  read -ra stranger_ssh <<< "$(ssh_as stranger root "$port")"
-  expect "an unknown key doesn't get in" 'Permission denied' "${stranger_ssh[@]}" <<< '{"v":1,"request":"hello"}'
+  read -ra stranger_ssh <<<"$(ssh_as stranger root "$port")"
+  expect "an unknown key doesn't get in" 'Permission denied' "${stranger_ssh[@]}" <<<'{"v":1,"request":"hello"}'
 
   echo "e2e/openwrt: uninstall"
   expect "uninstall" "limen is uninstalled" docker exec "$node" limen uninstall --purge
@@ -524,15 +527,22 @@ suite_join() {
   docker volume create "$data" >/dev/null
   volumes+=("$data")
   # limen.toml from the operator's repository, mounted read-only: what joins goes to nodes.toml.
-  printf '[ssh]\nidentity = "id_ed25519"\n' > "$work/hub-limen.toml"
+  printf '[ssh]\nidentity = "id_ed25519"\n' >"$work/hub-limen.toml"
   chmod 644 "$work/hub-limen.toml"
   docker run -d --name "$hub" --network "$net" -v "$data:/data" -v "$work/hub-limen.toml:/data/limen.toml:ro" \
     limen-e2e-hub:local >/dev/null
   containers+=("$hub")
   hub_ip=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$hub")
   url="http://$hub_ip:7341"
-  for _ in $(seq 1 50); do docker logs "$hub" 2>&1 | grep -q "serving MCP" && break; sleep 0.2; done
-  docker logs "$hub" 2>&1 | grep -q "serving MCP" || { docker logs "$hub" >&2; echo "e2e/join: the hub did not start" >&2; exit 1; }
+  for _ in $(seq 1 50); do
+    docker logs "$hub" 2>&1 | grep -q "serving MCP" && break
+    sleep 0.2
+  done
+  docker logs "$hub" 2>&1 | grep -q "serving MCP" || {
+    docker logs "$hub" >&2
+    echo "e2e/join: the hub did not start" >&2
+    exit 1
+  }
   hub_exec() { docker exec -e LIMEN_PUBLIC_URL="$url" "$hub" limen "$@"; }
   # The image is distroless: no shell and no cat in it, so its files come out through docker cp.
   hub_file() { docker cp "$hub:/data/$1" - | tar -xO; }
@@ -589,7 +599,7 @@ suite_join() {
   trust=$(docker exec -e LIMEN_YES=1 -e LIMEN_BINARY=/tmp/limen "$spare" sh /tmp/install.sh --hub-key "$key" --name spare --address "$spare_ip" --from "$hub_ip" | grep 'limen trust')
   expect "install.sh --address: the address goes in it" "limen trust spare $spare_ip '" echo "$trust"
   expect "install.sh --from: the key, only from the hub" "from=\"$hub_ip\"" docker exec "$spare" cat /var/lib/limen/.ssh/authorized_keys
-  read -ra trust_args <<< "$(echo "$trust" | sed "s/^ *limen trust //" | tr -d "'")"
+  read -ra trust_args <<<"$(echo "$trust" | sed "s/^ *limen trust //" | tr -d "'")"
   expect "limen trust on the hub" "spare added" docker exec "$hub" limen trust "${trust_args[0]}" "${trust_args[1]}" "${trust_args[2]} ${trust_args[3]}"
   expect "the hub reaches it" '"ok": true' hub_exec call spare hello
 
@@ -616,7 +626,7 @@ suite_join() {
     curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$url/mcp"
 
   echo "e2e/join: a client listening hears of the scripts a machine starts to offer"
-  curl -sN -H "Authorization: Bearer $token" "$url/mcp" > "$work/events" 2>&1 &
+  curl -sN -H "Authorization: Bearer $token" "$url/mcp" >"$work/events" 2>&1 &
   local listening=$!
   script "$nas" /opt/e2e-fresh/fresh 0755 <<'EOF'
 #!/bin/sh
@@ -694,8 +704,8 @@ EOF
   host_key=$(docker exec "$node" cat /etc/ssh/ssh_host_ed25519_key.pub | cut -d' ' -f1,2)
   hub_config mqtt "$port" limen "$host_key"
   cp "$work/hub.pub" "$home/hub.pub"
-  printf 'e2e-secret\n' > "$home/mqtt-password"
-  cat >> "$home/limen.toml" <<EOF
+  printf 'e2e-secret\n' >"$home/mqtt-password"
+  cat >>"$home/limen.toml" <<EOF
 
 [mqtt]
 enabled = true
@@ -740,7 +750,7 @@ script = "mark"
 args = { word = "button" }
 EOF
   "$binary" init --serve --home "$home" >/dev/null
-  "$binary" serve --listen 127.0.0.1:0 --home "$home" 2> "$work/serve.log" &
+  "$binary" serve --listen 127.0.0.1:0 --home "$home" 2>"$work/serve.log" &
   serve_pid=$!
   processes+=("$serve_pid")
   disown "$serve_pid"
@@ -803,7 +813,10 @@ case "$SUITE" in
     suite_join
     suite_mqtt
     ;;
-  *) echo "e2e: SUITE is debian, openwrt, join, mqtt or all" >&2; exit 64 ;;
+  *)
+    echo "e2e: SUITE is debian, openwrt, join, mqtt or all" >&2
+    exit 64
+    ;;
 esac
 
 echo

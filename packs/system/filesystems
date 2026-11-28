@@ -5,9 +5,9 @@ set -eu
 
 # Memory, pseudo and image file systems are noise here; squashfs and iso9660 are read-only by nature (OpenWrt's /rom).
 pseudo='^(tmpfs|devtmpfs|ramfs|overlay|proc|sysfs|cgroup2?|devpts|efivarfs|nsfs|autofs|mqueue|debugfs|tracefs|securityfs|pstore|bpf|configfs|fusectl|hugetlbfs|binfmt_misc|rpc_pipefs|nfsd|fuse\.snapfuse|fuse\.lxcfs|fuse\.portal|squashfs|iso9660)$'
-space=$(df -kP 2> /dev/null) || true
+space=$(df -kP 2>/dev/null) || true
 # busybox's df may lack -i: then the inode columns say "?".
-inodes=$(df -iP 2> /dev/null) || inodes=
+inodes=$(df -iP 2>/dev/null) || inodes=
 
 {
   echo "@space"

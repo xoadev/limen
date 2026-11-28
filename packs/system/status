@@ -3,9 +3,9 @@
 #: read_only = true
 set -eu
 
-read -r seconds _ < /proc/uptime
+read -r seconds _ </proc/uptime
 seconds=${seconds%.*}
-read -r load1 load5 load15 _ < /proc/loadavg
+read -r load1 load5 load15 _ </proc/loadavg
 cpus=$(grep -c '^processor' /proc/cpuinfo)
 if [ -e /run/reboot-required ]; then reboot=yes; else reboot=no; fi
 

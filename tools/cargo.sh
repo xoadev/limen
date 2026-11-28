@@ -15,23 +15,41 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT"
 export PATH="$HOME/.cargo/bin:$PATH"
-command -v cargo >/dev/null || { echo "cargo: install Rust with rustup (https://rustup.rs); rust-toolchain.toml pins the version" >&2; exit 1; }
+command -v cargo >/dev/null || {
+  echo "cargo: install Rust with rustup (https://rustup.rs); rust-toolchain.toml pins the version" >&2
+  exit 1
+}
 
 version=${LIMEN_VERSION:-}
 date=${LIMEN_BUILD_DATE:-}
 number=${LIMEN_BUILD_NUMBER:-}
-[[ -z "$version" || "$version" == dev || "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "cargo: LIMEN_VERSION '$version' is not X.Y.Z" >&2; exit 64; }
-[[ -z "$date" || "$date" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}(T[0-9]{2}:[0-9]{2}:[0-9]{2}Z)?$ ]] || { echo "cargo: LIMEN_BUILD_DATE '$date' is not ISO-8601" >&2; exit 64; }
-[[ -z "$number" || "$number" =~ ^[0-9]{1,12}$ ]] || { echo "cargo: LIMEN_BUILD_NUMBER '$number' is not a number" >&2; exit 64; }
+[[ -z "$version" || "$version" == dev || "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+  echo "cargo: LIMEN_VERSION '$version' is not X.Y.Z" >&2
+  exit 64
+}
+[[ -z "$date" || "$date" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}(T[0-9]{2}:[0-9]{2}:[0-9]{2}Z)?$ ]] || {
+  echo "cargo: LIMEN_BUILD_DATE '$date' is not ISO-8601" >&2
+  exit 64
+}
+[[ -z "$number" || "$number" =~ ^[0-9]{1,12}$ ]] || {
+  echo "cargo: LIMEN_BUILD_NUMBER '$number' is not a number" >&2
+  exit 64
+}
 
 VARIANT=${VARIANT:-debug}
-[[ "$VARIANT" == debug || "$VARIANT" == release ]] || { echo "cargo: VARIANT is debug or release" >&2; exit 64; }
+[[ "$VARIANT" == debug || "$VARIANT" == release ]] || {
+  echo "cargo: VARIANT is debug or release" >&2
+  exit 64
+}
 
 host_arch() {
   case "$(uname -m)" in
     x86_64 | amd64) echo x86_64 ;;
     aarch64 | arm64) echo aarch64 ;;
-    *) echo "cargo: no binary for a $(uname -m) machine" >&2; exit 1 ;;
+    *)
+      echo "cargo: no binary for a $(uname -m) machine" >&2
+      exit 1
+      ;;
   esac
 }
 
@@ -50,5 +68,8 @@ case "${1:-}" in
     ;;
   artifact) echo "$ROOT/target/${2:-$(host_arch)}-unknown-linux-musl/$VARIANT/limen" ;;
   clean) cargo clean ;;
-  *) echo "usage: tools/cargo.sh build|test|fmt|clippy|cli|artifact [arch]|clean" >&2; exit 64 ;;
+  *)
+    echo "usage: tools/cargo.sh build|test|fmt|clippy|cli|artifact [arch]|clean" >&2
+    exit 64
+    ;;
 esac

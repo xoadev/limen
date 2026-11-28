@@ -3,7 +3,7 @@
 #: read_only = true
 set -eu
 
-interfaces=$(ubus list 'network.interface.*' 2> /dev/null | sed 's/^network\.interface\.//') || true
+interfaces=$(ubus list 'network.interface.*' 2>/dev/null | sed 's/^network\.interface\.//') || true
 if [ -z "$interfaces" ]; then
   echo "netifd does not answer on ubus (ubus list network.interface.*)"
   exit 1

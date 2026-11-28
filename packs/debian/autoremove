@@ -8,7 +8,7 @@
 set -eu
 
 # What would go, before anything does: nothing to remove is an answer, not a run of apt.
-candidates=$(apt-get --simulate autoremove 2> /dev/null | awk '$1 == "Remv" { print $2 }')
+candidates=$(apt-get --simulate autoremove 2>/dev/null | awk '$1 == "Remv" { print $2 }')
 if [ -z "$candidates" ]; then
   echo "nothing to remove: every installed package is needed"
   exit 0
@@ -23,7 +23,7 @@ export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l
 log=/var/log/limen-autoremove.log
 before=$(df -kP / | awk 'NR == 2 { print $4 }')
 status=0
-apt-get "$@" > "$log" 2>&1 || status=$?
+apt-get "$@" >"$log" 2>&1 || status=$?
 after=$(df -kP / | awk 'NR == 2 { print $4 }')
 
 if [ "$status" -ne 0 ]; then

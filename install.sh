@@ -38,7 +38,7 @@ die() {
 
 # Answers come from the terminal: under `curl | sh`, stdin is this script.
 interactive=1
-if [ "${LIMEN_YES:-0}" = 1 ] || ! (: < /dev/tty) 2> /dev/null; then interactive=0; fi
+if [ "${LIMEN_YES:-0}" = 1 ] || ! (: </dev/tty) 2>/dev/null; then interactive=0; fi
 
 # ask <variable> <question> <default>: keeps a value the environment already gave.
 ask() {
@@ -48,8 +48,8 @@ ask() {
     eval "$1=\$3"
     return 0
   fi
-  if [ -n "$3" ]; then printf '%s [%s]: ' "$2" "$3" > /dev/tty; else printf '%s: ' "$2" > /dev/tty; fi
-  read -r answer < /dev/tty || answer=
+  if [ -n "$3" ]; then printf '%s [%s]: ' "$2" "$3" >/dev/tty; else printf '%s: ' "$2" >/dev/tty; fi
+  read -r answer </dev/tty || answer=
   [ -n "$answer" ] || answer=$3
   eval "$1=\$answer"
 }
@@ -61,11 +61,11 @@ key() {
 
 # Only over https, and only with a client that checks certificates: busybox's own wget doesn't.
 fetch() {
-  if command -v curl > /dev/null 2>&1; then
+  if command -v curl >/dev/null 2>&1; then
     curl -fsSL --proto '=https' --tlsv1.2 --retry 3 -o "$2" "$1"
-  elif command -v uclient-fetch > /dev/null 2>&1; then
+  elif command -v uclient-fetch >/dev/null 2>&1; then
     uclient-fetch -qO "$2" "$1"
-  elif command -v wget > /dev/null 2>&1 && ! wget --help 2>&1 | grep -q BusyBox; then
+  elif command -v wget >/dev/null 2>&1 && ! wget --help 2>&1 | grep -q BusyBox; then
     wget --https-only -qO "$2" "$1"
   else
     die "no curl, uclient-fetch or GNU wget to download with (busybox's wget doesn't check certificates)"
@@ -78,19 +78,40 @@ main() {
   mode=node
   while [ $# -gt 0 ]; do
     case "$1" in
-      --join) LIMEN_JOIN=${2:-}; shift 2 ;;
-      --hub-key) LIMEN_HUB_KEY=${2:-}; shift 2 ;;
-      --name) LIMEN_NAME=${2:-}; shift 2 ;;
-      --address) LIMEN_ADDRESS=${2:-}; shift 2 ;;
-      --from) LIMEN_FROM=${2:-}; shift 2 ;;
-      --ssh-port) LIMEN_SSH_PORT=${2:-}; shift 2 ;;
-      --hub) mode=hub; shift ;;
+      --join)
+        LIMEN_JOIN=${2:-}
+        shift 2
+        ;;
+      --hub-key)
+        LIMEN_HUB_KEY=${2:-}
+        shift 2
+        ;;
+      --name)
+        LIMEN_NAME=${2:-}
+        shift 2
+        ;;
+      --address)
+        LIMEN_ADDRESS=${2:-}
+        shift 2
+        ;;
+      --from)
+        LIMEN_FROM=${2:-}
+        shift 2
+        ;;
+      --ssh-port)
+        LIMEN_SSH_PORT=${2:-}
+        shift 2
+        ;;
+      --hub)
+        mode=hub
+        shift
+        ;;
       *) die "unknown option $1 (--join <line> or --hub-key <key> --name <name>, with [--address <address>] [--from <addresses>] [--ssh-port <port>]; or --hub)" ;;
     esac
   done
 
   if [ "$mode" = node ] && [ "$(id -u)" != 0 ]; then die "a machine is installed as root (… | sudo sh); a hub for yourself is --hub"; fi
-  hostname=$(cat /proc/sys/kernel/hostname 2> /dev/null || echo node)
+  hostname=$(cat /proc/sys/kernel/hostname 2>/dev/null || echo node)
   work=$(mktemp -d)
   trap 'rm -rf "$work"' EXIT INT TERM
 
@@ -115,13 +136,13 @@ main() {
     say "Downloading limen $version for $arch"
     fetch "https://github.com/$SOURCE/releases/download/v$version/$name" "$work/limen" || die "cannot download $name"
     fetch "https://github.com/$SOURCE/releases/download/v$version/SHA256SUMS" "$work/SHA256SUMS" || die "cannot download SHA256SUMS"
-    command -v sha256sum > /dev/null 2>&1 || die "sha256sum is needed to check the download"
+    command -v sha256sum >/dev/null 2>&1 || die "sha256sum is needed to check the download"
     expected=$(grep " \./$name\$" "$work/SHA256SUMS" | cut -d ' ' -f 1)
     actual=$(sha256sum "$work/limen" | cut -d ' ' -f 1)
     if [ -z "$expected" ] || [ "$expected" != "$actual" ]; then die "$name does not match the release's SHA256SUMS"; fi
     chmod 0755 "$work/limen"
   fi
-  "$work/limen" --version > /dev/null || die "the binary does not run on this machine"
+  "$work/limen" --version >/dev/null || die "the binary does not run on this machine"
 
   # --- a hub for this user -------------------------------------------------------------------------------------------
   if [ "$mode" = hub ]; then
@@ -142,7 +163,10 @@ main() {
   if [ -z "${LIMEN_JOIN:-}" ] && [ -z "${LIMEN_HUB_KEY:-}" ]; then
     ask LIMEN_JOIN "The join line from the hub's \`limen invite\` (or the hub's public key; empty: no hub yet)" ""
     case "$LIMEN_JOIN" in
-      ssh-* | /*) LIMEN_HUB_KEY=$LIMEN_JOIN; LIMEN_JOIN= ;;
+      ssh-* | /*)
+        LIMEN_HUB_KEY=$LIMEN_JOIN
+        LIMEN_JOIN=
+        ;;
     esac
   fi
   if [ -n "${LIMEN_JOIN:-}" ]; then
@@ -159,7 +183,7 @@ main() {
     [ -z "${LIMEN_SSH_PORT:-}" ] || set -- "$@" --ssh-port "$LIMEN_SSH_PORT"
   fi
   say ""
-  "$work/limen" "$@" < /dev/null
+  "$work/limen" "$@" </dev/null
 }
 
 main "$@"

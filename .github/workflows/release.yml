@@ -54,10 +54,12 @@ jobs:
           GH_REPO: ${{ github.repository }}
           PUBLISH: ${{ inputs.publish }}
         run: |
-          tag=$(gh release list --limit 100 --json tagName,isDraft --jq '[.[] | select(.isDraft and (.tagName | test("^v[0-9]"))) | .tagName] | first // empty')
+          drafts='[.[] | select(.isDraft and (.tagName | test("^v[0-9]"))) | .tagName] | first // empty'
+          tag=$(gh release list --limit 100 --json tagName,isDraft --jq "$drafts")
           if [[ -z "$tag" ]]; then
             if [[ "$PUBLISH" == true ]]; then
-              echo "::error title=No draft::there is no draft release to publish: nothing changed since the last one" >&2
+              echo "::error title=No draft::there is no draft release to publish:" \
+                "nothing changed since the last one" >&2
               exit 1
             fi
             {
@@ -131,9 +133,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          run=$(gh run list --workflow check.yml --commit "$SHA" --event push --limit 1 --json databaseId --jq '.[0].databaseId // empty')
+          run=$(gh run list --workflow check.yml --commit "$SHA" --event push --limit 1 \
+            --json databaseId --jq '.[0].databaseId // empty')
           if [[ -z "$run" ]]; then
-            echo "::error title=No check::check.yml never ran on $SHA; a release is only published from a commit of main" >&2
+            echo "::error title=No check::check.yml never ran on $SHA;" \
+              "a release is only published from a commit of main" >&2
             exit 1
           fi
           echo "gate: check.yml run $run on $SHA"
@@ -181,7 +185,8 @@ jobs:
       - name: Buildx, for both architectures under one tag
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
         with:
-          driver-opts: image=moby/buildkit:v0.27.0@sha256:054d632d0d7e94b11cdc6048674773499a5170cf7d8ce0c326daaff6be43c8e0
+          driver-opts: >-
+            image=moby/buildkit:v0.27.0@sha256:054d632d0d7e94b11cdc6048674773499a5170cf7d8ce0c326daaff6be43c8e0
 
       # Through the same `make docker` as a local build, with the binaries just gathered. Each architecture is built
       # on its own first and started, so a binary that does not run on its platform stops the release before
@@ -190,15 +195,23 @@ jobs:
         env:
           VERSION: ${{ steps.what.outputs.version }}
         run: |
-          binaries=(BINARY_AMD64="$PWD/release/limen-$VERSION-linux-x86_64" BINARY_ARM64="$PWD/release/limen-$VERSION-linux-aarch64")
+          binaries=(
+            BINARY_AMD64="$PWD/release/limen-$VERSION-linux-x86_64"
+            BINARY_ARM64="$PWD/release/limen-$VERSION-linux-aarch64"
+          )
           for arch in amd64 arm64; do
             make docker VARIANT=release PLATFORMS="linux/$arch" IMAGE="limen:$VERSION-$arch" "${binaries[@]}"
             docker run --rm --platform "linux/$arch" "limen:$VERSION-$arch" --version
             test "$(docker image inspect --format '{{.Architecture}}' "limen:$VERSION-$arch")" = "$arch"
           done
-          make docker VARIANT=release PLATFORMS=linux/amd64,linux/arm64 IMAGE="limen:$VERSION" OCI="$RUNNER_TEMP/image.tar" \
-            "${binaries[@]}" \
-            LABELS="org.opencontainers.image.source=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY} org.opencontainers.image.version=$VERSION org.opencontainers.image.revision=$SHA org.opencontainers.image.licenses=Apache-2.0"
+          labels=(
+            "org.opencontainers.image.source=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}"
+            "org.opencontainers.image.version=$VERSION"
+            "org.opencontainers.image.revision=$SHA"
+            "org.opencontainers.image.licenses=Apache-2.0"
+          )
+          make docker VARIANT=release PLATFORMS=linux/amd64,linux/arm64 IMAGE="limen:$VERSION" \
+            OCI="$RUNNER_TEMP/image.tar" "${binaries[@]}" LABELS="${labels[*]}"
           mv "$RUNNER_TEMP/image.tar" release-image.tar
 
       - name: Hand over what is published
@@ -258,7 +271,8 @@ jobs:
         run: |
           image="ghcr.io/${GITHUB_REPOSITORY,,}"
           skopeo login ghcr.io -u "$GITHUB_ACTOR" --password-stdin <<< "$REGISTRY_TOKEN"
-          skopeo copy --all --quiet --digestfile "$RUNNER_TEMP/digest" oci-archive:release-image.tar "docker://$image:$VERSION"
+          skopeo copy --all --quiet --digestfile "$RUNNER_TEMP/digest" \
+            oci-archive:release-image.tar "docker://$image:$VERSION"
           skopeo inspect --raw "docker://$image:$VERSION" | jq -r '.manifests[].platform | "\(.os)/\(.architecture)"'
           # The digest of the index, both architectures: what `docker pull` of any of its tags resolves to.
           echo "name=$image" >> "$GITHUB_OUTPUT"
@@ -282,11 +296,16 @@ jobs:
             echo
             echo "**limen $VERSION** · build $GITHUB_RUN_NUMBER · $BUILD_DATE"
             echo
-            echo "- \`$IMAGE:$VERSION\`: the hub, for amd64 and arm64 under one tag. Start it and join machines as the [README](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}#install) says."
-            echo "- \`limen-$VERSION-linux-x86_64\` and \`limen-$VERSION-linux-aarch64\`: one static binary per architecture, for any Linux (Debian, Ubuntu, OpenWrt…). \`install.sh\` picks the one \`uname -m\` names."
+            echo "- \`$IMAGE:$VERSION\`: the hub, for amd64 and arm64 under one tag. Start it and join machines" \
+              "as the [README](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}#install) says."
+            echo "- \`limen-$VERSION-linux-x86_64\` and \`limen-$VERSION-linux-aarch64\`: one static binary per" \
+              "architecture, for any Linux (Debian, Ubuntu, OpenWrt…). \`install.sh\` picks the one \`uname -m\` names."
             echo "- \`SHA256SUMS\`: to check what you downloaded."
             echo
-            echo "Each binary and the image carry a build provenance attestation: \`gh attestation verify limen-$VERSION-linux-x86_64 --repo $GITHUB_REPOSITORY\`, or \`gh attestation verify oci://$IMAGE:$VERSION --repo $GITHUB_REPOSITORY\`, says they were built by this repository's release workflow, \`.github/workflows/release.yml\`."
+            echo "Each binary and the image carry a build provenance attestation:" \
+              "\`gh attestation verify limen-$VERSION-linux-x86_64 --repo $GITHUB_REPOSITORY\`, or" \
+              "\`gh attestation verify oci://$IMAGE:$VERSION --repo $GITHUB_REPOSITORY\`, says they were built" \
+              "by this repository's release workflow, \`.github/workflows/release.yml\`."
           } > "$notes"
           gh release upload "$TAG" release/* --clobber
           gh release edit "$TAG" --notes-file "$notes"

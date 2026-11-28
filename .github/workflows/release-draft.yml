@@ -71,7 +71,8 @@ jobs:
             exit 1
           fi
           # Only limen's own drafts, vX.Y.Z: the packs' are packs-draft.yml's.
-          gh release list --limit 100 --json tagName,isDraft --jq '.[] | select(.isDraft and (.tagName | test("^v[0-9]"))) | .tagName' |
+          drafts='.[] | select(.isDraft and (.tagName | test("^v[0-9]"))) | .tagName'
+          gh release list --limit 100 --json tagName,isDraft --jq "$drafts" |
             while read -r stale; do
               if [[ "$stale" != "$TAG" || "$HAS_CHANGES" != true ]]; then
                 gh release delete "$stale" --yes
@@ -84,7 +85,9 @@ jobs:
           # A published release is never turned back into a draft.
           case "$(gh release view "$TAG" --json isDraft --jq .isDraft 2> /dev/null || echo none)" in
             true) gh release edit "$TAG" --draft --target "$GITHUB_SHA" --notes "$CHANGELOG" ;;
-            none) gh release create "$TAG" --draft --target "$GITHUB_SHA" --title "limen $VERSION" --notes "$CHANGELOG" ;;
+            none)
+              gh release create "$TAG" --draft --target "$GITHUB_SHA" --title "limen $VERSION" --notes "$CHANGELOG"
+              ;;
             *)
               echo "::error title=Published::$TAG is already published; the next change must bump the version" >&2
               exit 1

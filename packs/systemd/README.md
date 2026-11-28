@@ -16,6 +16,6 @@ Needs limen 0.1.3 or later: its headers use `read_only`, which older versions re
 
 Needs `systemctl` and `journalctl`.
 
-`unit` shows chosen properties rather than `systemctl status`, which prints the command line of every process of the
-unit. `restart_unit` takes any unit: narrow its `pattern` to the ones you would let the agent restart, e.g.
-`'^(nginx|immich-server)\.service$'`.
+`unit` shows chosen properties rather than `systemctl status`, which prints the command line of
+every process of the unit. `restart_unit` takes any unit: narrow its `pattern` to the ones you would
+let the agent restart, e.g. `'^(nginx|immich-server)\.service$'`.

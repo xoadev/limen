@@ -3,15 +3,15 @@
 #: read_only = true
 set -eu
 
-if ! command -v iwinfo > /dev/null 2>&1; then
+if ! command -v iwinfo >/dev/null 2>&1; then
   echo "no iwinfo: this router has no Wi-Fi, or its driver tools are not installed"
   exit 0
 fi
-leases=$(uci -q get dhcp.@dnsmasq[0].leasefile 2> /dev/null) || leases=/tmp/dhcp.leases
-names=$(awk '$4 != "*" { print tolower($2), $4 }' "$leases" 2> /dev/null) || names=
+leases=$(uci -q get dhcp.@dnsmasq[0].leasefile 2>/dev/null) || leases=/tmp/dhcp.leases
+names=$(awk '$4 != "*" { print tolower($2), $4 }' "$leases" 2>/dev/null) || names=
 
 # `iwinfo` with no argument lists each wireless interface as `<name>  ESSID: "<ssid>"` on a line of its own.
-radios=$(iwinfo 2> /dev/null | awk '/ESSID:/ { print $1 }')
+radios=$(iwinfo 2>/dev/null | awk '/ESSID:/ { print $1 }')
 if [ -z "$radios" ]; then
   echo "no wireless interface is up"
   exit 0
@@ -22,7 +22,7 @@ for radio in $radios; do
   ssid=$(printf '%s\n' "$info" | sed -n 's/.*ESSID: "\(.*\)".*/\1/p')
   mode=$(printf '%s\n' "$info" | sed -n 's/.*Mode: \([^ ]*\).*Channel: \([0-9]*\).*/\1, channel \2/p')
   # assoclist: `<MAC>  <signal> dBm / <noise> dBm (SNR n)  <n> ms ago`, then indented RX: and TX: lines.
-  clients=$(iwinfo "$radio" assoclist 2> /dev/null | awk -v names="$names" '
+  clients=$(iwinfo "$radio" assoclist 2>/dev/null | awk -v names="$names" '
     BEGIN { count = split(names, pairs, "\n"); for (i = 1; i <= count; i++) { split(pairs[i], pair, " "); host[pair[1]] = pair[2] } }
     /^[0-9A-Fa-f][0-9A-Fa-f]:/ {
       mac = tolower($1); signal = $2; heard = "?"; rx = "?"

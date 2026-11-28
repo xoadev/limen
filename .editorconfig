@@ -15,5 +15,20 @@ indent_size = 2
 [*.md]
 trim_trailing_whitespace = false
 
+# The scripts, tools/*.sh, install.sh and the packs' (which have no extension): two spaces, as shfmt keeps them.
+[*.sh]
+indent_size = 2
+switch_case_indent = true
+
+[packs/**]
+indent_size = 2
+switch_case_indent = true
+
 [Makefile]
 indent_style = tab
+
+# rustfmt lays out the Rust, and a string continued on its next line is aligned by its text; a Dockerfile's RUN
+# continues its lines aligned under the command; Markdown indents a list item's lines under its text; the LICENSE is
+# the text as published.
+[{*.rs,*Dockerfile,*.md,LICENSE}]
+indent_size = unset

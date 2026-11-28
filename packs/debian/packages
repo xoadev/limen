@@ -9,7 +9,7 @@
 set -eu
 
 # dpkg also remembers names it only heard of (state un): they are not installed.
-installed=$(dpkg-query --show --showformat='${Package}\t${Version}\t${db:Status-Abbrev}\n' -- "$LIMEN_ARG_NAME" 2> /dev/null |
+installed=$(dpkg-query --show --showformat='${Package}\t${Version}\t${db:Status-Abbrev}\n' -- "$LIMEN_ARG_NAME" 2>/dev/null |
   awk -F '\t' '$3 !~ /^un/') || true
 if [ -z "$installed" ]; then
   echo "no installed package matches $LIMEN_ARG_NAME"

@@ -11,13 +11,19 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-command -v gh > /dev/null || { echo "workflow: needs the GitHub CLI, gh (https://cli.github.com), logged in" >&2; exit 1; }
+command -v gh >/dev/null || {
+  echo "workflow: needs the GitHub CLI, gh (https://cli.github.com), logged in" >&2
+  exit 1
+}
 
 flag() {
   case "$1" in
     1) echo true ;;
     0 | '') echo false ;;
-    *) echo "workflow: PUBLISH is 1 or 0, not '$1'" >&2; exit 1 ;;
+    *)
+      echo "workflow: PUBLISH is 1 or 0, not '$1'" >&2
+      exit 1
+      ;;
   esac
 }
 
@@ -29,7 +35,10 @@ case "$what" in
     ;;
   pack)
     pack=${2:-}
-    [[ "$pack" =~ ^[a-z0-9][a-z0-9_-]*$ && -d "packs/$pack" ]] || { echo "workflow: no pack '$pack' under packs/ (PACK=<pack>)" >&2; exit 1; }
+    [[ "$pack" =~ ^[a-z0-9][a-z0-9_-]*$ && -d "packs/$pack" ]] || {
+      echo "workflow: no pack '$pack' under packs/ (PACK=<pack>)" >&2
+      exit 1
+    }
     workflow=packs.yml
     fields=(-f "pack=$pack" -f "publish=$(flag "${3:-}")")
     ;;
@@ -54,5 +63,8 @@ for _ in $(seq 30); do
   [[ -n "$run" ]] && break
   sleep 2
 done
-[[ -n "$run" ]] || { echo "workflow: the run of $workflow did not show up; look in Actions" >&2; exit 1; }
+[[ -n "$run" ]] || {
+  echo "workflow: the run of $workflow did not show up; look in Actions" >&2
+  exit 1
+}
 gh run watch "$run" --exit-status
