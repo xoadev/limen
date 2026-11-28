@@ -2,11 +2,10 @@
 # The Rust build, for the Makefile: the toolchain rust-toolchain.toml pins, and static musl binaries that run on any
 # Linux (spec §11).
 #
-#   tools/cargo.sh build | test | fmt | clippy | cli | artifact [arch] | clean
+#   tools/cargo.sh build | test | cli | artifact [arch] | clean
 #
 #   VARIANT=debug|release   what `cli` and `artifact` mean (debug links in seconds; a published binary is release)
 #   ARCH="x86_64 aarch64"   what `cli` builds (default: this machine's)
-#   FIX=1                   `fmt` rewrites instead of checking
 #
 # The version comes from the environment, `dev` otherwise: LIMEN_VERSION (X.Y.Z, from the release tag),
 # LIMEN_BUILD_DATE (ISO-8601 UTC) and LIMEN_BUILD_NUMBER (the CI run). Checked here, so a wrong variable can't put
@@ -56,8 +55,6 @@ host_arch() {
 case "${1:-}" in
   build) cargo build --workspace --all-targets --locked ;;
   test) cargo test --workspace --locked ;;
-  fmt) if [[ "${FIX:-0}" == 1 ]]; then cargo fmt --all; else cargo fmt --all --check; fi ;;
-  clippy) cargo clippy --workspace --all-targets --locked -- -D warnings ;;
   cli)
     for arch in ${ARCH:-$(host_arch)}; do
       flags=(-p limen --locked --target "$arch-unknown-linux-musl")
@@ -69,7 +66,7 @@ case "${1:-}" in
   artifact) echo "$ROOT/target/${2:-$(host_arch)}-unknown-linux-musl/$VARIANT/limen" ;;
   clean) cargo clean ;;
   *)
-    echo "usage: tools/cargo.sh build|test|fmt|clippy|cli|artifact [arch]|clean" >&2
+    echo "usage: tools/cargo.sh build|test|cli|artifact [arch]|clean" >&2
     exit 64
     ;;
 esac

@@ -21,7 +21,7 @@ concurrency:
 
 jobs:
   title:
-    uses: xoadev/xoa-base/.github/workflows/title.yml@4cfb2e775d6b97518bd1c9a273d07845bc7b9e8f # v0.2.0
+    uses: xoadev/xoa-base/.github/workflows/title.yml@ab8289f4ac715bcbf0bb070ce386402b3aa9d8b7 # v0.2.1
 
   check:
     # Editing the description re-runs the workflow for the title only.
@@ -52,7 +52,7 @@ jobs:
         with:
           go-version: 1.27.2
           cache: false
-      - uses: xoadev/xoa-base/.github/actions/linters@4cfb2e775d6b97518bd1c9a273d07845bc7b9e8f # v0.2.0
+      - uses: xoadev/xoa-base/.github/actions/linters@ab8289f4ac715bcbf0bb070ce386402b3aa9d8b7 # v0.2.1
 
       # `-k`: every check runs even when one fails, so a red build says everything that is wrong at once.
       - name: make -k check

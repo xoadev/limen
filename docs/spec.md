@@ -710,12 +710,13 @@ hub:   [nodes.nas] with the request's source address, then `hello`  →  {"reach
 - **Releases** follow the conventional commits: every push to `main` runs `release-draft.yml`, which
   rewrites a draft release with the next `X.Y.Z` and its changes and builds nothing. Publishing is
   another workflow, `release.yml`, run only by hand: once `make check` is green on the draft's
-  commit, it builds the binaries (release variant, checked static) and the image, starts the image
-  on both architectures, attaches the binaries and `SHA256SUMS` to the draft and only then publishes
-  it, which creates the `vX.Y.Z` tag. A release is never public without its files, and releases are
-  immutable: once published, neither its files nor its tag change. The version exists only from the
-  tag: `limen --version` says `limen X.Y.Z · build <run> · <date>`, or `limen dev` for a local
-  build.
+  commit, `make release-files` builds the binaries (release variant, checked static) and the image,
+  runs every end-to-end scene with them and starts the image on both architectures; the binaries and
+  `SHA256SUMS` go on the draft, and only then is it published, which creates the `vX.Y.Z` tag. Both
+  workflows are xoa-base's, called with what is limen's (`paths`, the build target). A release is
+  never public without its files, and releases are immutable: once published, neither its files nor
+  its tag change. The version exists only from the tag: `limen --version` says
+  `limen X.Y.Z · build <run> · <date>`, or `limen dev` for a local build.
 - **Each pack under `packs/` is released on its own**, apart from limen and from the other packs:
   its tag is `pack-<pack>-vX.Y.Z`, and its version comes from the conventional commits that touched
   `packs/<pack>/`. A push that touches `packs/` runs `packs-draft.yml`, which rewrites the draft of
@@ -728,14 +729,16 @@ hub:   [nodes.nas] with the request's source address, then `hello`  →  {"reach
 - No job that runs someone else's code —convco, the compiler and the crates' build scripts, QEMU,
   BuildKit— holds a token that writes, nor keeps credentials on disk, and the release builds without
   caches. The jobs that write run only `gh`, `skopeo` and GitHub's `attest` on what the others
-  handed over; QEMU's and BuildKit's images are pinned by digest, the linters by checksum. Each pair
-  of workflows shares one concurrency group, `release` or `packs`, and never cancels a run: a push
-  while a release is being built can't move the draft under it.
+  handed over; QEMU's and BuildKit's images are pinned by digest. A draft and its publication share
+  one concurrency group per tag prefix, which never cancels a run, and the publication checks the
+  draft is still at the commit it built: a push while a release is being built can't move the draft
+  under it.
 - Every binary and the image carry a build provenance attestation, signed keyless through Sigstore:
   `gh attestation verify limen-<version>-linux-x86_64 --repo xoadev/limen` (or
-  `oci://ghcr.io/xoadev/limen:<version>`) says they were built by this repository's `release.yml`
-  (each pack's tarball, by `packs.yml`), from which commit and tag; the attestation names the
-  workflow's file. `install.sh` can't check it —nodes have no `gh`— and checks `SHA256SUMS`.
+  `oci://ghcr.io/xoadev/limen:<version>`) says they were built for this repository by its
+  `release.yml` (each pack's tarball, by `packs.yml`), from which commit and tag; the attestation
+  names the workflow that signed it, xoa-base's `release.yml` at the commit limen calls.
+  `install.sh` can't check it —nodes have no `gh`— and checks `SHA256SUMS`.
 - `install.sh` downloads only over https, with a client that checks certificates (curl, OpenWrt's
   `uclient-fetch`, GNU wget; never busybox's wget), and runs only once it has been read whole.
 - Nodes: Debian, Ubuntu and OpenWrt with dropbear; `make e2e` runs Debian and OpenWrt. Another Linux

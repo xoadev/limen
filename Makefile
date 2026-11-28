@@ -15,23 +15,21 @@ SHELL_FILES := $(wildcard tools/*.sh) install.sh $(shell find packs -type f -per
 # Neither starts a document: CLAUDE.md is one import line, the template fills a pull request's body.
 MD_OPTIONS := --config 'per-file-ignores = { "CLAUDE.md" = ["MD041"], ".github/pull_request_template.md" = ["MD041"] }'
 include .xoa-base/$(XOA_BASE)/base.mk
-include $(foreach linter,markdown yaml shell actions typos editorconfig,.xoa-base/$(XOA_BASE)/lint/$(linter).mk)
+include $(foreach linter,markdown yaml shell actions typos editorconfig rust,.xoa-base/$(XOA_BASE)/lint/$(linter).mk)
 .xoa-base/$(XOA_BASE)/%: .xoa-base/$(XOA_BASE)/.fetched ;
 .xoa-base/$(XOA_BASE)/.fetched:
 	@rm -rf .xoa-base && git init -q $(@D)
 	@git -C $(@D) fetch -q --depth 1 https://github.com/xoadev/xoa-base $(XOA_BASE)
 	@git -C $(@D) checkout -q FETCH_HEAD && touch $@
 
-.PHONY: check lint format build test cli local-install docker e2e pack pack-drafts pack-release release hooks clean
+.PHONY: check lint format build test release-files cli local-install docker e2e pack pack-drafts pack-release release hooks clean
 
 check: lint build test ## Everything CI runs (`make -k check` to see every failure at once)
 	@echo "check: OK"
 
-lint: md-lint yaml-lint shell-lint actions-lint typos-lint editorconfig-lint ## xoa-base's linters, then rustfmt and clippy
-	@tools/lint.sh
+lint: md-lint yaml-lint shell-lint actions-lint typos-lint editorconfig-lint rust-lint ## xoa-base's linters, Rust's included
 
-format: md-format yaml-format shell-format ## Format the Markdown, the YAML, the scripts and the Rust
-	@FIX=1 tools/lint.sh
+format: md-format yaml-format shell-format rust-format ## Format the Markdown, the YAML, the scripts and the Rust
 
 build: ## Compile every crate, tests included
 	@tools/cargo.sh build
@@ -51,8 +49,11 @@ docker: cli ## Build the hub image (limen:local, or IMAGE=…) from the binary o
 e2e: cli ## End to end in containers, Debian and OpenWrt (SUITE=debian|openwrt|join|mqtt for one). Not part of `make check`
 	@VARIANT=$(VARIANT) tools/e2e.sh
 
-pack: ## One pack as it is released, in dist/: PACK=<pack> (VERSION=X.Y.Z, else dev)
-	@PACK=$(PACK) VERSION=$(VERSION) tools/pack.sh
+release-files: ## What a release publishes, into release/: both release binaries, the scenes run with them, the hub image (VERSION=X.Y.Z, else dev). Needs Docker
+	@VERSION=$(VERSION) BUILD_NUMBER=$(BUILD_NUMBER) RELEASE_IMAGE=$(RELEASE_IMAGE) tools/release.sh
+
+pack: ## One pack as it is released, in release/: PACK=<pack> (VERSION=X.Y.Z, else dev)
+	@PACK=$(PACK) VERSION=$(VERSION) BUILD_NUMBER=$(BUILD_NUMBER) tools/pack.sh
 
 pack-drafts: ## Run packs-draft.yml on main to rewrite every pack's draft release. Needs gh
 	@tools/workflow.sh drafts

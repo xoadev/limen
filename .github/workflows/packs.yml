@@ -1,13 +1,8 @@
-# Publishes one pack's draft release (spec §11). Each pack under packs/ is released on its own, apart from limen and
-# from the other packs; its draft, `pack-<pack>-vX.Y.Z`, is prepared by packs-draft.yml on every push that touches it.
-#
-# Publishing is running this workflow by hand with the pack's name. It takes that pack's draft, waits for check.yml
-# to be green on its commit, packs the folder as `limen-pack-<pack>-<version>.tar.gz` —the same bytes from the same
-# commit, whoever builds it— with its `SHA256SUMS`, attests it and only then publishes the draft, never as the latest
-# release: that is limen's, which install.sh, limen_version and limen_update ask GitHub for.
-#
-# As in release.yml, the job that builds holds a token that only reads, and the ones that write run only `gh` and
-# `attest` on what it handed over.
+# Publishes one pack's draft release (spec §11), run by hand with the pack's name (Actions → packs, or
+# `make pack-release PACK=<pack> PUBLISH=1`), with xoa-base's workflow: at the draft's commit, once check.yml is green
+# on it, `make pack` packs the folder as `limen-pack-<pack>-<version>.tar.gz` —the same bytes from the same commit,
+# whoever builds it— with its `SHA256SUMS`; then they are attested, put on the draft and the draft is published, never
+# as the latest release: that is limen's. Unticked `publish`, it builds it and publishes nothing.
 name: packs
 
 on:
@@ -25,159 +20,35 @@ on:
 permissions:
   contents: read
 
-# The same group as packs-draft.yml, one at a time and never cancelled: a push while a pack is being built would move
-# its draft under it.
-concurrency:
-  group: packs
-  cancel-in-progress: false
-
 jobs:
-  # The draft of the pack asked for: its version and commit. A token that writes, because drafts are not visible to
-  # one that only reads; only `gh`.
-  what:
+  # The name goes into a tag and a make command: only a folder under packs/.
+  pack:
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    permissions:
-      contents: write # see the draft
-    outputs:
-      tag: ${{ steps.draft.outputs.tag }}
-      version: ${{ steps.draft.outputs.version }}
-      sha: ${{ steps.draft.outputs.sha }}
     steps:
-      - name: The draft
-        id: draft
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: A pack there is
         env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
           PACK: ${{ inputs.pack }}
         run: |
-          if [[ ! "$PACK" =~ ^[a-z0-9][a-z0-9_-]*$ ]]; then
-            echo "::error title=Pack::'$PACK' is not a pack's name" >&2
+          if ! [[ "$PACK" =~ ^[a-z0-9][a-z0-9_-]*$ && -d "packs/$PACK" ]]; then
+            echo "::error title=Pack::no pack '$PACK' under packs/" >&2
             exit 1
           fi
-          # shellcheck disable=SC2016 # $ENV is jq's, not the shell's
-          tag=$(PREFIX="pack-$PACK-v" gh release list --limit 100 --json tagName,isDraft \
-            --jq '[.[] | select(.isDraft and (.tagName | startswith($ENV.PREFIX))) | .tagName] | first // empty')
-          if [[ -z "$tag" ]]; then
-            echo "::error title=No draft::$PACK has no draft release: nothing changed in packs/$PACK since its" \
-              "last one, or its drafts were never made: run packs-draft (make pack-drafts)" >&2
-            exit 1
-          fi
-          sha=$(gh release view "$tag" --json targetCommitish --jq .targetCommitish)
-          version=${tag#"pack-$PACK-v"}
-          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ || ! "$sha" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "::error title=Draft::the draft is '$tag' at '$sha', not pack-$PACK-vX.Y.Z at a commit" >&2
-            exit 1
-          fi
-          {
-            echo "tag=$tag"
-            echo "version=$version"
-            echo "sha=$sha"
-          } >> "$GITHUB_OUTPUT"
-          echo "what: $tag at $sha"
 
-  # The tarball and its SHA256SUMS, made with a token that can only read.
-  build:
-    needs: what
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
+  release:
+    needs: pack
     permissions:
-      contents: read
-      actions: read # read the check of the commit being published
-    env:
-      PACK: ${{ inputs.pack }}
-      VERSION: ${{ needs.what.outputs.version }}
-      SHA: ${{ needs.what.outputs.sha }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ needs.what.outputs.sha }}
-          persist-credentials: false
-
-      - name: The check of this commit is green
-        if: inputs.publish
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          run=$(gh run list --workflow check.yml --commit "$SHA" --event push --limit 1 \
-            --json databaseId --jq '.[0].databaseId // empty')
-          if [[ -z "$run" ]]; then
-            echo "::error title=No check::check.yml never ran on $SHA;" \
-              "a pack is only published from a commit of main" >&2
-            exit 1
-          fi
-          gh run watch "$run" --interval 30 --exit-status > /dev/null || {
-            echo "::error title=Check failed::check.yml run $run is not green on $SHA" >&2
-            exit 1
-          }
-
-      - name: Pack it
-        run: make pack PACK="$PACK" VERSION="$VERSION"
-
-      - name: Hand it over
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: pack-${{ inputs.pack }}-${{ needs.what.outputs.version }}-build${{ github.run_number }}
-          path: dist/
-          retention-days: 14
-
-  # Only when publishing, and only `gh` and `attest` on what build made.
-  publish:
-    needs: [what, build]
-    if: inputs.publish
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      contents: write # the draft's files, and publishing it
-      id-token: write # sign the attestation, keyless (Sigstore)
-      attestations: write # store it
-    env:
-      GH_TOKEN: ${{ github.token }}
-      GH_REPO: ${{ github.repository }}
-      PACK: ${{ inputs.pack }}
-      TAG: ${{ needs.what.outputs.tag }}
-      SHA: ${{ needs.what.outputs.sha }}
-      VERSION: ${{ needs.what.outputs.version }}
-    steps:
-      - name: The draft is still the one built
-        run: |
-          now=$(gh release view "$TAG" --json isDraft,targetCommitish --jq '"\(.isDraft) \(.targetCommitish)"')
-          if [[ "$now" != "true $SHA" ]]; then
-            echo "::error title=Draft moved::$TAG is now '$now', not a draft at $SHA; run this again" >&2
-            exit 1
-          fi
-
-      - name: What build made
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: pack-${{ inputs.pack }}-${{ needs.what.outputs.version }}-build${{ github.run_number }}
-          path: dist
-
-      - name: Attest the tarball
-        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
-        with:
-          subject-path: dist/limen-pack-*
-
-      - name: The files on the draft, then publish it, never as the latest
-        run: |
-          name=limen-pack-$PACK-$VERSION.tar.gz
-          notes="$RUNNER_TEMP/notes.md"
-          docs="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/blob/main/docs/scripts.md#released-packs"
-          {
-            gh release view "$TAG" --json body --jq .body
-            echo
-            echo "**limen pack $PACK $VERSION** · build $GITHUB_RUN_NUMBER"
-            echo
-            echo "- \`$name\`: the folder \`$PACK/\`, owned by root and writable only by its owner." \
-              "Unpack it where the machine's \`limen.toml\` lists it, as" \
-              "[docs/scripts.md]($docs) says."
-            echo "- \`SHA256SUMS\`: to check what you downloaded. Pin that hash, not only the tag."
-            echo
-            echo "\`gh attestation verify $name --repo $GITHUB_REPOSITORY\` says it was built" \
-              "by this repository's packs workflow, \`.github/workflows/packs.yml\`."
-          } > "$notes"
-          gh release upload "$TAG" dist/* --clobber
-          gh release edit "$TAG" --notes-file "$notes"
-          gh release edit "$TAG" --draft=false --latest=false
-          echo "published: $TAG at $SHA"
+      contents: write # see the draft, its files, publishing it
+      actions: read # read the check of the commit
+      packages: write # unused: a pack has no image, but a called workflow cannot ask for more than this job grants
+      id-token: write # attest, keyless (Sigstore)
+      attestations: write # store the attestations
+    uses: xoadev/xoa-base/.github/workflows/release.yml@ab8289f4ac715bcbf0bb070ce386402b3aa9d8b7 # v0.2.1
+    with:
+      tag-prefix: pack-${{ inputs.pack }}-v
+      build: pack PACK=${{ inputs.pack }}
+      latest: false
+      publish: ${{ inputs.publish }}

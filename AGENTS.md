@@ -162,20 +162,18 @@ what CI runs: xoa-base's linters (`lint/*.mk`, at the commit the workflows call)
 The repository refuses to run a third-party action that is not pinned by commit SHA. Releases are
 immutable, and no `v*` or `pack-*` tag can be moved or deleted.
 
-A push only ever prepares: the workflows it runs are the `-draft` ones, and publishing is always a
-workflow run by hand. Each pair shares one concurrency group, `release` or `packs`, that never
-cancels a run, so a push while a release is being built waits instead of moving the draft under it.
+A push only ever prepares; publishing is always a workflow run by hand. limen's own release and its
+packs' go through xoa-base's `release-draft.yml` and `release.yml`: a push rewrites the drafts
+(`vX.Y.Z` for limen, `pack-<pack>-vX.Y.Z` for each pack), and publishing builds at the draft's
+commit, once `check.yml` is green on it, what `make release-files` or `make pack` leave in
+`release/`, then attests it, puts it on the draft and publishes it, the packs never as the latest
+release: that is limen's, which `install.sh`, `limen_version` and `limen_update` ask GitHub for.
+Unticked `publish`, a run builds everything and publishes nothing. Nobody publishes from the
+releases page: a release would be public without its files.
 
-| Workflow | When | What |
-|---|---|---|
-| `check.yml` | Every push to `main` and every PR; by hand | `make -k check`, and both binaries linked and checked static: the one mandatory gate. On `main`, a red run opens (or comments) the `main-red` issue |
-| `release-draft.yml` | Every push to `main` | [convco-version](https://github.com/xoadev/convco-version) reads the conventional commits that touched what goes into the binary or the image and rewrites **one draft** release, `vX.Y.Z`, with what went in, deleting any other `vX.Y.Z` draft; nothing is built, nothing published |
-| `release.yml` | By hand only, to publish | **Run by hand** (Actions → release → Run workflow, or `make release`), it publishes the draft `release-draft.yml` left: waits for `check.yml` green on the draft's commit, stamps the version (`limen --version`), builds both static binaries in release, runs `make e2e` with the release binary, checks they are static, builds the image per architecture and starts it, pushes it to `ghcr.io/<repo>` as `X.Y.Z`, attests binaries and image, attaches the binaries and `SHA256SUMS` to the draft, and only then publishes it —which creates the tag— and moves `latest`. With `publish` unticked it builds all of it and publishes nothing. Nobody publishes from the releases page: a release would be public without its files |
-| `packs-draft.yml` | Every push to `main` that touches `packs/`; by hand (`make pack-drafts`) | convco-version reads, for each pack, the commits that touched `packs/<pack>/` and rewrites that pack's draft, `pack-<pack>-vX.Y.Z`; nothing is published |
-| `packs.yml` | By hand only, with a pack's name, to publish it | **Run by hand** (or `make pack-release`), it publishes that pack's draft: waits for `check.yml` green on its commit, `make pack`, attests the tarball, attaches it and `SHA256SUMS`, and publishes it **never as the latest release** —that is limen's, which `install.sh`, `limen_version` and `limen_update` ask for |
-| `cli.yml` | Label `cli` on a PR, or by hand | Both binaries (debug) as an artifact, with the link commented on the PR: for trying a change on a real node |
-| `e2e.yml` | Every PR that touches code (`crates/`, `Cargo.*`, `rust-toolchain.toml`, `.cargo/`, `tools/`, `etc/`, `install.sh`, `packs/`, `Makefile`, the workflow itself); weekly; by hand | `make e2e`, every suite. Weekly because OpenWrt's image moves upstream; Debian's and Mosquitto's are pinned by digest in `etc/e2e/node.Dockerfile` and `broker.Dockerfile`, and follow upstream through Dependabot's weekly pull request, which this workflow tests |
-| `.github/dependabot.yml` (not a workflow) | Weekly, versions a week old | Pull requests that update the pinned actions (SHA and version comment together), the crates (pinned `=X.Y.Z` in the `Cargo.toml` files, each pull request moves the requirement and `Cargo.lock` together), the Rust version of `rust-toolchain.toml` and the base images of `etc/Dockerfile` and `etc/e2e/` |
+When each workflow runs and what it does, in its first lines (`.github/workflows/`). `cli.yml`
+builds both debug binaries for a pull request labelled `cli`; `e2e.yml` runs `make e2e` on the pull
+requests that touch what it covers and weekly, because OpenWrt's image moves upstream.
 
 The version is never written in the code: the commits decide it, and it only exists once a release
 is published. The build reads it from `LIMEN_VERSION`, `LIMEN_BUILD_DATE` and `LIMEN_BUILD_NUMBER`
