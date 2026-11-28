@@ -46,7 +46,7 @@ jobs:
         pack: ${{ fromJSON(needs.list.outputs.packs) }}
     permissions:
       contents: write # rewrite the drafts
-    uses: xoadev/xoa-base/.github/workflows/release-draft.yml@ab8289f4ac715bcbf0bb070ce386402b3aa9d8b7 # v0.2.1
+    uses: xoadev/xoa-base/.github/workflows/release-draft.yml@f954d79208ba1fc9819abd78dd5392cc30644e10 # v0.2.1
     with:
       paths: packs/${{ matrix.pack }}
       tag-prefix: pack-${{ matrix.pack }}-v

@@ -46,7 +46,7 @@ jobs:
       packages: write # unused: a pack has no image, but a called workflow cannot ask for more than this job grants
       id-token: write # attest, keyless (Sigstore)
       attestations: write # store the attestations
-    uses: xoadev/xoa-base/.github/workflows/release.yml@ab8289f4ac715bcbf0bb070ce386402b3aa9d8b7 # v0.2.1
+    uses: xoadev/xoa-base/.github/workflows/release.yml@f954d79208ba1fc9819abd78dd5392cc30644e10 # v0.2.1
     with:
       tag-prefix: pack-${{ inputs.pack }}-v
       build: pack PACK=${{ inputs.pack }}
