@@ -12,7 +12,7 @@ if [ -z "$containers" ]; then
   echo "no containers started by Docker Compose"
   exit 0
 fi
-permitted=$(sed 's/#.*//' "$allowed" 2> /dev/null | tr -s ' \t' '\n' | grep -v '^$' || true)
+permitted=$(sed 's/#.*//' "$allowed" 2>/dev/null | tr -s ' \t' '\n' | grep -v '^$' || true)
 
 printf '%s\n' "$containers" | awk -F '\t' -v permitted="$permitted" '
   BEGIN { count = split(permitted, names, "\n"); for (i = 1; i <= count; i++) update[names[i]] = 1 }

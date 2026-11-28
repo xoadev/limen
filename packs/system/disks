@@ -5,7 +5,7 @@
 set -eu
 
 echo "disks:"
-if command -v lsblk > /dev/null 2>&1; then
+if command -v lsblk >/dev/null 2>&1; then
   # Without RAM disks (major 1) and loop devices (7).
   lsblk --nodeps --exclude 1,7 --output NAME,SIZE,ROTA,TRAN,MODEL
 else
@@ -13,12 +13,12 @@ else
     name=${device##*/}
     case $name in loop* | ram* | zram*) continue ;; esac
     sectors=$(cat "$device/size")
-    echo "$name $((sectors / 2097152))G rotational=$(cat "$device/queue/rotational" 2> /dev/null || echo ?) $(sed 's/ *$//' "$device/device/model" 2> /dev/null || true)"
+    echo "$name $((sectors / 2097152))G rotational=$(cat "$device/queue/rotational" 2>/dev/null || echo ?) $(sed 's/ *$//' "$device/device/model" 2>/dev/null || true)"
   done
 fi
 
 echo
-if command -v smartctl > /dev/null 2>&1; then
+if command -v smartctl >/dev/null 2>&1; then
   # Health and the failure attributes only: -i would add serial numbers, which say nothing about health.
   smartctl --scan | while read -r device _ type _; do
     health=$(smartctl -H -d "$type" "$device" 2>&1 | sed -n 's/.*self-assessment test result: //p; s/^SMART Health Status: //p') || true
@@ -34,7 +34,7 @@ else
   echo "SMART: smartctl is not installed (package smartmontools), so there is no disk health here"
 fi
 
-if grep -q '^md' /proc/mdstat 2> /dev/null; then
+if grep -q '^md' /proc/mdstat 2>/dev/null; then
   echo
   degraded=$(awk '/^md/ { name = $1 } /\[[U_]*_[U_]*\]/ { print name }' /proc/mdstat | tr '\n' ' ')
   if [ -n "$degraded" ]; then echo "software RAID: degraded: $degraded"; else echo "software RAID: every array complete"; fi

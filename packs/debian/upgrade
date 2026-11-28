@@ -37,7 +37,7 @@ set +e
   set -e
   apt-get update --quiet=2
   apt-get "$@" --yes --quiet=1 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold
-) > "$log" 2>&1
+) >"$log" 2>&1
 status=$?
 set -e
 

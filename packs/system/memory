@@ -24,7 +24,7 @@ echo
 echo "since boot, in pages or events:"
 awk '$1 ~ /^(oom_kill|pswpin|pswpout|pgmajfault)$/ { printf "%-11s %s\n", $1, $2 }' /proc/vmstat
 
-if [ -r /proc/swaps ] && [ "$(wc -l < /proc/swaps)" -gt 1 ]; then
+if [ -r /proc/swaps ] && [ "$(wc -l </proc/swaps)" -gt 1 ]; then
   echo
   cat /proc/swaps
 fi

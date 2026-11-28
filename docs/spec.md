@@ -1,17 +1,17 @@
 # limen — specification
 
-An MCP server that gives an agent a bounded way into Linux machines. It can read the files a machine allows,
-and run the scripts the machine offers — to look, and to change what its operator decided may be changed.
-Nothing else: no shell, no command it writes itself.
+An MCP server that gives an agent a bounded way into Linux machines. It can read the files a machine
+allows, and run the scripts the machine offers — to look, and to change what its operator decided
+may be changed. Nothing else: no shell, no command it writes itself.
 
-**limen knows no init system, container runtime or configuration tool.** What a machine can do lives in
-scripts, grouped in packs: one for systemd, one for Docker, one for the operator's own services. limen runs
-them, validates their arguments, redacts their output and bounds it.
+**limen knows no init system, container runtime or configuration tool.** What a machine can do lives
+in scripts, grouped in packs: one for systemd, one for Docker, one for the operator's own services.
+limen runs them, validates their arguments, redacts their output and bounds it.
 
 **The machine decides.** Every limit is enforced on the node, by `limen` running as an SSH forced
 command. The MCP server, its clients and the model behind them are untrusted: if any of them is
-compromised or deceived, the worst outcome is reading what the node allows to be read and running the
-scripts it offers.
+compromised or deceived, the worst outcome is reading what the node allows to be read and running
+the scripts it offers.
 
 ## 0. Repository
 
@@ -42,9 +42,10 @@ limen/
    output limits live in the node's `limen`. The hub only relays.
 2. **Scripts are the whole surface.** Besides reading allowed files, the agent can only run scripts
    already on the node, with arguments their headers accept — never code it sends.
-3. **Agnostic.** limen runs scripts; it doesn't parse what systemd, Docker or git print. A new kind of
-   machine is a new pack, not a new release.
-4. **Nothing listening on the nodes.** `sshd` is the only way in; `limen` starts per request and exits.
+3. **Agnostic.** limen runs scripts; it doesn't parse what systemd, Docker or git print. A new kind
+   of machine is a new pack, not a new release.
+4. **Nothing listening on the nodes.** `sshd` is the only way in; `limen` starts per request and
+   exits.
 5. **Bounded output.** Every response has a size limit and says when it was truncated: an agent's
    context is finite, and an unbounded log fills it.
 6. **One binary, no runtime.** Rust, linked statically; the same file is the hub and the node side.
@@ -60,30 +61,32 @@ node:  sshd ──forced command──▶ sudo limen gate ──▶ allowed file
 ```
 
 - **Hub**: runs the MCP server, holds the SSH key and the list of nodes. A container (`limen serve`,
-  HTTP) or a laptop (`limen mcp`, stdio). It is a directory —`$LIMEN_HOME`, `/data` in the image—, created
-  by `limen init`, or by `limen serve` on its first start. `limen serve` can also publish scripts' output to an
-  MQTT broker as Home Assistant sensors, and run scripts as buttons pressed there (§9.1).
-- **Node**: a machine the agent works on. Has the `limen` binary, its configuration in `/etc/limen/`, its
-  packs, and the SSH and sudo wiring that `limen install` sets up.
+  HTTP) or a laptop (`limen mcp`, stdio). It is a directory —`$LIMEN_HOME`, `/data` in the image—,
+  created by `limen init`, or by `limen serve` on its first start. `limen serve` can also publish
+  scripts' output to an MQTT broker as Home Assistant sensors, and run scripts as buttons pressed
+  there (§9.1).
+- **Node**: a machine the agent works on. Has the `limen` binary, its configuration in
+  `/etc/limen/`, its packs, and the SSH and sudo wiring that `limen install` sets up.
 - A hub can be a node too: it reaches itself over SSH like any other.
 
 ## 3. Access
 
-- **One user, `limen`, and one key, the hub's.** Nothing else calls a node: a person on the machine runs
-  `limen` as root directly.
-- Its `authorized_keys`: `restrict,command="sudo -n /usr/local/bin/limen gate"`, plus `from="<addresses>"` when
-  `--from` gives them: addresses and CIDRs, comma-separated, with sshd's `*`, `?` and `!`. `.ssh` and the file belong
-  to root.
+- **One user, `limen`, and one key, the hub's.** Nothing else calls a node: a person on the machine
+  runs `limen` as root directly.
+- Its `authorized_keys`: `restrict,command="sudo -n /usr/local/bin/limen gate"`, plus
+  `from="<addresses>"` when `--from` gives them: addresses and CIDRs, comma-separated, with sshd's
+  `*`, `?` and `!`. `.ssh` and the file belong to root.
 - `sudoers`: `limen` may run exactly that command as root, nothing else.
-- `gate` runs as root because the journal, the Docker socket and root-owned configuration need it. The
-  boundary is the `gate` code, not Unix permissions: it never runs a shell, never opens a path outside the
-  allowlist and never runs a file that isn't a script of a configured pack.
-- The login shell is `/bin/sh`: `sshd` runs forced commands through it, and with `nologin` nothing runs.
-  `restrict` and the forced command are what prevent an interactive session. The password is locked.
+- `gate` runs as root because the journal, the Docker socket and root-owned configuration need it.
+  The boundary is the `gate` code, not Unix permissions: it never runs a shell, never opens a path
+  outside the allowlist and never runs a file that isn't a script of a configured pack.
+- The login shell is `/bin/sh`: `sshd` runs forced commands through it, and with `nologin` nothing
+  runs. `restrict` and the forced command are what prevent an interactive session. The password is
+  locked.
 - **OpenWrt** has dropbear, no sudo and no tools to add users. The hub's key goes in root's
-  `/etc/dropbear/authorized_keys` with `no-port-forwarding,no-agent-forwarding,no-X11-forwarding,no-pty,
-  command="/usr/bin/limen gate"`; the other keys there are left alone. dropbear has no `from=`: the firewall
-  limits who reaches it.
+  `/etc/dropbear/authorized_keys` with
+  `no-port-forwarding,no-agent-forwarding,no-X11-forwarding,no-pty, command="/usr/bin/limen gate"`;
+  the other keys there are left alone. dropbear has no `from=`: the firewall limits who reaches it.
 - A forced command only holds a login by key. Where password logins are open and root has no
   password —OpenWrt's default— anyone reaching SSH is root without a key, and `install` says so.
 
@@ -115,22 +118,25 @@ is ignored.
 - Arguments are validated against the request's schema, and a script's against its header, before
   anything runs; unknown fields are rejected. A string argument holds no control character (a NUL, a
   newline), whatever its `pattern` allows.
-- A script that ran answers `ok` with its exit code, whatever it is: a failure of the script is data, not
-  an error of the request.
-- `run` with `read_only: true` is refused, `denied`, unless the script's header says `read_only = true` as the node
-  reads it then: a hub's sensors ask so (§9.1), and a script whose header stopped saying it never runs as one. A node
-  that predates the argument refuses it as unknown.
-- `run` with `follow: true` streams the script's output while it runs: before the answer, the node writes one line per
-  piece of output as it comes, `{"chunk": {"stream": "stdout", "text": "…"}}` (or `"stderr"`), and the answer then holds
-  the exit code and signal without `stdout` or `stderr`. A piece is whole lines, through `Node::clean` and `grep` like
-  the rest; `tail` doesn't apply, since it needs the end, and neither does `limits.max_lines`. A private key's block is
-  held back until its `END` line, so it is redacted whole, never in halves. What is streamed counts towards
-  `limits.max_response`: past it nothing more is sent, the script runs on, and the answer says `truncated`. A node that
-  predates `follow` refuses it as unknown before running anything, and the hub asks again without it.
-- Error codes: `bad_request`, `denied`, `not_found`, `unavailable` (the node is at `limits.concurrency`, or the
-  script is refused: not root's, two with its name),
-  `timeout`, `unsupported_version`, `internal`. The hub adds `unreachable` and `host_key_mismatch` from
-  `ssh`'s exit status 255.
+- A script that ran answers `ok` with its exit code, whatever it is: a failure of the script is
+  data, not an error of the request.
+- `run` with `read_only: true` is refused, `denied`, unless the script's header says
+  `read_only = true` as the node reads it then: a hub's sensors ask so (§9.1), and a script whose
+  header stopped saying it never runs as one. A node that predates the argument refuses it as
+  unknown.
+- `run` with `follow: true` streams the script's output while it runs: before the answer, the node
+  writes one line per piece of output as it comes, `{"chunk": {"stream": "stdout", "text": "…"}}`
+  (or `"stderr"`), and the answer then holds the exit code and signal without `stdout` or `stderr`.
+  A piece is whole lines, through `Node::clean` and `grep` like the rest; `tail` doesn't apply,
+  since it needs the end, and neither does `limits.max_lines`. A private key's block is held back
+  until its `END` line, so it is redacted whole, never in halves. What is streamed counts towards
+  `limits.max_response`: past it nothing more is sent, the script runs on, and the answer says
+  `truncated`. A node that predates `follow` refuses it as unknown before running anything, and the
+  hub asks again without it.
+- Error codes: `bad_request`, `denied`, `not_found`, `unavailable` (the node is at
+  `limits.concurrency`, or the script is refused: not root's, two with its name), `timeout`,
+  `unsupported_version`, `internal`. The hub adds `unreachable` and `host_key_mismatch` from `ssh`'s
+  exit status 255.
 - `v` is the protocol version. A node answers `unsupported_version` with the versions it speaks, so
   the hub can say "update limen on <node>" instead of failing obscurely.
 
@@ -146,50 +152,59 @@ Every tool but `nodes` takes a `node` argument.
 | `history` | The node's audit log: its last `lines` entries, 50 unless given, at most 1000 |
 | `<script>` | One per script in the nodes' catalogs, with its declared arguments plus `grep` and `tail` |
 
-- `nodes`, `read_file`, `list_dir` and `history` are annotated `readOnlyHint: true`, and so is a script whose
-  header says `read_only = true` on every node that offers it: an MCP client may run those without asking. Every
-  other script is annotated `readOnlyHint: false` and `destructiveHint: true`. `read_only` is the operator's word,
-  as a description is: limen doesn't check what a script does.
-- **Approval.** `[approval]` in the hub's `limen.toml` (§7.2) names the scripts a person approves before each run. The
-  hub validates the call, then asks the person in the MCP client's own window, through MCP elicitation
-  (`elicitation/create`): the node, the script and its arguments as they would run, and a yes or a no. Only a yes runs
-  it, once, as asked. A no, a dismissed question, no answer within `approval.timeout`, a client that doesn't declare
-  elicitation, or a transport that can't ask (HTTP: its event stream carries notifications only) answers `not approved`,
-  and nothing reaches the node. The question goes to the client's interface, not to the model, which can neither see nor
-  answer it. The hub logs each question and its answer. The description of a script's tool says when a person approves
-  each run, so the model can say so before calling it. `nodes` names every script `[approval]` lists that no node
-  offers: a misspelt name would otherwise let the script it meant run without asking.
-- **Results are text, as a person reads them**: a script's tool answers what it printed, its stderr after a
-  `[stderr]` line, and a last line with its exit code, `[exit 0]` (with the signal that ended it, when one did); a
-  file, its lines and a last line with the path and the range, `[/etc/hosts: lines 1–12, end of file]`. The other
-  tools answer JSON. A limit that cut the answer is said in a last line.
-- **Progress.** A script's call with a `progressToken` and no `tail` runs with `follow` (§4): each piece of
-  output reaches the client as it is produced, in a `notifications/progress` whose `message` is the text, and the
-  result is the whole output as above. Over HTTP the same, when the client takes an event stream (§9). The model sees
-  the result; the progress is for the client's interface.
-- `grep` is a fixed string, case-insensitive, matched against the redacted text —never the raw one, or a
-  guess at a secret would be told apart by whether a line comes back— and filters before `tail` applies:
-  the answer is the last N matching lines. A script never sees `grep` or `tail`, and can't declare
-  arguments with those names.
-- `lines` (500 unless given, at most 20000) and `tail` above `limits.max_lines` are cut to it, and the answer says it
-  was truncated. `read_file` with `grep` or `tail` scans at most the last `limits.scan_lines` lines, and 16 MiB.
-- A node's catalog is not trusted: a script whose name, description, arguments or patterns aren't plain and
-  bounded, that declares a `node`, `grep` or `tail` argument, or whose name is a built-in tool's or request's, is
-  left out and counted in `nodes`; `limen lint` on the node names each and says why, by the same rules
-  ([scripts.md](scripts.md)). Its text reaches the model as it is, so it is kept short.
-- A script's tool accepts only the nodes whose catalog has it; the hub refuses the others itself. Each call is
-  checked against the arguments the node it goes to declares, and a refusal says what that node takes.
-- **A script declared differently on different nodes stays one tool for all of them**, so a change to its
-  arguments —`sync` itself, the script that rolls out scripts— can reach the rest through the hub, one node at a
-  time. When the declarations differ only by optional arguments some add —one holds every argument of the
-  others, unchanged, and only optional ones besides— the tool shows that one. Otherwise it shows the arguments
-  most nodes declare (on a tie, the first node's), and `nodes` reports the conflict: each declaration and its
-  nodes. Either way the tool's description names the nodes that declare other arguments, and what they take.
+- `nodes`, `read_file`, `list_dir` and `history` are annotated `readOnlyHint: true`, and so is a
+  script whose header says `read_only = true` on every node that offers it: an MCP client may run
+  those without asking. Every other script is annotated `readOnlyHint: false` and
+  `destructiveHint: true`. `read_only` is the operator's word, as a description is: limen doesn't
+  check what a script does.
+- **Approval.** `[approval]` in the hub's `limen.toml` (§7.2) names the scripts a person approves
+  before each run. The hub validates the call, then asks the person in the MCP client's own window,
+  through MCP elicitation (`elicitation/create`): the node, the script and its arguments as they
+  would run, and a yes or a no. Only a yes runs it, once, as asked. A no, a dismissed question, no
+  answer within `approval.timeout`, a client that doesn't declare elicitation, or a transport that
+  can't ask (HTTP: its event stream carries notifications only) answers `not approved`, and nothing
+  reaches the node. The question goes to the client's interface, not to the model, which can neither
+  see nor answer it. The hub logs each question and its answer. The description of a script's tool
+  says when a person approves each run, so the model can say so before calling it. `nodes` names
+  every script `[approval]` lists that no node offers: a misspelt name would otherwise let the
+  script it meant run without asking.
+- **Results are text, as a person reads them**: a script's tool answers what it printed, its stderr
+  after a `[stderr]` line, and a last line with its exit code, `[exit 0]` (with the signal that
+  ended it, when one did); a file, its lines and a last line with the path and the range,
+  `[/etc/hosts: lines 1–12, end of file]`. The other tools answer JSON. A limit that cut the answer
+  is said in a last line.
+- **Progress.** A script's call with a `progressToken` and no `tail` runs with `follow` (§4): each
+  piece of output reaches the client as it is produced, in a `notifications/progress` whose
+  `message` is the text, and the result is the whole output as above. Over HTTP the same, when the
+  client takes an event stream (§9). The model sees the result; the progress is for the client's
+  interface.
+- `grep` is a fixed string, case-insensitive, matched against the redacted text —never the raw one,
+  or a guess at a secret would be told apart by whether a line comes back— and filters before `tail`
+  applies: the answer is the last N matching lines. A script never sees `grep` or `tail`, and can't
+  declare arguments with those names.
+- `lines` (500 unless given, at most 20000) and `tail` above `limits.max_lines` are cut to it, and
+  the answer says it was truncated. `read_file` with `grep` or `tail` scans at most the last
+  `limits.scan_lines` lines, and 16 MiB.
+- A node's catalog is not trusted: a script whose name, description, arguments or patterns aren't
+  plain and bounded, that declares a `node`, `grep` or `tail` argument, or whose name is a built-in
+  tool's or request's, is left out and counted in `nodes`; `limen lint` on the node names each and
+  says why, by the same rules ([scripts.md](scripts.md)). Its text reaches the model as it is, so it
+  is kept short.
+- A script's tool accepts only the nodes whose catalog has it; the hub refuses the others itself.
+  Each call is checked against the arguments the node it goes to declares, and a refusal says what
+  that node takes.
+- **A script declared differently on different nodes stays one tool for all of them**, so a change
+  to its arguments —`sync` itself, the script that rolls out scripts— can reach the rest through the
+  hub, one node at a time. When the declarations differ only by optional arguments some add —one
+  holds every argument of the others, unchanged, and only optional ones besides— the tool shows that
+  one. Otherwise it shows the arguments most nodes declare (on a tie, the first node's), and `nodes`
+  reports the conflict: each declaration and its nodes. Either way the tool's description names the
+  nodes that declare other arguments, and what they take.
 
 ## 6. Scripts and packs
 
-A **pack** is a directory of scripts. A node offers the scripts of the packs listed in `scripts.packs`
-(§7.1), and nothing else.
+A **pack** is a directory of scripts. A node offers the scripts of the packs listed in
+`scripts.packs` (§7.1), and nothing else.
 
 ```text
 /opt/state/packs/systemd/   failed_units  journal  restart_unit
@@ -197,21 +212,23 @@ A **pack** is a directory of scripts. A node offers the scripts of the packs lis
 /opt/state/nodes/nas/       sync  backup_status
 ```
 
-- A script is an executable file at the top of a pack, named `^[a-z0-9][a-z0-9_-]{0,47}` plus an optional
-  extension, with a header: leading comment lines starting with `#:` that form a TOML document. No header,
-  no script; other files and subdirectories are the pack's own, for its scripts to use.
-- A name is unique across a node's packs: two scripts with one name, in one pack or two, are both refused
-  until one goes.
-- The header's format, the arguments' types, the environment a script runs in, its limits and the rules
-  on who owns it are in [scripts.md](scripts.md): what a script's author needs, in one place.
-- The packs under `packs/` in this repository are released on their own, as `pack-<pack>-vX.Y.Z` (§11), not
-  installed with limen: a pack changes with the machines it runs on, not with limen's releases.
-- **Where the packs come from is the operator's.** A Git repository kept in sync by a script of its own, a
-  configuration manager, files copied by hand: limen reads what is there. [scripts.md](scripts.md) shows the
-  setup of a node from a repository.
-- **Whoever can change a pack runs code as root on the node, and the agent can run it.** If a script can
-  fetch the packs —a `sync`—, the agent must not be able to write where it fetches from: a protected branch,
-  changed only through reviewed pull requests.
+- A script is an executable file at the top of a pack, named `^[a-z0-9][a-z0-9_-]{0,47}` plus an
+  optional extension, with a header: leading comment lines starting with `#:` that form a TOML
+  document. No header, no script; other files and subdirectories are the pack's own, for its scripts
+  to use.
+- A name is unique across a node's packs: two scripts with one name, in one pack or two, are both
+  refused until one goes.
+- The header's format, the arguments' types, the environment a script runs in, its limits and the
+  rules on who owns it are in [scripts.md](scripts.md): what a script's author needs, in one place.
+- The packs under `packs/` in this repository are released on their own, as `pack-<pack>-vX.Y.Z`
+  (§11), not installed with limen: a pack changes with the machines it runs on, not with limen's
+  releases.
+- **Where the packs come from is the operator's.** A Git repository kept in sync by a script of its
+  own, a configuration manager, files copied by hand: limen reads what is there.
+  [scripts.md](scripts.md) shows the setup of a node from a repository.
+- **Whoever can change a pack runs code as root on the node, and the agent can run it.** If a script
+  can fetch the packs —a `sync`—, the agent must not be able to write where it fetches from: a
+  protected branch, changed only through reviewed pull requests.
 
 ## 7. Configuration
 
@@ -242,72 +259,78 @@ max_bytes = 5242880
 read_only = "all"
 ```
 
-- The limits and paths show their defaults. `files`, `scripts` and `redact` are examples: they default to
-  empty. `install` writes the file when there is none, with suggestions commented out, and never rewrites it:
-  it is the operator's, and may come from their repository.
+- The limits and paths show their defaults. `files`, `scripts` and `redact` are examples: they
+  default to empty. `install` writes the file when there is none, with suggestions commented out,
+  and never rewrites it: it is the operator's, and may come from their repository.
 - An unknown key is an error, so a typo fails instead of being ignored; a broken file makes every
   request answer `internal` with the reason.
-- `limen.toml` may be a link to a file kept elsewhere; the file it leads to must pass the same ownership
-  rule as a script (§6).
-- Sizes are bytes: `files.max_bytes`, `limits.max_response` and `audit.max_bytes`, the last 1024 at least. `max_lines`
-  and `scan_lines` count lines, `concurrency` requests. No limit may be zero. `audit.path` and every entry of
-  `scripts.packs` are absolute paths.
+- `limen.toml` may be a link to a file kept elsewhere; the file it leads to must pass the same
+  ownership rule as a script (§6).
+- Sizes are bytes: `files.max_bytes`, `limits.max_response` and `audit.max_bytes`, the last 1024 at
+  least. `max_lines` and `scan_lines` count lines, `concurrency` requests. No limit may be zero.
+  `audit.path` and every entry of `scripts.packs` are absolute paths.
 - An answer bigger than `limits.max_response` is replaced by a `bad_request` asking to narrow it.
-- The node bounds its requests itself, whatever hub sends them: at most `limits.concurrency` at once (a lock on one of
-  `/run/limen/slot-<n>`; one more gets `unavailable`), ten seconds to send the request, and two minutes in all; a script
-  gets its own timeout (an hour at most) and 30 seconds more instead. A request out of time has what it started killed,
-  answers `timeout` and is audited as such. `read_file` goes at most 64 MiB into a file to reach its first line.
-- **Nothing is readable by default.** `files.allow` starts empty. Everything readable ends up in a model
-  provider's context, so the operator decides it path by path.
-- `files.allow` and `files.deny` are path patterns, each starting with `/` or `**`. `**` as a whole segment is any
-  number of segments, none included, so `/etc/nginx/**` matches `/etc/nginx` too; `*` is any run of characters within
-  a segment, a leading dot included; `?` is one character. Nothing else is special: `{a,b}` and `[…]` are literal
-  text. A pattern for a directory doesn't reach inside it; `/dir/**` does. A path is readable when an `allow` pattern
-  matches it and no `deny` pattern does: `deny` wins. Both match the resolved target —links followed, `..` taken, as
-  below—, never the path as asked.
-- `files.max_bytes`, 256 KiB by default, caps what one range (`from` and `lines`) returns: bytes of text as read,
-  newlines included. The range stops before the line that would pass it and says it was truncated. `grep` and `tail`
-  don't go by it: they read the file's end, at most `limits.scan_lines` lines and 1 KiB for each of them up to
-  16 MiB, and answer at most `limits.max_lines` lines (§5). Every answer is bounded by `limits.max_response`.
-- A built-in deny list applies on top and can't be overridden: `/etc/shadow`, `/etc/gshadow` and their backups
-  (`/etc/shadow-`, `/etc/gshadow-`, `/var/backups/`), `/etc/sudoers*`, SSH and dropbear private keys,
-  `/etc/ssl/private/`, `/etc/wireguard/`, NetworkManager connections, OpenWrt's `/etc/config/wireless`, systemd's
-  `/run/credentials/`, `/etc/limen/`, `/var/log/limen/`, `/root/`, and the pseudo-filesystems `/proc/`, `/sys/` and
-  `/dev/`, where a "file" can be a process's environment or a whole disk. So is the audit log, wherever `[audit]` puts
-  it. Secrets the packs use —a repository's token— belong under `/etc/limen/`.
-- Only regular files with a single hard link are read: another name for the same file could be anywhere,
-  and a hard link into an allowed directory would carry a denied file with it. A binary file (a NUL in its
-  first 8 KiB) answers its size and no content.
-- Paths are walked one component at a time, as the kernel does: links followed, `..` taken from where
-  the walk is. Every step must be allowed or lead to something allowed, so nothing is learnt of a place
-  the policy hides, not even whether it exists; past a missing component the walk goes on as text. The
-  walked path is the one opened, once, without following links and checked through `/proc/self/fd`, and
-  the type, links and keys are checked on what was opened: a directory swapped for a link between the
-  check and the open is caught. A refusal names the path as asked and gives no reason, which would tell
-  where it leads. `list_dir` reads its entries through the directory it opened.
+- The node bounds its requests itself, whatever hub sends them: at most `limits.concurrency` at once
+  (a lock on one of `/run/limen/slot-<n>`; one more gets `unavailable`), ten seconds to send the
+  request, and two minutes in all; a script gets its own timeout (an hour at most) and 30 seconds
+  more instead. A request out of time has what it started killed, answers `timeout` and is audited
+  as such. `read_file` goes at most 64 MiB into a file to reach its first line.
+- **Nothing is readable by default.** `files.allow` starts empty. Everything readable ends up in a
+  model provider's context, so the operator decides it path by path.
+- `files.allow` and `files.deny` are path patterns, each starting with `/` or `**`. `**` as a whole
+  segment is any number of segments, none included, so `/etc/nginx/**` matches `/etc/nginx` too; `*`
+  is any run of characters within a segment, a leading dot included; `?` is one character. Nothing
+  else is special: `{a,b}` and `[…]` are literal text. A pattern for a directory doesn't reach
+  inside it; `/dir/**` does. A path is readable when an `allow` pattern matches it and no `deny`
+  pattern does: `deny` wins. Both match the resolved target —links followed, `..` taken, as below—,
+  never the path as asked.
+- `files.max_bytes`, 256 KiB by default, caps what one range (`from` and `lines`) returns: bytes of
+  text as read, newlines included. The range stops before the line that would pass it and says it
+  was truncated. `grep` and `tail` don't go by it: they read the file's end, at most
+  `limits.scan_lines` lines and 1 KiB for each of them up to 16 MiB, and answer at most
+  `limits.max_lines` lines (§5). Every answer is bounded by `limits.max_response`.
+- A built-in deny list applies on top and can't be overridden: `/etc/shadow`, `/etc/gshadow` and
+  their backups (`/etc/shadow-`, `/etc/gshadow-`, `/var/backups/`), `/etc/sudoers*`, SSH and
+  dropbear private keys, `/etc/ssl/private/`, `/etc/wireguard/`, NetworkManager connections,
+  OpenWrt's `/etc/config/wireless`, systemd's `/run/credentials/`, `/etc/limen/`, `/var/log/limen/`,
+  `/root/`, and the pseudo-filesystems `/proc/`, `/sys/` and `/dev/`, where a "file" can be a
+  process's environment or a whole disk. So is the audit log, wherever `[audit]` puts it. Secrets
+  the packs use —a repository's token— belong under `/etc/limen/`.
+- Only regular files with a single hard link are read: another name for the same file could be
+  anywhere, and a hard link into an allowed directory would carry a denied file with it. A binary
+  file (a NUL in its first 8 KiB) answers its size and no content.
+- Paths are walked one component at a time, as the kernel does: links followed, `..` taken from
+  where the walk is. Every step must be allowed or lead to something allowed, so nothing is learnt
+  of a place the policy hides, not even whether it exists; past a missing component the walk goes on
+  as text. The walked path is the one opened, once, without following links and checked through
+  `/proc/self/fd`, and the type, links and keys are checked on what was opened: a directory swapped
+  for a link between the check and the open is caught. A refusal names the path as asked and gives
+  no reason, which would tell where it leads. `list_dir` reads its entries through the directory it
+  opened.
 - A file of up to 1 MiB that holds a PEM private key is not read at all: a range of lines can fall
-  between the key's markers, where redaction can't recognise it. In larger files a window is redacted as
-  a whole, so a key it holds entire is masked.
-- **Redaction** replaces a secret's value with `[redacted]` and keeps what names it: `DB_PASSWORD=[redacted]`. It
-  applies to files, scripts' output and `history`. The built-in patterns catch `key=value` for the usual names of
-  secrets (a quoted value up to its closing quote), UCI's `option key '…'`, `Authorization` headers, credentials in
-  URLs, `curl -u`, `sshpass -p`, `mysql -p`, the tokens whose provider gives them a shape of their own wherever they
-  appear (GitHub's `ghp_…`, `gho_…`, `ghu_…`, `ghs_…`, `ghr_…` and `github_pat_…`, JWTs, Slack's `xox?-…`, AWS access
-  key ids `AKIA…`/`ASIA…`, Stripe's `sk_live_…`/`rk_live_…`, Google API keys `AIza…`), PEM private keys and lines of
-  base64 alone, as a key's body is written, unless they are all hexadecimal: those are hashes and IDs, such as a
-  container's.
-  - `redact.names` adds names, case-insensitive: the value after `NAME=`, `NAME:` or `"NAME":`, spaces
-    around the sign included, is replaced.
-  - `redact.patterns` adds regular expressions; a group named `secret` limits what is replaced. Each runs over a
-    whole text —a file's range or window, a script's stdout—, not line by line: `^` and `$` are its start and end
-    unless the pattern says `(?m)`. They are Rust `regex`, as a script's `pattern` is ([scripts.md](scripts.md)):
-    no look-around, no `\p{…}` classes.
-  - It is a safety net; the protection is not allowing files that hold secrets, and not writing scripts
-    that print them.
-- **Control characters** never leave the node in a file's content or a script's output: `ESC` with the CSI or
-  OSC sequence after it (colours, a window's title) and every other control character but the newline, the tab
-  and the carriage return are removed, DEL and C1 included. It happens before redaction, so a sequence can't split
-  a secret's name, and before `grep` and `tail`.
+  between the key's markers, where redaction can't recognise it. In larger files a window is
+  redacted as a whole, so a key it holds entire is masked.
+- **Redaction** replaces a secret's value with `[redacted]` and keeps what names it:
+  `DB_PASSWORD=[redacted]`. It applies to files, scripts' output and `history`. The built-in
+  patterns catch `key=value` for the usual names of secrets (a quoted value up to its closing
+  quote), UCI's `option key '…'`, `Authorization` headers, credentials in URLs, `curl -u`,
+  `sshpass -p`, `mysql -p`, the tokens whose provider gives them a shape of their own wherever they
+  appear (GitHub's `ghp_…`, `gho_…`, `ghu_…`, `ghs_…`, `ghr_…` and `github_pat_…`, JWTs, Slack's
+  `xox?-…`, AWS access key ids `AKIA…`/`ASIA…`, Stripe's `sk_live_…`/`rk_live_…`, Google API keys
+  `AIza…`), PEM private keys and lines of base64 alone, as a key's body is written, unless they are
+  all hexadecimal: those are hashes and IDs, such as a container's.
+  - `redact.names` adds names, case-insensitive: the value after `NAME=`, `NAME:` or `"NAME":`,
+    spaces around the sign included, is replaced.
+  - `redact.patterns` adds regular expressions; a group named `secret` limits what is replaced. Each
+    runs over a whole text —a file's range or window, a script's stdout—, not line by line: `^` and
+    `$` are its start and end unless the pattern says `(?m)`. They are Rust `regex`, as a script's
+    `pattern` is ([scripts.md](scripts.md)): no look-around, no `\p{…}` classes.
+  - It is a safety net; the protection is not allowing files that hold secrets, and not writing
+    scripts that print them.
+- **Control characters** never leave the node in a file's content or a script's output: `ESC` with
+  the CSI or OSC sequence after it (colours, a window's title) and every other control character but
+  the newline, the tab and the carriage return are removed, DEL and C1 included. It happens before
+  redaction, so a sequence can't split a secret's name, and before `grep` and `tail`.
 
 ### 7.2 Hub: `$LIMEN_HOME/limen.toml`
 
@@ -360,65 +383,91 @@ user = "root"
 host_key = "ssh-ed25519 AAAA…"
 ```
 
-- The directory holds `limen.toml`, `nodes.toml`, the hub's SSH key, `token` (for HTTP clients, unless `LIMEN_TOKEN`
-  is set), `known_hosts`, which limen writes from the nodes' host keys, and `invites/`.
-- `limen.toml` is the operator's: limen creates it with `init`, and writes it again only to change a node declared
-  there. What `join`, `trust` and `forget` write goes to `nodes.toml`, which holds `[nodes.<name>]` tables and nothing
-  else, so `limen.toml` can come from the operator's repository and be mounted read-only. A node works the same from
-  either file; a name in both is an error that names both files. A node already in `limen.toml` —from before
-  `nodes.toml`, or written by hand— is replaced or removed there, so that file must be writable for a join, `trust` or
-  `forget` of that node; a new one always goes to `nodes.toml`.
-- `ssh.identity` is the hub's SSH key: a path relative to the hub's directory (`--home`, else `LIMEN_HOME`), or
-  absolute. `init` makes it with `ssh-keygen` when it is missing. Its public key is the same path with `.pub`: the
-  one `invite` hands out, whose fingerprint `init`, `serve` and the join line show.
-- `limen.toml` and `nodes.toml` are read again whenever either changes: a node that joins is there for the next request.
-  `[http]` and the keys of `[mqtt]` itself are read once, when `serve` starts; `[[mqtt.sensor]]` and `[[mqtt.button]]`
-  with the rest of the file. A broken `limen.toml` or `nodes.toml` makes the MCP answer errors, not stop.
-- `[http] public_url` (or `LIMEN_PUBLIC_URL`) is where nodes reach the hub to join: an address, not a name,
-  because the static binary resolves no names.
-- `http.origins` lists the web pages that may call `/mcp`, each compared whole with the request's `Origin` header:
-  scheme, host and port as a browser sends them, `http://localhost:6274`, with no path or trailing slash. Empty by
-  default: a request that carries an `Origin` gets `403`, and one without —an MCP client that isn't a browser—
-  passes. The join endpoints don't look at it.
+- The directory holds `limen.toml`, `nodes.toml`, the hub's SSH key, `token` (for HTTP clients,
+  unless `LIMEN_TOKEN` is set), `known_hosts`, which limen writes from the nodes' host keys, and
+  `invites/`.
+
+- `limen.toml` is the operator's: limen creates it with `init`, and writes it again only to change a
+  node declared there. What `join`, `trust` and `forget` write goes to `nodes.toml`, which holds
+  `[nodes.<name>]` tables and nothing else, so `limen.toml` can come from the operator's repository
+  and be mounted read-only. A node works the same from either file; a name in both is an error that
+  names both files. A node already in `limen.toml` —from before `nodes.toml`, or written by hand— is
+  replaced or removed there, so that file must be writable for a join, `trust` or `forget` of that
+  node; a new one always goes to `nodes.toml`.
+
+- `ssh.identity` is the hub's SSH key: a path relative to the hub's directory (`--home`, else
+  `LIMEN_HOME`), or absolute. `init` makes it with `ssh-keygen` when it is missing. Its public key
+  is the same path with `.pub`: the one `invite` hands out, whose fingerprint `init`, `serve` and
+  the join line show.
+
+- `limen.toml` and `nodes.toml` are read again whenever either changes: a node that joins is there
+  for the next request. `[http]` and the keys of `[mqtt]` itself are read once, when `serve` starts;
+  `[[mqtt.sensor]]` and `[[mqtt.button]]` with the rest of the file. A broken `limen.toml` or
+  `nodes.toml` makes the MCP answer errors, not stop.
+
+- `[http] public_url` (or `LIMEN_PUBLIC_URL`) is where nodes reach the hub to join: an address, not
+  a name, because the static binary resolves no names.
+
+- `http.origins` lists the web pages that may call `/mcp`, each compared whole with the request's
+  `Origin` header: scheme, host and port as a browser sends them, `http://localhost:6274`, with no
+  path or trailing slash. Empty by default: a request that carries an `Origin` gets `403`, and one
+  without —an MCP client that isn't a browser— passes. The join endpoints don't look at it.
+
 - `host_key` is required: limen writes its own `known_hosts`, filing each key under `limen-<name>`
   (`HostKeyAlias`), and runs `ssh` with `StrictHostKeyChecking=yes`. There is no trust on first use:
   `limen install` prints the node's key, or get it with `ssh-keyscan` and verify it out of band. A
   node that changes address keeps its key.
+
 - `user` defaults to `limen` (`root` on OpenWrt, which the join fills in) and `port` to 22.
-- `ssh.connect_timeout` is how long ssh may take to connect to a node: ssh's `ConnectTimeout`, in whole seconds
-  rounded up. `ssh.request_timeout` is how long the hub waits for the answer to a request that isn't a script's run
-  —`hello`, `read_file`, `list_dir`, `history`—; a script's run waits for the script's own timeout and 45 seconds
-  instead. Past two minutes `request_timeout` changes nothing: the node ends such a request then (§7.1). Both are
-  durations above zero: `500ms`, `5s`, `1m`.
-- `ssh.per_node_concurrency`, 1 to 64, is how many requests the hub sends one node at once; the rest wait on the
-  hub for their turn. The node's own `limits.concurrency` (§7.1) counts the requests of every hub together and
-  answers `unavailable` past it instead of waiting: keep the hub's at or below it.
-- `approval.scripts` is what a person approves before it runs (§5): `"none"`, the default; `"changes"`, every
-  script whose tool isn't read-only; or a list of script names. `approval.except`, only with `"changes"`, lists
-  scripts that change things and still run without asking. `approval.timeout`, `10s` to `1h` and `5m` unless
-  given, is how long a call waits for the answer. Read again with the rest of the file.
-- `http.listen` is where `serve` listens, as `host:port`. `--listen` wins over `LIMEN_LISTEN`, and that over the
-  file; each is checked the same way. The image's command is `serve --listen 0.0.0.0:7341`, so in the image the
-  address changes by overriding the command: `LIMEN_LISTEN` and the file don't reach it.
-- `[mqtt]` is off unless `enabled = true`: without it `serve` opens no connection and starts no thread, and
-  `limen mcp` never reads it. `url` is `mqtt://<address>[:<port>]`, 1883 unless given: an address, not a name, and no
-  TLS (§9.1). `user` is optional; its password is `LIMEN_MQTT_PASSWORD`, else the file `password_file` names (relative
-  to the hub's directory, or absolute), never a key of `limen.toml`. `prefix`, `limen` unless given, and
-  `discovery`, Home Assistant's discovery prefix, `homeassistant` unless given and `""` for plain topics only, match
-  `^[a-z0-9][a-z0-9_]{0,31}$` and `^[a-z0-9][a-z0-9_-]{0,31}$`: a prefix without `-`, so `<prefix>-<node>-<id>`
-  reads one way only. Two hubs on one broker need two prefixes. A password needs a `user`, and is at most 65535
-  bytes. Taking `[mqtt]` out, or `enabled = false`, takes effect when `serve` starts again, as its other keys do;
-  until then the sensors and buttons stay as they were.
-- `[[mqtt.sensor]]` and `[[mqtt.button]]` name a `node` of `[nodes]`, an `id` matching `^[a-z0-9][a-z0-9_]{0,31}$`
-  and unique within its node among both, a `script` and its `args`, fixed and validated against the script's header
-  in the node's catalog. A sensor adds `every`, `10s` to `24h` and `60s` unless given, and both take `discovery`, a
-  table of strings, numbers and booleans merged into the discovery payload (§9.1), so it can't change a topic limen
-  writes. A sensor's: `name`, `icon`, `entity_picture`, `device_class`, `state_class`, `unit_of_measurement`,
-  `suggested_display_precision`, `value_template`, `entity_category`, `enabled_by_default`, `expire_after` and
-  `force_update`. A button's: `name`, `icon`, `entity_picture`, `device_class`, `entity_category` and
-  `enabled_by_default`, since Home Assistant drops a button's whole payload with any other. These are checked as
-  the file is read, like any other key; whether a node offers the script and its
-  arguments, as the hub runs (§9.1). The node may be missing from `[nodes]`: `limen forget` doesn't break the file.
+
+- `ssh.connect_timeout` is how long ssh may take to connect to a node: ssh's `ConnectTimeout`, in
+  whole seconds rounded up. `ssh.request_timeout` is how long the hub waits for the answer to a
+  request that isn't a script's run —`hello`, `read_file`, `list_dir`, `history`—; a script's run
+  waits for the script's own timeout and 45 seconds instead. Past two minutes `request_timeout`
+  changes nothing: the node ends such a request then (§7.1). Both are durations above zero: `500ms`,
+  `5s`, `1m`.
+
+- `ssh.per_node_concurrency`, 1 to 64, is how many requests the hub sends one node at once; the rest
+  wait on the hub for their turn. The node's own `limits.concurrency` (§7.1) counts the requests of
+  every hub together and answers `unavailable` past it instead of waiting: keep the hub's at or
+  below it.
+
+- `approval.scripts` is what a person approves before it runs (§5): `"none"`, the default;
+  `"changes"`, every script whose tool isn't read-only; or a list of script names.
+  `approval.except`, only with `"changes"`, lists scripts that change things and still run without
+  asking. `approval.timeout`, `10s` to `1h` and `5m` unless given, is how long a call waits for the
+  answer. Read again with the rest of the file.
+
+- `http.listen` is where `serve` listens, as `host:port`. `--listen` wins over `LIMEN_LISTEN`, and
+  that over the file; each is checked the same way. The image's command is
+  `serve --listen 0.0.0.0:7341`, so in the image the address changes by overriding the command:
+  `LIMEN_LISTEN` and the file don't reach it.
+
+- `[mqtt]` is off unless `enabled = true`: without it `serve` opens no connection and starts no
+  thread, and `limen mcp` never reads it. `url` is `mqtt://<address>[:<port>]`, 1883 unless given:
+  an address, not a name, and no TLS (§9.1). `user` is optional; its password is
+  `LIMEN_MQTT_PASSWORD`, else the file `password_file` names (relative to the hub's directory, or
+  absolute), never a key of `limen.toml`. `prefix`, `limen` unless given, and `discovery`, Home
+  Assistant's discovery prefix, `homeassistant` unless given and `""` for plain topics only, match
+  `^[a-z0-9][a-z0-9_]{0,31}$` and `^[a-z0-9][a-z0-9_-]{0,31}$`: a prefix without `-`, so
+  `<prefix>-<node>-<id>` reads one way only. Two hubs on one broker need two prefixes. A password
+  needs a `user`, and is at most 65535 bytes. Taking `[mqtt]` out, or `enabled = false`, takes
+  effect when `serve` starts again, as its other keys do; until then the sensors and buttons stay as
+  they were.
+
+- `[[mqtt.sensor]]` and `[[mqtt.button]]` name a `node` of `[nodes]`, an `id` matching
+  `^[a-z0-9][a-z0-9_]{0,31}$` and unique within its node among both, a `script` and its `args`,
+  fixed and validated against the script's header in the node's catalog. A sensor adds `every`,
+  `10s` to `24h` and `60s` unless given, and both take `discovery`, a table of strings, numbers and
+  booleans merged into the discovery payload (§9.1), so it can't change a topic limen writes. A
+  sensor's: `name`, `icon`, `entity_picture`, `device_class`, `state_class`, `unit_of_measurement`,
+  `suggested_display_precision`, `value_template`, `entity_category`, `enabled_by_default`,
+  `expire_after` and `force_update`. A button's: `name`, `icon`, `entity_picture`, `device_class`,
+  `entity_category` and `enabled_by_default`, since Home Assistant drops a button's whole payload
+  with any other. These are checked as the file is read, like any other key; whether a node offers
+  the script and its arguments, as the hub runs (§9.1). The node may be missing from `[nodes]`:
+  `limen forget` doesn't break the file.
+
 - What the hub reads from its environment, where a blank value counts as unset:
 
   | Variable | |
@@ -434,62 +483,72 @@ host_key = "ssh-ed25519 AAAA…"
 
 - Every request `gate` receives, unless `audit.read_only` leaves it out (below), is appended to
   `/var/log/limen/audit.jsonl` (root, `0600`): time, request, script and arguments, client address
-  (`SSH_CONNECTION`), result code, the script's exit code and duration.
-  That includes malformed ones, those of an unknown version, and those that come while the configuration is
-  broken (to the default path then). Arguments over 4 KiB are replaced by their size. Past `audit.max_bytes`
-  it becomes `audit.jsonl.1`: no logrotate, which OpenWrt doesn't have.
-- A script's run is written when it starts too, with `started` as its result: it may change the machine, and a run
-  killed halfway still leaves a trace.
-- `audit.read_only = "none"` leaves out what a hub's sensors poll when it succeeds: `hello`, and a sensor's read, a
-  `run` with `read_only: true` (§4) that exits 0 with its whole answer. `"all"`, the default, writes every one.
-  Polling a sensor every minute (§9.1) would otherwise rotate an agent's calls out of the log within hours, and write
-  a disk every minute. The node checks the read is one: a script whose header doesn't say `read_only` is refused, and
-  written. What an agent read or ran —`read_file`, `list_dir`, `history`, any script it called, read-only or not— is
-  always written, since that is what the log is for, and so is whatever is refused, fails or is cut.
-- `history` shows it redacted, like everything that leaves the node. Arguments are recorded: a script
-  doesn't take secrets as arguments.
+  (`SSH_CONNECTION`), result code, the script's exit code and duration. That includes malformed
+  ones, those of an unknown version, and those that come while the configuration is broken (to the
+  default path then). Arguments over 4 KiB are replaced by their size. Past `audit.max_bytes` it
+  becomes `audit.jsonl.1`: no logrotate, which OpenWrt doesn't have.
+- A script's run is written when it starts too, with `started` as its result: it may change the
+  machine, and a run killed halfway still leaves a trace.
+- `audit.read_only = "none"` leaves out what a hub's sensors poll when it succeeds: `hello`, and a
+  sensor's read, a `run` with `read_only: true` (§4) that exits 0 with its whole answer. `"all"`,
+  the default, writes every one. Polling a sensor every minute (§9.1) would otherwise rotate an
+  agent's calls out of the log within hours, and write a disk every minute. The node checks the read
+  is one: a script whose header doesn't say `read_only` is refused, and written. What an agent read
+  or ran —`read_file`, `list_dir`, `history`, any script it called, read-only or not— is always
+  written, since that is what the log is for, and so is whatever is refused, fails or is cut.
+- `history` shows it redacted, like everything that leaves the node. Arguments are recorded: a
+  script doesn't take secrets as arguments.
 - The hub logs each tool call to stderr (node, tool, result, duration): over stdio, stdout is the
-  protocol; in the image, stderr is the container's log. A button's press is logged as a tool call; a sensor when
-  its reads start failing, and a node or the broker connection when it goes down or comes back.
+  protocol; in the image, stderr is the container's log. A button's press is logged as a tool call;
+  a sensor when its reads start failing, and a node or the broker connection when it goes down or
+  comes back.
 
 ## 9. Transports
 
 - **stdio** — `limen mcp`: newline-delimited JSON-RPC 2.0, one client. For a hub that is the
-  operator's own machine. Each `tools/call` runs in a thread of its own, so a call waiting for a person's approval
-  holds up no other; the client's answers to the hub's questions come back on stdin, matched by their id.
-- **HTTP** — `limen serve`: MCP Streamable HTTP. `POST /mcp` answers each call with JSON, but a `tools/call` with a
-  `progressToken` from a client whose `Accept` takes `text/event-stream`: that one is answered with an event stream of
-  its own, its progress (§5) and then its result, which ends with the call. `GET /mcp` opens a stream
-  of server-sent events that carries the hub's notifications and nothing else. No sessions: a notification goes to
-  every stream open. The hub can't ask the client anything there, so a script that needs approval (§5) is not run.
-  - At most 8 `GET` streams at once, each holding one of the 64 connections for as long as it lasts; one more gets
-    `503`. A stream with nothing to say sends a comment every 30 seconds, so the stream of a client that is gone
-    ends at the first one that can't be written. The token and `Origin` are checked as for `POST`.
-  - Requires a bearer token, compared in constant time. `serve` creates one on its first start, or takes
-    `LIMEN_TOKEN`, which must have 16 characters or more.
-  - Its own small HTTP/1.1 server, one request per connection: at most 64 connections, 16 KiB of head
-    and 15 seconds for the whole request. The token and `Origin` are checked before the body is read, and a body
-    is read only with its `Content-Length`, up to 1 MiB (16 KiB for a join): `Transfer-Encoding` gets `411`.
-  - A connection above the limit gets a best-effort `503` without blocking the accept loop. After a response,
-    discarding unread input is bounded by 64 KiB and a total of 500 ms, even when bytes keep arriving.
+  operator's own machine. Each `tools/call` runs in a thread of its own, so a call waiting for a
+  person's approval holds up no other; the client's answers to the hub's questions come back on
+  stdin, matched by their id.
+- **HTTP** — `limen serve`: MCP Streamable HTTP. `POST /mcp` answers each call with JSON, but a
+  `tools/call` with a `progressToken` from a client whose `Accept` takes `text/event-stream`: that
+  one is answered with an event stream of its own, its progress (§5) and then its result, which ends
+  with the call. `GET /mcp` opens a stream of server-sent events that carries the hub's
+  notifications and nothing else. No sessions: a notification goes to every stream open. The hub
+  can't ask the client anything there, so a script that needs approval (§5) is not run.
+  - At most 8 `GET` streams at once, each holding one of the 64 connections for as long as it lasts;
+    one more gets `503`. A stream with nothing to say sends a comment every 30 seconds, so the
+    stream of a client that is gone ends at the first one that can't be written. The token and
+    `Origin` are checked as for `POST`.
+  - Requires a bearer token, compared in constant time. `serve` creates one on its first start, or
+    takes `LIMEN_TOKEN`, which must have 16 characters or more.
+  - Its own small HTTP/1.1 server, one request per connection: at most 64 connections, 16 KiB of
+    head and 15 seconds for the whole request. The token and `Origin` are checked before the body is
+    read, and a body is read only with its `Content-Length`, up to 1 MiB (16 KiB for a join):
+    `Transfer-Encoding` gets `411`.
+  - A connection above the limit gets a best-effort `503` without blocking the accept loop. After a
+    response, discarding unread input is bounded by 64 KiB and a total of 500 ms, even when bytes
+    keep arriving.
   - Validates `Origin` against `http.origins` (§7.2), against DNS rebinding.
   - Listens on `127.0.0.1:7341` unless told otherwise (§7.2). The image listens on every interface;
     whoever publishes the port decides who gets in.
-- `GET /join/<code>` and `POST /join/<code>` (§10.1) need no token: the one-time code is the authorisation.
-- Catalogs are fetched when the set of nodes changes, when a session starts (`initialize`) or `nodes` is called, at
-  most once every ten seconds, and every minute while a client listens: for as long as `limen mcp` runs, and while
-  an event stream is open on `serve`. A change is announced with `notifications/tools/list_changed` over stdio and
-  on every event stream: a sync that installs packs reaches a running session within a minute. A client over HTTP
-  without a stream sees it in its next session.
+- `GET /join/<code>` and `POST /join/<code>` (§10.1) need no token: the one-time code is the
+  authorisation.
+- Catalogs are fetched when the set of nodes changes, when a session starts (`initialize`) or
+  `nodes` is called, at most once every ten seconds, and every minute while a client listens: for as
+  long as `limen mcp` runs, and while an event stream is open on `serve`. A change is announced with
+  `notifications/tools/list_changed` over stdio and on every event stream: a sync that installs
+  packs reaches a running session within a minute. A client over HTTP without a stream sees it in
+  its next session.
 
 ### 9.1 MQTT
 
-`limen serve` with `[mqtt]` enabled (§7.2) publishes scripts' output as sensors and runs scripts as buttons, through
-an MQTT broker and Home Assistant's discovery: Home Assistant shows them with nothing to install. Nodes don't change:
-the hub runs their scripts over SSH as it does for an MCP client, so every limit stays on the node, and the broker is
-one more untrusted client of the hub. A node offering a script never makes it reachable over MQTT: each sensor and
-button is declared in the hub's `limen.toml`. Only `serve`: a hub that lives as long as its MCP client
-(`limen mcp`) would turn every entity unavailable whenever the laptop closes.
+`limen serve` with `[mqtt]` enabled (§7.2) publishes scripts' output as sensors and runs scripts as
+buttons, through an MQTT broker and Home Assistant's discovery: Home Assistant shows them with
+nothing to install. Nodes don't change: the hub runs their scripts over SSH as it does for an MCP
+client, so every limit stays on the node, and the broker is one more untrusted client of the hub. A
+node offering a script never makes it reachable over MQTT: each sensor and button is declared in the
+hub's `limen.toml`. Only `serve`: a hub that lives as long as its MCP client (`limen mcp`) would
+turn every entity unavailable whenever the laptop closes.
 
 | Topic | Retained | What |
 |---|---|---|
@@ -501,53 +560,59 @@ button is declared in the hub's `limen.toml`. Only `serve`: a hub that lives as 
 | `<prefix>/<node>/<id>/result` | yes | A button's last run: the node's answer, as the hub got it (§4) |
 | `<discovery>/sensor/<prefix>/<node>-<id>/config`, `<discovery>/button/…` | yes | Home Assistant's discovery payload |
 
-- **Sensors** run only scripts whose header says `read_only = true` on their node, and never one `[approval]` would
-  ask about. Every `every` the hub runs the script and, when it exits 0 and its stdout —redacted and bounded by the
-  node— trimmed differs from the last state published, publishes it. A run that fails, exits otherwise, is cut by
-  the node or prints
-  more than 16 KiB publishes nothing and is logged. limen parses nothing it runs: a field out of JSON is Home
-  Assistant's `value_template`, in `discovery`; rounding, so a number doesn't change on every read, is the script's
-  ([scripts.md](scripts.md#for-home-assistant)).
-- **Buttons** run their script, with their fixed arguments, once per message on their command topic: a message
-  presses the button, it chooses nothing. The hub subscribes only to its own prefix. An empty message presses
-  nothing, and neither does a press while the button's last run hasn't finished. After each press the hub empties
-  the command topic, and a message the broker hands over as retained is ignored: a press published retained runs
-  once, not again on every connection. Never a script `[approval]` would ask about: over MQTT there is nobody to
-  ask. Its result is retained, and over 16 KiB loses its `stdout` and `stderr` and says `truncated`; Home Assistant
-  shows it as a sensor of the button's own, under the same `<node>-<id>`, whose state is the exit code, or the
+- **Sensors** run only scripts whose header says `read_only = true` on their node, and never one
+  `[approval]` would ask about. Every `every` the hub runs the script and, when it exits 0 and its
+  stdout —redacted and bounded by the node— trimmed differs from the last state published, publishes
+  it. A run that fails, exits otherwise, is cut by the node or prints more than 16 KiB publishes
+  nothing and is logged. limen parses nothing it runs: a field out of JSON is Home Assistant's
+  `value_template`, in `discovery`; rounding, so a number doesn't change on every read, is the
+  script's ([scripts.md](scripts.md#for-home-assistant)).
+- **Buttons** run their script, with their fixed arguments, once per message on their command topic:
+  a message presses the button, it chooses nothing. The hub subscribes only to its own prefix. An
+  empty message presses nothing, and neither does a press while the button's last run hasn't
+  finished. After each press the hub empties the command topic, and a message the broker hands over
+  as retained is ignored: a press published retained runs once, not again on every connection. Never
+  a script `[approval]` would ask about: over MQTT there is nobody to ask. Its result is retained,
+  and over 16 KiB loses its `stdout` and `stderr` and says `truncated`; Home Assistant shows it as a
+  sensor of the button's own, under the same `<node>-<id>`, whose state is the exit code, or the
   error's code, and whose attributes are the rest.
-- **Refused.** A sensor or button whose node isn't in `[nodes]`, doesn't offer its script, or offers one these rules
-  or its arguments' header refuse, is refused, named in `nodes` and logged, while the others go on. That is decided on
-  each node's catalog, asked with `hello` of every node in `[nodes]` with a sensor or a button, refused or not, when
-  its first one starts and every minute after; a sensor's read is checked by the node itself (§4). Refused by its
-  node, an entity turns unavailable and nothing more of it is published, but what the broker retains of it stays:
-  Home Assistant keeps its name, area and dashboards for when the node offers it again. Taken out of `limen.toml`, or
-  its node out of `[nodes]`, it is emptied. Until its node first answers, an entity is neither refused nor
-  published. What the file can say alone —an `id`, an `every`, a key `discovery` may not set— is checked as
-  `limen.toml` is read (§7.2).
-- **Sharing a node with the agent.** All the sensors of a node take one of its `ssh.per_node_concurrency` slots, one
-  read at a time, so polling never makes an agent's call wait for more than one read; a sensor whose last read is
-  still waiting or running skips its turn. A button's run takes a slot as a tool call does.
-- **Discovery.** One Home Assistant device per node, `<prefix>-<node>`, named after the node; `unique_id` is
-  `<prefix>-<node>-<id>` and `name` the `id`, unless `discovery` names it. An entity is available when the hub's,
-  its node's and its own status are `online` (`availability_mode: all`). `<node>-<id>` is unambiguous because an `id`
-  has no `-`. With
+- **Refused.** A sensor or button whose node isn't in `[nodes]`, doesn't offer its script, or offers
+  one these rules or its arguments' header refuse, is refused, named in `nodes` and logged, while
+  the others go on. That is decided on each node's catalog, asked with `hello` of every node in
+  `[nodes]` with a sensor or a button, refused or not, when its first one starts and every minute
+  after; a sensor's read is checked by the node itself (§4). Refused by its node, an entity turns
+  unavailable and nothing more of it is published, but what the broker retains of it stays: Home
+  Assistant keeps its name, area and dashboards for when the node offers it again. Taken out of
+  `limen.toml`, or its node out of `[nodes]`, it is emptied. Until its node first answers, an entity
+  is neither refused nor published. What the file can say alone —an `id`, an `every`, a key
+  `discovery` may not set— is checked as `limen.toml` is read (§7.2).
+- **Sharing a node with the agent.** All the sensors of a node take one of its
+  `ssh.per_node_concurrency` slots, one read at a time, so polling never makes an agent's call wait
+  for more than one read; a sensor whose last read is still waiting or running skips its turn. A
+  button's run takes a slot as a tool call does.
+- **Discovery.** One Home Assistant device per node, `<prefix>-<node>`, named after the node;
+  `unique_id` is `<prefix>-<node>-<id>` and `name` the `id`, unless `discovery` names it. An entity
+  is available when the hub's, its node's and its own status are `online`
+  (`availability_mode: all`). `<node>-<id>` is unambiguous because an `id` has no `-`. With
   `discovery = ""` nothing goes under a discovery prefix; the other topics stay.
-- **Every connection resends everything**: statuses, discovery and the last states, retained, QoS 0. The hub
-  subscribes to `<prefix>/#` and `<discovery>/+/<prefix>/+/config`, so the broker hands it the retained messages it
-  left before, and it empties every one it no longer declares. It subscribes again whenever what it declares changes,
-  and the broker hands them over again: a sensor removed from `limen.toml`, while the hub runs or while it was
-  stopped, leaves Home Assistant. Every message goes out through one queue, in the order the hub's state changed, so
-  an older state never lands after a newer one; a broker that doesn't take them loses the connection, and gets
-  everything again on the next. The broker's refusal of a subscription is logged: through it, no press arrives and
-  nothing stale is emptied.
-- **Its own MQTT 3.1.1 client**, as limen has for MCP and HTTP: CONNECT with a will and a 60-second keep-alive,
-  PUBLISH and SUBSCRIBE at QoS 0, PINGREQ, over `std::net`, with reconnection and a backoff up to a minute. The client
-  id is `limen-<prefix>`. A packet from the broker over 64 KiB is read past and never kept; retained, it is
-  emptied and everything told again, so nobody can leave one that ends every connection. No TLS: the broker is on the
-  LAN or a VPN, and its password crosses it in clear.
-- **What the broker's clients send for nothing** —a press of no button, of one still running, a message too large— is
-  logged at most once a minute, with how much more came: they can send it all day.
+- **Every connection resends everything**: statuses, discovery and the last states, retained, QoS 0.
+  The hub subscribes to `<prefix>/#` and `<discovery>/+/<prefix>/+/config`, so the broker hands it
+  the retained messages it left before, and it empties every one it no longer declares. It
+  subscribes again whenever what it declares changes, and the broker hands them over again: a sensor
+  removed from `limen.toml`, while the hub runs or while it was stopped, leaves Home Assistant.
+  Every message goes out through one queue, in the order the hub's state changed, so an older state
+  never lands after a newer one; a broker that doesn't take them loses the connection, and gets
+  everything again on the next. The broker's refusal of a subscription is logged: through it, no
+  press arrives and nothing stale is emptied.
+- **Its own MQTT 3.1.1 client**, as limen has for MCP and HTTP: CONNECT with a will and a 60-second
+  keep-alive, PUBLISH and SUBSCRIBE at QoS 0, PINGREQ, over `std::net`, with reconnection and a
+  backoff up to a minute. The client id is `limen-<prefix>`. A packet from the broker over 64 KiB is
+  read past and never kept; retained, it is emptied and everything told again, so nobody can leave
+  one that ends every connection. No TLS: the broker is on the LAN or a VPN, and its password
+  crosses it in clear.
+- **What the broker's clients send for nothing** —a press of no button, of one still running, a
+  message too large— is logged at most once a minute, with how much more came: they can send it all
+  day.
 
 ## 10. CLI
 
@@ -569,32 +634,37 @@ button is declared in the hub's `limen.toml`. Only `serve`: a hub that lives as 
 | `limen lint [--config <file>]` | node | Packs, script names, headers and permissions, without running anything |
 | `limen version` | both | The version |
 
-`--home` is the hub's directory: `LIMEN_HOME` without it, `~/.limen` without either (§7.2). `--config` is the
-node's configuration, `/etc/limen/limen.toml` unless given.
+`--home` is the hub's directory: `LIMEN_HOME` without it, `~/.limen` without either (§7.2).
+`--config` is the node's configuration, `/etc/limen/limen.toml` unless given.
 
-The `limen` user needs no user manager. Without the mask, `pam_systemd` starts one for every login of the hub, and
-with it whatever the machine starts for each user: on a machine with a desktop, sound servers, which fail and fill the
-journal. logind takes a masked `user@<uid>.service` as none. `uninstall` unmasks it before removing the user, so the
-uid is left as it was for whoever gets it next.
+The `limen` user needs no user manager. Without the mask, `pam_systemd` starts one for every login
+of the hub, and with it whatever the machine starts for each user: on a machine with a desktop,
+sound servers, which fail and fill the journal. logind takes a masked `user@<uid>.service` as none.
+`uninstall` unmasks it before removing the user, so the uid is left as it was for whoever gets it
+next.
 
-`install` refuses a hub key that already opens root's `authorized_keys`, or dropbear's, without limen's forced
-command, and reads `sshd -T` to warn when `AllowUsers` or `AllowGroups` would keep the `limen` user out.
+`install` refuses a hub key that already opens root's `authorized_keys`, or dropbear's, without
+limen's forced command, and reads `sshd -T` to warn when `AllowUsers` or `AllowGroups` would keep
+the `limen` user out.
 
-`install.sh`, at the root of the repository, is the way in (`curl … | sudo sh`, or `wget` on OpenWrt). POSIX
-`sh`, because OpenWrt has only busybox's `ash`. It downloads the binary of the latest release for `uname -m` and
-checks it against `SHA256SUMS`, then:
+`install.sh`, at the root of the repository, is the way in (`curl … | sudo sh`, or `wget` on
+OpenWrt). POSIX `sh`, because OpenWrt has only busybox's `ash`. It downloads the binary of the
+latest release for `uname -m` and checks it against `SHA256SUMS`, then:
 
-- no argument: on a terminal, it asks for the join line or the hub's key. With neither, or unattended
-  (`LIMEN_YES=1`, or no terminal), `limen install`, for a machine whose packs and configuration come before the hub.
+- no argument: on a terminal, it asks for the join line or the hub's key. With neither, or
+  unattended (`LIMEN_YES=1`, or no terminal), `limen install`, for a machine whose packs and
+  configuration come before the hub.
 - `--join <line>`: `limen join` with that line.
-- `--hub-key <key> --name <name>`: the same, for a hub with no HTTP; it ends with the `limen trust` line.
-- With either, `limen join` gets `--from <addresses>`, where the hub's key may connect from (not OpenWrt);
-  `--address <address>`, where the hub reaches the machine, sent to the hub with a join line and printed in the
-  `limen trust` line with a key; and `--ssh-port <port>`, when it isn't 22.
-- `--hub`: the binary in `~/.local/bin` (or `/usr/local/bin` as root) and `limen init`, for a laptop hub.
+- `--hub-key <key> --name <name>`: the same, for a hub with no HTTP; it ends with the `limen trust`
+  line.
+- With either, `limen join` gets `--from <addresses>`, where the hub's key may connect from (not
+  OpenWrt); `--address <address>`, where the hub reaches the machine, sent to the hub with a join
+  line and printed in the `limen trust` line with a key; and `--ssh-port <port>`, when it isn't 22.
+- `--hub`: the binary in `~/.local/bin` (or `/usr/local/bin` as root) and `limen init`, for a laptop
+  hub.
 
-Every answer can come from a `LIMEN_*` variable instead, for unattended installs; the list is at the top of
-`install.sh`.
+Every answer can come from a `LIMEN_*` variable instead, for unattended installs; the list is at the
+top of `install.sh`.
 
 ### 10.1 Joining a node
 
@@ -606,65 +676,75 @@ node:  GET  /join/<code>  →  {"name": "nas", "hub_key": "ssh-ed25519 …", "pr
 hub:   [nodes.nas] with the request's source address, then `hello`  →  {"reachable": true, "detail": "…"}
 ```
 
-- The code is 26 characters of base32 (130 bits), kept in `invites/<code>.json` with the node's name and a secret
-  of the same size; it lasts one hour by default and one successful `POST`.
-- The secret travels only in the line's fragment, never on the wire: the node signs its arrival with it
-  (HMAC-SHA256 over host key, user, port and address). Whoever sees the code in transit can't arrive in the node's
-  place or change what it sends; a forged arrival is refused without spending the invitation. Joins are handled
-  one at a time.
-- The invitation is signed with the same secret (HMAC-SHA256 over name and key), so nobody between the two can
-  change what the node is told either.
-- The fingerprint in the line is `SHA256:<base64>` of the key, as `ssh-keygen -lf` prints it. The key itself is not
-  secret; what matters is that it arrives unchanged, and a mismatch stops the node before anything is installed.
-- The hub trusts the host key that arrives with a valid code: trust on first use, bound to an invitation a person
-  gave out.
-- The node's address is where the `POST` comes from, unless it sends `--address`. The hub edits only that node's
-  table in `nodes.toml` (§7.2), edited as TOML and not as text, and parses the result with `limen.toml` before
-  writing it.
+- The code is 26 characters of base32 (130 bits), kept in `invites/<code>.json` with the node's name
+  and a secret of the same size; it lasts one hour by default and one successful `POST`.
+- The secret travels only in the line's fragment, never on the wire: the node signs its arrival with
+  it (HMAC-SHA256 over host key, user, port and address). Whoever sees the code in transit can't
+  arrive in the node's place or change what it sends; a forged arrival is refused without spending
+  the invitation. Joins are handled one at a time.
+- The invitation is signed with the same secret (HMAC-SHA256 over name and key), so nobody between
+  the two can change what the node is told either.
+- The fingerprint in the line is `SHA256:<base64>` of the key, as `ssh-keygen -lf` prints it. The
+  key itself is not secret; what matters is that it arrives unchanged, and a mismatch stops the node
+  before anything is installed.
+- The hub trusts the host key that arrives with a valid code: trust on first use, bound to an
+  invitation a person gave out.
+- The node's address is where the `POST` comes from, unless it sends `--address`. The hub edits only
+  that node's table in `nodes.toml` (§7.2), edited as TOML and not as text, and parses the result
+  with `limen.toml` before writing it.
 - The node writes nothing the hub sends into its configuration: the join adds the hub's key to
   `authorized_keys`, and `limen.toml` stays the operator's.
-- `limen join` talks HTTP to an address, never a name, so a join line means the same wherever it is pasted.
+- `limen join` talks HTTP to an address, never a name, so a join line means the same wherever it is
+  pasted.
 - Without an HTTP hub, `invite` prints the hub's key in the line (`--hub-key`) and the node prints
   `limen trust <name> <address> '<host key>'` for the hub, with its `--address` in it when given.
 
 ## 11. Distribution and platforms
 
-- **One static binary per architecture**, `amd64` and `arm64`, for any Linux: linked against musl, it
-  needs nothing of the machine but the kernel, and runs the same on Debian, Alpine or OpenWrt.
-- Hub image `ghcr.io/xoadev/limen`, one tag for `amd64` and `arm64`: distroless —no shell, no package manager—
-  with the binary and OpenSSH's `ssh` and `ssh-keygen`, taken from Alpine with the libraries they load. It runs as
-  distroless's `nonroot` (uid 65532). Volume `/data` holds `limen.toml`, `nodes.toml` and the SSH key.
-- **Releases** follow the conventional commits: every push to `main` runs `release-draft.yml`, which rewrites a
-  draft release with the next `X.Y.Z` and its changes and builds nothing. Publishing is another workflow,
-  `release.yml`, run only by hand: once `make check` is green on the draft's commit, it builds the binaries (release
-  variant, checked static) and the image, starts the image on both architectures, attaches the binaries and
-  `SHA256SUMS` to the draft and only then publishes it, which creates the `vX.Y.Z` tag. A release is never public
-  without its files, and releases are immutable: once published, neither its files nor its tag change. The version
-  exists only from the tag: `limen --version` says
+- **One static binary per architecture**, `amd64` and `arm64`, for any Linux: linked against musl,
+  it needs nothing of the machine but the kernel, and runs the same on Debian, Alpine or OpenWrt.
+- Hub image `ghcr.io/xoadev/limen`, one tag for `amd64` and `arm64`: distroless —no shell, no
+  package manager— with the binary and OpenSSH's `ssh` and `ssh-keygen`, taken from Alpine with the
+  libraries they load. It runs as distroless's `nonroot` (uid 65532). Volume `/data` holds
+  `limen.toml`, `nodes.toml` and the SSH key.
+- **Releases** follow the conventional commits: every push to `main` runs `release-draft.yml`, which
+  rewrites a draft release with the next `X.Y.Z` and its changes and builds nothing. Publishing is
+  another workflow, `release.yml`, run only by hand: once `make check` is green on the draft's
+  commit, `make release-files` builds the binaries (release variant, checked static) and the image,
+  runs every end-to-end scene with them and starts the image on both architectures; the binaries and
+  `SHA256SUMS` go on the draft, and only then is it published, which creates the `vX.Y.Z` tag. Both
+  workflows are xoa-base's, called with what is limen's (`paths`, the build target). A release is
+  never public without its files, and releases are immutable: once published, neither its files nor
+  its tag change. The version exists only from the tag: `limen --version` says
   `limen X.Y.Z · build <run> · <date>`, or `limen dev` for a local build.
-- **Each pack under `packs/` is released on its own**, apart from limen and from the other packs: its tag is
-  `pack-<pack>-vX.Y.Z`, and its version comes from the conventional commits that touched `packs/<pack>/`. A push
-  that touches `packs/` runs `packs-draft.yml`, which rewrites the draft of each pack that changed; run by hand, it
-  rewrites every pack's draft. `packs.yml`, run by hand with the pack's name, publishes its draft with
-  `limen-pack-<pack>-<version>.tar.gz` —reproducible from the commit, owned by root, writable only by its owner— and
-  `SHA256SUMS`. It is never the latest release: that one is limen's, which
-  `install.sh` and the `limen` pack ask GitHub for. limen does not fetch it (§14): the operator unpacks it where
-  `scripts.packs` lists it, pinning the tarball's hash, not only its tag ([docs/scripts.md](scripts.md#released-packs)).
-- No job that runs someone else's code —convco, the compiler and the crates' build scripts, QEMU, BuildKit— holds
-  a token that writes, nor keeps credentials on disk, and the release builds without caches. The jobs that write
-  run only `gh`, `skopeo` and GitHub's `attest` on what the others handed over; QEMU's and BuildKit's images are
-  pinned by digest, the linters by checksum. Each pair of workflows shares one concurrency group, `release` or
-  `packs`, and never cancels a run: a push while a release is being built can't move the draft under it.
+- **Each pack under `packs/` is released on its own**, apart from limen and from the other packs:
+  its tag is `pack-<pack>-vX.Y.Z`, and its version comes from the conventional commits that touched
+  `packs/<pack>/`. A push that touches `packs/` runs `packs-draft.yml`, which rewrites the draft of
+  each pack that changed; run by hand, it rewrites every pack's draft. `packs.yml`, run by hand with
+  the pack's name, publishes its draft with `limen-pack-<pack>-<version>.tar.gz` —reproducible from
+  the commit, owned by root, writable only by its owner— and `SHA256SUMS`. It is never the latest
+  release: that one is limen's, which `install.sh` and the `limen` pack ask GitHub for. limen does
+  not fetch it (§14): the operator unpacks it where `scripts.packs` lists it, pinning the tarball's
+  hash, not only its tag ([docs/scripts.md](scripts.md#released-packs)).
+- No job that runs someone else's code —convco, the compiler and the crates' build scripts, QEMU,
+  BuildKit— holds a token that writes, nor keeps credentials on disk, and the release builds without
+  caches. The jobs that write run only `gh`, `skopeo` and GitHub's `attest` on what the others
+  handed over; QEMU's and BuildKit's images are pinned by digest. A draft and its publication share
+  one concurrency group per tag prefix, which never cancels a run, and the publication checks the
+  draft is still at the commit it built: a push while a release is being built can't move the draft
+  under it.
 - Every binary and the image carry a build provenance attestation, signed keyless through Sigstore:
-  `gh attestation verify limen-<version>-linux-x86_64 --repo xoadev/limen` (or `oci://ghcr.io/xoadev/limen:<version>`)
-  says they were built by this repository's `release.yml` (each pack's tarball, by `packs.yml`), from which commit
-  and tag; the attestation names the workflow's file. `install.sh` can't check it —nodes have no `gh`— and checks
-  `SHA256SUMS`.
+  `gh attestation verify limen-<version>-linux-x86_64 --repo xoadev/limen` (or
+  `oci://ghcr.io/xoadev/limen:<version>`) says they were built for this repository by its
+  `release.yml` (each pack's tarball, by `packs.yml`), from which commit and tag; the attestation
+  names the workflow that signed it, xoa-base's `release.yml` at the commit limen calls.
+  `install.sh` can't check it —nodes have no `gh`— and checks `SHA256SUMS`.
 - `install.sh` downloads only over https, with a client that checks certificates (curl, OpenWrt's
   `uclient-fetch`, GNU wget; never busybox's wget), and runs only once it has been read whole.
-- Nodes: Debian, Ubuntu and OpenWrt with dropbear; `make e2e` runs Debian and OpenWrt. Another Linux whose
-  `install` finds OpenSSH's `sshd`, `sudo` reading `/etc/sudoers.d`, and `useradd`/`usermod` should work the same
-  way, untested. What else a node needs —systemd, Docker, git— is its packs' business.
+- Nodes: Debian, Ubuntu and OpenWrt with dropbear; `make e2e` runs Debian and OpenWrt. Another Linux
+  whose `install` finds OpenSSH's `sshd`, `sudo` reading `/etc/sudoers.d`, and `useradd`/`usermod`
+  should work the same way, untested. What else a node needs —systemd, Docker, git— is its packs'
+  business.
 - Not supported: macOS, Windows; 32-bit ARM and MIPS (many routers), which have no release binary.
 
 ## 12. Implementation
@@ -675,21 +755,21 @@ hub:   [nodes.nas] with the request's source address, then `hello`  →  {"reach
   - `limen-core`: protocol types, request schemas, configuration, script headers, path policy,
     redaction, the join's formats, MQTT's packets and topics. Pure, tested without a machine.
   - `limen`: the binary — processes, files, SSH, MCP, HTTP and MQTT.
-- MCP: its own JSON-RPC 2.0 implementation, no SDK. HTTP: its own bounded HTTP/1.1 server for the hub (§9);
-  `join`'s two requests over `std::net`. MQTT: its own 3.1.1 client over `std::net` (§9.1). None has TLS. JSON:
-  `serde_json`. CLI: `clap`. System calls: `rustix`; no `unsafe` code.
-- Users and groups come from `/etc/passwd` and `/etc/group`, read by limen itself; nodes resolve no host
-  names.
-- Processes: `std::process::Command` with an argument array, never a shell; own process group, a clean
-  environment, stdout and stderr on separate pipes read with a cap; timeouts send `SIGTERM` to the group,
-  then `SIGKILL`.
+- MCP: its own JSON-RPC 2.0 implementation, no SDK. HTTP: its own bounded HTTP/1.1 server for the
+  hub (§9); `join`'s two requests over `std::net`. MQTT: its own 3.1.1 client over `std::net`
+  (§9.1). None has TLS. JSON: `serde_json`. CLI: `clap`. System calls: `rustix`; no `unsafe` code.
+- Users and groups come from `/etc/passwd` and `/etc/group`, read by limen itself; nodes resolve no
+  host names.
+- Processes: `std::process::Command` with an argument array, never a shell; own process group, a
+  clean environment, stdout and stderr on separate pipes read with a cap; timeouts send `SIGTERM` to
+  the group, then `SIGKILL`.
 - SSH: the system `ssh` binary with `BatchMode=yes`, `IdentitiesOnly=yes` and connection
-  multiplexing (`ControlMaster`, sockets in `$XDG_RUNTIME_DIR/limen-<uid>/<hub>`, or under `/tmp` when that path
-  would not fit a Unix socket; directories of mode `0700` that must be the user's), `-F none`, and no agent or port
-  forwarding.
-- TOML: `toml_edit`. Files are read into `#[derive(Deserialize)]` types that refuse unknown keys, so a typo
-  fails with its line; the hub's `nodes.toml`, and `limen.toml` for a node declared there, are edited as
-  documents, comments kept.
+  multiplexing (`ControlMaster`, sockets in `$XDG_RUNTIME_DIR/limen-<uid>/<hub>`, or under `/tmp`
+  when that path would not fit a Unix socket; directories of mode `0700` that must be the user's),
+  `-F none`, and no agent or port forwarding.
+- TOML: `toml_edit`. Files are read into `#[derive(Deserialize)]` types that refuse unknown keys, so
+  a typo fails with its line; the hub's `nodes.toml`, and `limen.toml` for a node declared there,
+  are edited as documents, comments kept.
 
 ## 13. Threat model
 
@@ -744,11 +824,12 @@ hub:   [nodes.nas] with the request's source address, then `hello`  →  {"reach
 
 ## 15. Open questions
 
-- Redacting the values of known secrets wherever they appear: `redact.values_from = ["/opt/stacks/*/.env"]`, the
-  literal values of those files masked in every output, whatever names them.
+- Redacting the values of known secrets wherever they appear:
+  `redact.values_from = ["/opt/stacks/*/.env"]`, the literal values of those files masked in every
+  output, whatever names them.
 - Packs per key, if one day more than the hub calls a node.
-- Authentication of the HTTP hub beyond one shared token: named tokens per client, with the nodes each
-  may see; OAuth 2.1 only if the hub is ever reachable from outside the VPN.
+- Authentication of the HTTP hub beyond one shared token: named tokens per client, with the nodes
+  each may see; OAuth 2.1 only if the hub is ever reachable from outside the VPN.
 - The `arm64` binary runs under qemu-user, children included, but has not run on hardware yet.
 - 32-bit routers: an ARMv7 build (`armv7-unknown-linux-musleabihf`) links and runs under qemu; MIPS
   needs Rust's nightly. Neither is released.

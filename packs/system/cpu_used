@@ -15,5 +15,8 @@ sleep 1
 # shellcheck disable=SC2046
 set -- $(sample)
 spent=$(($2 - total))
-[ "$spent" -gt 0 ] || { echo "no CPU time passed in a second" >&2; exit 1; }
+[ "$spent" -gt 0 ] || {
+  echo "no CPU time passed in a second" >&2
+  exit 1
+}
 echo $((100 * (spent - ($1 - idle)) / spent))

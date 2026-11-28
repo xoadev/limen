@@ -1,7 +1,8 @@
 # system
 
-What any Linux machine can answer, systemd or not: its state, its busiest processes, what it listens on, its network,
-its disks and its clock; and, one value at a time, its CPU, memory, disk, temperature and GPU for Home Assistant.
+What any Linux machine can answer, systemd or not: its state, its busiest processes, what it listens
+on, its network, its disks and its clock; and, one value at a time, its CPU, memory, disk,
+temperature and GPU for Home Assistant.
 
 Needs limen 0.1.3 or later: its headers use `read_only`, which older versions refuse.
 
@@ -24,31 +25,35 @@ Needs limen 0.1.3 or later: its headers use `read_only`, which older versions re
 | `temperature` | The hottest temperature sensor the kernel exposes, in °C, a whole number | no |
 | `gpu` | One GPU's `utilization` or `memory_used` in percent, or `temperature` in °C, a whole number; `index` picks the GPU | no |
 
-Needs `/proc`, `df`, `awk`, and `ss` or `netstat`; `dns_lookup` uses `dig`, else `nslookup`, else `getent`,
-which can only list addresses. With procps, `ps` sorts the processes; with busybox, `top` does.
+Needs `/proc`, `df`, `awk`, and `ss` or `netstat`; `dns_lookup` uses `dig`, else `nslookup`, else
+`getent`, which can only list addresses. With procps, `ps` sorts the processes; with busybox, `top`
+does.
 
-- `reach` lets the agent probe what this machine can reach, inside its network too. Leave it out of a machine where
-  that matters. A port needs `nc` with `-z`, `bash` or `curl`; OpenWrt's default image has none of them, so there it
-  only pings.
-- `disks` needs `smartctl` (smartmontools) for health; without it, it lists the disks only. It never prints serial
-  numbers.
-- `kernel_log` reads what the kernel keeps in memory, so only since boot; `journal` (systemd) keeps earlier boots.
+- `reach` lets the agent probe what this machine can reach, inside its network too. Leave it out of
+  a machine where that matters. A port needs `nc` with `-z`, `bash` or `curl`; OpenWrt's default
+  image has none of them, so there it only pings.
+- `disks` needs `smartctl` (smartmontools) for health; without it, it lists the disks only. It never
+  prints serial numbers.
+- `kernel_log` reads what the kernel keeps in memory, so only since boot; `journal` (systemd) keeps
+  earlier boots.
 - `memory` names a container only where Docker answers; elsewhere, by its cgroup.
-- `temperature` reads `/sys/class/thermal` and `/sys/class/hwmon`; a machine with neither, a VM most often, has none,
-  and the script fails instead of printing a 0.
-- `gpu` reads a SoC's GPU, a Jetson's, through the kernel (its load and the `gpu-thermal` zone), NVIDIA through
-  `nvidia-smi` and AMD's through the kernel's `amdgpu`; on any other SoC with a `gpu-thermal` zone, its temperature
-  only. A GPU that shares the system's memory —a SoC's, or NVIDIA's unified memory (Grace, GB10), for which
-  `nvidia-smi` has no total— reports the system's memory in use as its `memory_used`, as this pack's `memory_used`
-  counts it. A value that isn't one —`[N/A]` anywhere else, a number out of range, an `nvidia-smi` that fails— fails
-  the script instead of printing it, so a sensor keeps its last state. AMD's integrated GPUs report their fixed
-  carve-out, not what they use of the system's memory; Intel's say nothing a script can read without `intel_gpu_top`.
+- `temperature` reads `/sys/class/thermal` and `/sys/class/hwmon`; a machine with neither, a VM most
+  often, has none, and the script fails instead of printing a 0.
+- `gpu` reads a SoC's GPU, a Jetson's, through the kernel (its load and the `gpu-thermal` zone),
+  NVIDIA through `nvidia-smi` and AMD's through the kernel's `amdgpu`; on any other SoC with a
+  `gpu-thermal` zone, its temperature only. A GPU that shares the system's memory —a SoC's, or
+  NVIDIA's unified memory (Grace, GB10), for which `nvidia-smi` has no total— reports the system's
+  memory in use as its `memory_used`, as this pack's `memory_used` counts it. A value that isn't one
+  —`[N/A]` anywhere else, a number out of range, an `nvidia-smi` that fails— fails the script
+  instead of printing it, so a sensor keeps its last state. AMD's integrated GPUs report their fixed
+  carve-out, not what they use of the system's memory; Intel's say nothing a script can read without
+  `intel_gpu_top`.
 
 ## For Home Assistant
 
-`cpu_used`, `memory_used`, `disk_used`, `temperature` and `gpu` print one number, nothing else: what a sensor of a
-hub with `[mqtt]` publishes ([how](../../README.md#home-assistant-over-mqtt)). The pack offers them all; Home
-Assistant gets only the ones the hub's `limen.toml` declares:
+`cpu_used`, `memory_used`, `disk_used`, `temperature` and `gpu` print one number, nothing else: what
+a sensor of a hub with `[mqtt]` publishes ([how](../../README.md#home-assistant-over-mqtt)). The
+pack offers them all; Home Assistant gets only the ones the hub's `limen.toml` declares:
 
 ```toml
 [[mqtt.sensor]]

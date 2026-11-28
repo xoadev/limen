@@ -8,7 +8,7 @@
 #: description = "Minutes until the reboot"
 set -eu
 
-if pgrep -x 'apt|apt-get|dpkg|unattended-upgr' > /dev/null; then
+if pgrep -x 'apt|apt-get|dpkg|unattended-upgr' >/dev/null; then
   echo "apt or dpkg is running: a reboot now could leave a package half installed"
   exit 1
 fi

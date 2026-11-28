@@ -14,16 +14,17 @@ Needs limen 0.1.3 or later: its headers use `read_only`, which older versions re
 | `reboot` | Schedules a reboot 1 to 60 minutes away; refuses while apt or dpkg run | **yes** |
 | `cancel_reboot` | Cancels a scheduled reboot or shutdown | **yes** |
 
-- `upgrade` does not reboot: it says whether one is needed. **A package may restart its own services**: upgrading
-  Docker restarts its containers. It ignores `HUP` and `PIPE` and writes to `/var/log/limen-upgrade.log`, so a dropped
-  connection doesn't kill `dpkg` halfway.
-- `upgrade full` takes the packages `updates` lists as kept back, which need others installed or removed. **It
-  removes none unless `remove` is given too**: a full upgrade that would remove one does nothing and lists them, so
-  removing is a second, deliberate call.
-- `autoremove` looks first and says so when there is nothing to remove. Like `upgrade`, it ignores `HUP` and `PIPE`
-  and writes to `/var/log/limen-autoremove.log`.
+- `upgrade` does not reboot: it says whether one is needed.
+  **A package may restart its own services**: upgrading Docker restarts its containers. It ignores
+  `HUP` and `PIPE` and writes to `/var/log/limen-upgrade.log`, so a dropped connection doesn't kill
+  `dpkg` halfway.
+- `upgrade full` takes the packages `updates` lists as kept back, which need others installed or
+  removed. **It removes none unless `remove` is given too**: a full upgrade that would remove one
+  does nothing and lists them, so removing is a second, deliberate call.
+- `autoremove` looks first and says so when there is nothing to remove. Like `upgrade`, it ignores
+  `HUP` and `PIPE` and writes to `/var/log/limen-autoremove.log`.
 - `reboot` waits so the answer arrives first; the machine is unreachable until it is back.
-- `updates` simulates with the flags `upgrade` uses without `full`: what it lists is what `upgrade` would do, and what it
-  keeps back is what `full` adds.
+- `updates` simulates with the flags `upgrade` uses without `full`: what it lists is what `upgrade`
+  would do, and what it keeps back is what `full` adds.
 
 Needs `apt-get`, `apt-cache`, `dpkg-query`, `awk`, `pgrep` and `shutdown` (systemd).

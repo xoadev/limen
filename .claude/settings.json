@@ -1,9 +1,17 @@
 {
+  "env": {
+    "XOA_RULES": "oss"
+  },
   "hooks": {
     "PostToolUse": [
       {
         "matcher": "Edit|MultiEdit|Write",
-        "hooks": [{ "type": "command", "command": "\"$CLAUDE_PROJECT_DIR\"/tools/format-edited.sh" }]
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/tools/format-edited.sh"
+          }
+        ]
       }
     ]
   }

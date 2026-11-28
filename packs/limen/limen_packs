@@ -15,7 +15,7 @@ fi
 
 # Published pack releases only: a draft is not visible without a token, and a pack's release is never the latest.
 tags=
-if command -v curl > /dev/null 2>&1; then
+if command -v curl >/dev/null 2>&1; then
   tags=$(curl -fsS --proto '=https' --tlsv1.2 --retry 3 "https://api.github.com/repos/$repo/releases?per_page=100" |
     grep -o '"tag_name": *"pack-[a-z0-9_-]*-v[0-9]*\.[0-9]*\.[0-9]*"' | sed 's/.*"pack-\(.*\)-v\(.*\)"/\1 \2/') ||
     echo "cannot ask GitHub for the packs' releases; showing what is installed only"

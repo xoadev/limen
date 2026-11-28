@@ -20,18 +20,19 @@ Needs limen 0.1.3 or later: its headers use `read_only`, which older versions re
 
 Needs the `docker` CLI and daemon; `compose_update`, the `docker compose` plugin.
 
-`container` never prints the environment or the command line, where secrets live, and hides the value of a label
-whose name mentions a password, secret, token, auth or credential. Narrow `restart_container`'s `pattern` to the
-containers you would let the agent restart. It doesn't apply compose changes: `compose_update` does, for the projects
-listed in `/etc/limen/compose-projects`, one name per line; with no file it updates nothing. An update can bring
-breaking changes, and text in a log can lead the model to call any script, so which projects follow their images is
-the operator's choice, written where only root writes and `read_file` never reads:
+`container` never prints the environment or the command line, where secrets live, and hides the
+value of a label whose name mentions a password, secret, token, auth or credential. Narrow
+`restart_container`'s `pattern` to the containers you would let the agent restart. It doesn't apply
+compose changes: `compose_update` does, for the projects listed in `/etc/limen/compose-projects`,
+one name per line; with no file it updates nothing. An update can bring breaking changes, and text
+in a log can lead the model to call any script, so which projects follow their images is the
+operator's choice, written where only root writes and `read_file` never reads:
 
 ```sh
 printf '%s\n' immich paperless > /etc/limen/compose-projects
 ```
 
-`compose_update` runs `docker compose pull` and `up --detach` with the project's own directory and files, as Compose
-recorded them on its containers, so the project must have been started once by hand. It never removes orphans or
-volumes. It ignores `HUP` and `PIPE` and writes to `/var/log/limen-compose-update.log`, so a dropped connection
-doesn't leave a project half recreated.
+`compose_update` runs `docker compose pull` and `up --detach` with the project's own directory and
+files, as Compose recorded them on its containers, so the project must have been started once by
+hand. It never removes orphans or volumes. It ignores `HUP` and `PIPE` and writes to
+`/var/log/limen-compose-update.log`, so a dropped connection doesn't leave a project half recreated.
